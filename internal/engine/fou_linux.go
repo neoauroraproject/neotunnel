@@ -2,12 +2,14 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"neotunnel/internal/config"
 )
@@ -50,22 +52,15 @@ func fouKeys(specs []LinkSpec) map[string]fouKey {
 	return out
 }
 
-func fouExisting() map[string]bool {
-	have := map[string]bool{}
-	fs, err := netlink.FouList(netlink.FAMILY_V4)
-	if err != nil {
-		return have
-	}
-	for _, f := range fs {
-		have[fouKey{f.Port, f.Protocol}.String()] = true
-	}
-	return have
+// exists reports whether FouAdd failed only because the port is already open.
+func exists(err error) bool {
+	return errors.Is(err, unix.EEXIST) || errors.Is(err, unix.EADDRINUSE)
 }
 
 func fouAdd(k fouKey) error {
 	err := netlink.FouAdd(netlink.Fou{Family: netlink.FAMILY_V4, Port: k.Port, Protocol: k.Proto, EncapType: netlink.FOU_ENCAP_DIRECT})
 	if err != nil {
-		return fmt.Errorf("open UDP port %d for the tunnel: %w (port in use, or 'fou' kernel module missing)", k.Port, err)
+		return fmt.Errorf("open UDP port %d for the tunnel: %w", k.Port, err)
 	}
 	return nil
 }
@@ -77,24 +72,36 @@ func fouDel(key string) {
 	}
 }
 
+// ensureFOU opens k, accepting an already-open port only if we opened it
+// (netlink's FOU listing can't be relied on to check beforehand).
+func ensureFOU(k fouKey, owned map[string]int64) error {
+	err := fouAdd(k)
+	if err == nil {
+		return nil
+	}
+	if _, mine := owned[k.String()]; mine && exists(err) {
+		return nil
+	}
+	if exists(err) {
+		return fmt.Errorf("UDP port %d is already used by another program; choose another tunnel port", k.Port)
+	}
+	return fmt.Errorf("%w (is the 'fou' kernel module available?)", err)
+}
+
 // syncFOU opens the receive ports persistent tunnels need and closes ones we
 // opened that are no longer used (or expired bench ports).
 func syncFOU(specs []LinkSpec) []error {
 	var errs []error
 	config.WithLock(func() error {
 		want := fouKeys(specs)
-		owned, have := loadOwned(), fouExisting()
+		owned := loadOwned()
 		now := time.Now().Unix()
 		for key, k := range want {
-			if !have[key] {
-				if err := fouAdd(k); err != nil {
-					errs = append(errs, err)
-					continue
-				}
+			if err := ensureFOU(k, owned); err != nil {
+				errs = append(errs, err)
+				continue
 			}
-			if _, mine := owned[key]; mine || !have[key] {
-				owned[key] = 0
-			}
+			owned[key] = 0
 		}
 		for key, exp := range owned {
 			if _, wanted := want[key]; wanted {
@@ -114,16 +121,15 @@ func syncFOU(specs []LinkSpec) []error {
 // addBenchFOU opens receive ports for temporary tunnels until exp.
 func addBenchFOU(specs []LinkSpec, exp time.Time) error {
 	return config.WithLock(func() error {
-		owned, have := loadOwned(), fouExisting()
+		owned := loadOwned()
 		defer saveOwned(owned)
 		for key, k := range fouKeys(specs) {
-			if have[key] {
-				continue
-			}
-			if err := fouAdd(k); err != nil {
+			if err := ensureFOU(k, owned); err != nil {
 				return err
 			}
-			owned[key] = exp.Unix()
+			if _, persistent := owned[key]; !persistent {
+				owned[key] = exp.Unix()
+			}
 		}
 		return nil
 	})

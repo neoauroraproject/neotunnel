@@ -100,6 +100,8 @@ ip netns exec $KHAREJ ip fou show | grep -q "port 3001" || fail "peer has no FOU
 u1peer=$(ip -n $KHAREJ -o -4 addr show dev nt-u1 | awk '{print $4}' | cut -d/ -f1)
 ip netns exec $IRAN ping -c 3 -W 2 "$u1peer" >/dev/null || fail "ping through ipip over UDP 3001"
 in_iran forward add u1 9090 --to 8080 --proto tcp >/dev/null || fail "add remapped forward"
+sleep 16  # one daemon reconcile with the FOU port already open must stay quiet
+grep -q "UDP port 3001" "$WORK/iran.log" && fail "daemon reports the open FOU port as a problem"
 pass "IPIP on UDP port 3001 works on both ends"
 
 # 5. Offline catch-up: stop the peer, change things, apply one link.
@@ -124,8 +126,8 @@ pass "tunnel test (ping, jitter, loss, bandwidth)"
 in_iran bench kharej --duration 1s --pings 20 | tee "$WORK/bench.txt"
 grep -q "fastest tunnel" "$WORK/bench.txt" || fail "bench gave no recommendation"
 sleep 1
-ip -n $IRAN -o link | grep -q "ntx-" && fail "bench left temporary tunnels on master"
-ip -n $KHAREJ -o link | grep -q "ntx-" && fail "bench left temporary tunnels on peer"
+ip -n $IRAN -o link | grep -qE '^[0-9]+: ntx-' && fail "bench left temporary tunnels on master"
+ip -n $KHAREJ -o link | grep -qE '^[0-9]+: ntx-' && fail "bench left temporary tunnels on peer"
 pass "benchmark ranked the kinds and cleaned up"
 
 # 8. Panel: login, overview, create a tunnel through the API.
@@ -145,7 +147,7 @@ pass "panel: auth, overview and tunnel creation reach the peer"
 
 # 9. Clean removal.
 in_iran down >/dev/null
-ip -n $IRAN -o link | grep -q " nt-" && fail "interfaces left after down"
+ip -n $IRAN -o link | grep -qE '^[0-9]+: nt-' && fail "interfaces left after down"
 ip netns exec $IRAN ip fou show | grep -q "port 3001" && fail "FOU port left after down"
 pass "down removes interfaces and FOU ports"
 
