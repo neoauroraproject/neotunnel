@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet and unit tests
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
+      - name: Build
+        run: CGO_ENABLED=0 go build -trimpath -o dist/neotunnel ./cmd/neotunnel
+      - name: End-to-end on the runner's kernel
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq nftables iproute2 curl python3 "linux-modules-extra-$(uname -r)" || true
+          sudo bash test/e2e.sh dist/neotunnel
+      - name: Installer syntax
+        run: bash -n install.sh

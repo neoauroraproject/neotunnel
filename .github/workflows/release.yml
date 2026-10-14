@@ -1,0 +1,40 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X neotunnel/internal/version.Version=${GITHUB_REF_NAME}" \
+              -o dist/neotunnel-linux-$arch ./cmd/neotunnel
+          done
+          (cd dist && sha256sum neotunnel-linux-* > SHA256SUMS && cat SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "نصب یا به‌روزرسانی روی اوبونتو:"
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sudo bash"
+            echo '```'
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "NeoTunnel $GITHUB_REF_NAME" --notes-file notes.md
