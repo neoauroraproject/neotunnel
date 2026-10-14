@@ -38,3 +38,31 @@ jobs:
             echo '```'
           } > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "NeoTunnel $GITHUB_REF_NAME" --notes-file notes.md
+
+  # Runs the real one-line install from the published release on a fresh
+  # Ubuntu machine with systemd, then checks the service and the panel.
+  install-test:
+    needs: release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: One-line install
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/install.sh" | sudo bash -s -- --version "$GITHUB_REF_NAME" | tee install.log
+      - name: Service and panel are up
+        run: |
+          systemctl is-active --quiet neotunnel
+          test "$(neotunnel version)" = "$GITHUB_REF_NAME"
+          url=$(grep -o 'https://[^ ]*' install.log | head -1)
+          port=$(sed -E 's#https://[^:]+:([0-9]+)/.*#\1#' <<<"$url")
+          path=$(sed -E 's#https://[^/]+(/[^/]+)/#\1#' <<<"$url")
+          for i in $(seq 20); do curl -sk -o /dev/null "https://127.0.0.1:$port$path/" && break; sleep 1; done
+          code=$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$port$path/")
+          echo "panel $url -> $code"
+          test "$code" = 200
+          sudo neotunnel status
+      - name: Re-running upgrades and keeps the panel
+        run: |
+          before=$(sudo neotunnel panel info | grep -o 'https://[^ ]*')
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/install.sh" | sudo bash -s -- --version "$GITHUB_REF_NAME"
+          after=$(sudo neotunnel panel info | grep -o 'https://[^ ]*')
+          test "$before" = "$after"
