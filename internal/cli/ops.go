@@ -23,6 +23,7 @@ import (
 	"neotunnel/internal/setuplink"
 	"neotunnel/internal/sysctl"
 	"neotunnel/internal/traffic"
+	"neotunnel/internal/version"
 )
 
 func daemonCmd() *cobra.Command {
@@ -91,6 +92,42 @@ func uninstallCmd() *cobra.Command {
 	cmd.Flags().Bool("purge", false, "")
 	cmd.Flags().MarkHidden("purge")
 	return cmd
+}
+
+func updateCmd() *cobra.Command {
+	var ver string
+	cmd := &cobra.Command{
+		Use:     "update",
+		Aliases: []string{"upgrade"},
+		Short:   "Install the latest release (or --version vX.Y.Z); tunnels and settings are kept",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireRoot(); err != nil {
+				return err
+			}
+			return selfUpdate(ver)
+		},
+	}
+	cmd.Flags().StringVar(&ver, "version", "", "install this release instead of the latest, e.g. v0.2.0")
+	return cmd
+}
+
+// selfUpdate runs the official installer, which replaces the program,
+// restarts the service and keeps the configuration and panel password.
+func selfUpdate(ver string) error {
+	args := "--no-menu"
+	if ver != "" {
+		if !strings.HasPrefix(ver, "v") || strings.ContainsAny(ver, " ;&|$`'\"") {
+			return fmt.Errorf("version looks like v0.2.0")
+		}
+		args += " --version " + ver
+	}
+	info("current version %s; downloading the installer…", version.Version)
+	c := exec.Command("bash", "-c", "set -o pipefail; curl -fsSL "+version.InstallURL+" | bash -s -- "+args)
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+	return nil
 }
 
 // uninstall removes the service, every tunnel and rule, and the program;

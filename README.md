@@ -168,6 +168,7 @@ sudo neotunnel traffic          # ترافیک زنده
 | `neotunnel test` / `bench` / `traffic` / `status` | تست و وضعیت |
 | `neotunnel panel info\|setup\|password\|port\|disable` | مدیریت پنل |
 | `neotunnel boost` | BBR، fq و بافرهای شبکه (ماندگار) |
+| `neotunnel update [--version vX.Y.Z]` | به‌روزرسانی به آخرین نسخه (تنظیمات می‌ماند) |
 | `neotunnel down` / `uninstall [--keep-config] [-y]` | حذف تانل‌ها / حذف کامل (برنامه هم پاک می‌شود) |
 
 ## پورت‌ها و امنیت

@@ -33,7 +33,7 @@ func cobraRoot() *cobra.Command {
 		},
 	}
 	root.AddCommand(
-		versionCmd(), daemonCmd(), installCmd(), uninstallCmd(), nodeCmd(), panelCmd(),
+		versionCmd(), daemonCmd(), installCmd(), updateCmd(), uninstallCmd(), nodeCmd(), panelCmd(),
 		peerCmd(), tunnelCmd(), forwardCmd(), quickCmd(),
 		applyCmd(), downCmd(), statusCmd(), trafficCmd(), testCmd(), benchCmd(), boostCmd(), mtuCmd(),
 	)

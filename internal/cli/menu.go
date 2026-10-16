@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/netip"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -162,10 +161,12 @@ func (s *session) main() {
 			{"Destination servers", fmt.Sprintf("%d · add, connect command, sync, compare speeds", len(st.Peers)), false},
 			{"Port forwarding", fmt.Sprintf("%d · send ports of this server through a tunnel", len(st.Forwards)), false},
 			{"Speed test", "one tunnel, or compare every tunnel kind", false},
-			{"Live traffic", "rates per tunnel", false},
+			{"Live traffic", "rates and today's, month's and total traffic per tunnel", false},
 			{"Join a main server", "paste the setup key shown by your main server", false},
 			{"Web panel", "address, password, port", false},
-			{"System", "name & IP, network boost, service, update, uninstall", false},
+			{"System", "name & IP, network boost, re-apply, restart the service", false},
+			{"Update NeoTunnel", "install the latest release; tunnels and settings stay", false},
+			{"Uninstall NeoTunnel", "remove tunnels, rules, settings and the program", false},
 		}
 		sel = s.choose("Main menu", items, sel)
 		if s.quit {
@@ -190,10 +191,40 @@ func (s *session) main() {
 			s.panel()
 		case 8:
 			s.system()
+		case 9:
+			s.update()
+		case 10:
+			if s.uninstall() {
+				return
+			}
 		default:
 			return
 		}
 	}
+}
+
+// update installs the latest release over this one; settings are kept.
+func (s *session) update() {
+	if !s.t.confirm("Download and install the latest NeoTunnel release? (tunnels and settings are kept)", true) {
+		return
+	}
+	s.page("Update NeoTunnel", func() error { return selfUpdate("") })
+}
+
+// uninstall removes NeoTunnel after two questions; it reports whether the
+// menu must close.
+func (s *session) uninstall() bool {
+	if !s.t.confirm(red("Remove NeoTunnel completely: tunnels, service and the program?"), false) {
+		return false
+	}
+	keep := s.t.confirm("Keep the configuration and keys for a later reinstall?", false)
+	s.page("Uninstall", func() error {
+		uninstall(keep)
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	})
+	s.quit = true
+	return true
 }
 
 // ---------- create a tunnel ----------
@@ -1026,20 +1057,9 @@ func (s *session) system() {
 				return nil
 			})
 		case 4:
-			s.page("Update NeoTunnel", func() error {
-				c := exec.Command("bash", "-c", "curl -fsSL "+version.InstallURL+" | bash -s -- --no-menu")
-				c.Stdout, c.Stderr = os.Stdout, os.Stderr
-				return c.Run()
-			})
+			s.update()
 		case 5:
-			if s.t.confirm(red("Remove NeoTunnel completely: tunnels, service and the program?"), false) {
-				keep := s.t.confirm("Keep the configuration and keys for a later reinstall?", false)
-				s.page("Uninstall", func() error {
-					uninstall(keep)
-					time.Sleep(300 * time.Millisecond)
-					return nil
-				})
-				s.quit = true
+			if s.uninstall() {
 				return
 			}
 		default:

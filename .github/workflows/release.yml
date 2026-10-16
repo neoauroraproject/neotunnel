@@ -31,11 +31,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
+            # What changed, from docs/releases/<tag>.md when it exists.
+            if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
+              cat "docs/releases/$GITHUB_REF_NAME.md"
+              echo
+            fi
             echo "نصب یا به‌روزرسانی روی اوبونتو:"
             echo
             echo '```bash'
             echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sudo bash"
             echo '```'
+            echo
+            echo 'روی سروری که NeoTunnel دارد: `sudo neotunnel update`'
           } > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "NeoTunnel $GITHUB_REF_NAME" --notes-file notes.md
 

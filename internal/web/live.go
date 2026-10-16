@@ -243,6 +243,7 @@ func commands(st *config.State) []CommandGroup {
 			{"بهینه‌سازی شبکه (BBR)", "sudo neotunnel boost", here},
 			{"ارسال دوباره‌ی تنظیمات به همه‌ی سرورها", "sudo neotunnel peer sync", here},
 			{"ارتقای سرورها به نسخه‌ی همین سرور", "sudo neotunnel peer upgrade", here},
+			{"به‌روزرسانی NeoTunnel به آخرین نسخه", "sudo neotunnel update", here},
 			{"حذف کامل NeoTunnel از این سرور", "sudo neotunnel uninstall", here},
 		},
 	}}
