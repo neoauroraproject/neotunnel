@@ -112,7 +112,7 @@
     modal: null, wiz: null, form: {}, drawer: null,
     open: null, tset: {}, edit: false, fwdEdit: {},
     sec: store("nt-settings") || "node", defs: null,
-    jobs: [], job: null, pv: {}, speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
+    jobs: [], job: null, pv: {}, prates: {}, hist: [], cat: "tunnels", speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
   };
   document.documentElement.dataset.theme = S.theme;
 
@@ -159,6 +159,15 @@
           const p = prev[t.name];
           if (p && dt > 0 && t.rx >= p.rx && t.tx >= p.tx) S.rates[t.name] = { rx: ((t.rx - p.rx) * 8) / dt, tx: ((t.tx - p.tx) * 8) / dt };
         }
+        const pf = Object.fromEntries((S.ov.forwards || []).map((f) => [fwdKey(f), f]));
+        for (const f of ov.forwards || []) {
+          const p = pf[fwdKey(f)];
+          if (p && dt > 0 && f.rx >= p.rx && f.tx >= p.tx) S.prates[fwdKey(f)] = { rx: ((f.rx - p.rx) * 8) / dt, tx: ((f.tx - p.tx) * 8) / dt };
+        }
+        // A short history of the live total, for the orb's waveform crown.
+        const tr = [...ov.tunnels].filter((t) => !t.carrier).reduce((a, t) => a + (S.rates[t.name] ? S.rates[t.name].rx + S.rates[t.name].tx : 0), 0);
+        S.hist.push(tr);
+        if (S.hist.length > 64) S.hist.shift();
       }
       S.ov = ov; S.live = true; S.authed = true;
     } catch {
@@ -175,6 +184,8 @@
   const visible = () => (S.ov ? S.ov.tunnels.filter((t) => !t.carrier) : []);
   const tunnel = (name) => S.ov && S.ov.tunnels.find((t) => t.name === name);
   const rate = (name) => S.rates[name] || { rx: 0, tx: 0 };
+  const fwdKey = (f) => f.tunnel + "|" + f.ports;
+  const prate = (f) => S.prates[fwdKey(f)] || { rx: 0, tx: 0 };
   const total = () => visible().reduce((a, t) => ({ rx: a.rx + rate(t.name).rx, tx: a.tx + rate(t.name).tx }), { rx: 0, tx: 0 });
   const peer = (name) => S.ov && S.ov.peers.find((p) => p.name === name);
   const status = (t) => {
@@ -184,6 +195,14 @@
     return t.up ? ["ok", "فعال"] : ["bad", "قطع"];
   };
   const stateEl = (t) => { const [c, l] = status(t); return html`<span class="state"><i class="dot ${c}"></i>${l}</span>`; };
+  // A chip that says whether traffic really passes, from the daemon's probes.
+  function healthTag(t) {
+    const h = t.health;
+    if (!h || h.probes < 3) return "";
+    if (!h.passes) return html`<span class="tag warn">${I.alert(11)} ترافیک رد نمی‌شود</span>`;
+    const cls = h.loss >= 20 ? "warn" : "";
+    return html`<span class="tag ${cls}">${ms(h.ping_ms)}${h.loss >= 1 ? ` · افت ${h.loss.toFixed(0)}٪` : ""}</span>`;
+  }
   const sumToday = () => visible().reduce((a, t) => a + t.today.rx + t.today.tx, 0);
   const sumMonth = () => visible().reduce((a, t) => a + t.month.rx + t.month.tx, 0);
 
@@ -277,32 +296,49 @@
     return ["", "", add];
   }
 
-  // ---------- dashboard: the flow stage ----------
+  // ---------- dashboard: the orbit ----------
+  // One live scene: this server is a glowing core with a crown made of its
+  // recent traffic; a column of categories sits beside it; the chosen
+  // category fans out to an arc of real items (tunnels, servers or ports),
+  // each line and particle sized by that item's real throughput.
   function viewDashboard() {
     const ov = S.ov, ts = visible(), up = ts.filter((t) => t.up).length;
-    const tr = total();
     const mem = ov.node.mem_total ? (ov.node.mem_used / ov.node.mem_total) * 100 : 0;
     const load = ov.node.cpus ? (ov.node.load[0] / ov.node.cpus) * 100 : 0;
     const series = totalSeries();
     const [tv, tu] = splitBytes(sumToday()), [mv, mu] = splitBytes(sumMonth());
+    const nic = ov.node.nic ? ov.node.nic_month.rx + ov.node.nic_month.tx : 0;
     return html`<div class="head">
-        <div><h1 class="greet">${greeting()}</h1><div class="sub">سرور <b>${ov.node.name}</b> <span class="ltr faint">${ov.node.address || ""}</span>${ov.master ? html` · مدیریت از ${ov.master.name}` : ""}</div></div>
-        <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط با سرور"}</span><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>
+        <div><h1 class="greet">${greeting()}${ov.node.name ? html`<span class="greet-who">، ${ov.node.name}</span>` : ""}</h1>
+          <div class="sub"><span class="ltr faint">${ov.node.address || ""}</span>${ov.master ? html` · مدیریت از ${ov.master.name}` : ""}</div></div>
+        <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط"}</span><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>
       </div>
-      <div class="stage-wrap">${stage()}</div>
-      <div class="stage-list stack">${stageList()}</div>
+      <div class="orbit-wrap">${orbit()}</div>
+      <div class="orbit-list stack">${orbitList()}</div>
       <div class="kpis">
-        <div class="kpi"><div class="k">ترافیک امروز</div><div class="v">${tv}<small>${tu}</small></div>${spark(series)}<div class="f">۲۴ ساعت گذشته، هر نقطه ۵ دقیقه</div></div>
-        <div class="kpi"><div class="k">این ماه</div><div class="v">${mv}<small>${mu}</small></div><div class="f">مجموع همه‌ی تانل‌ها، با وجود ری‌استارت و ریبوت</div></div>
-        <div class="kpi"><div class="k">تانل‌های فعال</div><div class="v">${up}<small>از ${ts.length}</small></div>
-          <div class="f">${ts.length ? (up === ts.length ? "همه سالم‌اند" : `${ts.length - up} تانل نیاز به بررسی دارد`) : "هنوز تانلی ساخته نشده"}</div>
+        <div class="kpi"><div class="k">ترافیک کاربران امروز</div><div class="v">${tv}<small>${tu}</small></div>${spark(series)}<div class="f">۲۴ ساعت گذشته، هر نقطه ۵ دقیقه</div></div>
+        <div class="kpi"><div class="k">این ماه</div><div class="v">${mv}<small>${mu}</small></div>
+          <div class="f">مجموع همه‌ی تانل‌ها، با وجود ری‌استارت و ریبوت</div>
+          ${nic ? html`<div class="f">ترافیک کارت شبکه (محاسبه‌ی دیتاسنتر): <b class="ltr">${fmtBytes(nic)}</b></div>` : ""}</div>
+        <div class="kpi"><div class="k">تانل‌های سالم</div><div class="v">${healthy()}<small>از ${ts.length}</small></div>
+          <div class="f">${ts.length ? (healthy() === ts.length ? "ترافیک همه رد می‌شود" : `${ts.length - healthy()} تانل بررسی لازم دارد`) : "هنوز تانلی ساخته نشده"}</div>
           <div class="f">${ov.peers.filter((p) => p.paired).length} سرور متصل از ${ov.peers.length}</div></div>
         <div class="kpi"><div class="k">منابع سرور</div><div class="v">${ov.node.load[0].toFixed(2)}<small>بار روی ${ov.node.cpus} هسته</small></div>
           <div class="meter" title="بار پردازنده"><b class="${load > 90 ? "bad" : load > 70 ? "warn" : ""}" style="width:${Math.min(100, load).toFixed(0)}%"></b></div>
           <div class="f">حافظه ${fmtBytes(ov.node.mem_used)} از ${fmtBytes(ov.node.mem_total)} (${mem.toFixed(0)}٪)</div></div>
       </div>
-      ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:20px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}
-      ${tr.rx + tr.tx === 0 && ts.length ? "" : ""}`;
+      ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:20px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}`;
+  }
+
+  const healthy = () => visible().filter((t) => { const h = t.health; return t.up && (!h || h.passes); }).length;
+
+  // The health of a tunnel, from real probes when available.
+  function tunHealth(t) {
+    const [c] = status(t);
+    if (c !== "ok") return c;
+    if (t.health && t.health.probes >= 3 && !t.health.passes) return "bad";
+    if (t.health && t.health.loss >= 20) return "warn";
+    return "ok";
   }
 
   // Destinations: one node per peer or far address; each tunnel is a curve.
@@ -310,106 +346,152 @@
     const ov = S.ov, groups = new Map();
     for (const t of visible()) {
       const key = t.peer || t.far_ip;
-      if (!groups.has(key)) groups.set(key, { key, name: t.peer || "دستگاه دیگر", ip: t.far_ip, tunnels: [], paired: true, peer: !!t.peer && !!peer(t.peer) });
+      if (!groups.has(key)) groups.set(key, { key, name: t.peer || "دستگاه دیگر", ip: t.far_ip, tunnels: [], paired: true });
       groups.get(key).tunnels.push(t);
     }
     for (const p of ov.peers) {
-      if (!groups.has(p.name)) groups.set(p.name, { key: p.name, name: p.name, ip: p.address, tunnels: [], paired: p.paired, peer: true });
+      if (!groups.has(p.name)) groups.set(p.name, { key: p.name, name: p.name, ip: p.address, tunnels: [], paired: p.paired });
       const g = groups.get(p.name); g.paired = p.paired; g.ip = p.address;
     }
     if (ov.master && !groups.size) groups.set(ov.master.name, { key: ov.master.name, name: ov.master.name, ip: ov.master.address.replace(/:\d+$/, ""), tunnels: [], paired: ov.master.paired });
     return [...groups.values()];
   }
 
-  function curveClass(t) {
-    const [c] = status(t);
-    if (c === "warn") return "wait";
-    if (c === "bad") return "down";
-    const r = rate(t.name);
-    return r.rx + r.tx > 2000 ? "up hot" : "up";
-  }
-
-  function stage() {
-    const ov = S.ov, dests = destinations(), fwd = ov.forwards;
-    if (!dests.length) return html`<div class="empty">${I.globe(32)}<b>هنوز مقصدی ندارید</b>یک سرور خارج اضافه کنید یا مستقیم یک تانل بسازید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
-    const W = 1000, H = Math.max(420, Math.min(640, 90 + Math.max(dests.length, fwd.length) * 70)), cx = 500, cy = H / 2;
-    const maxRate = Math.max(1e6, ...visible().map((t) => rate(t.name).rx + rate(t.name).tx));
-    const width = (bps) => 1.5 + 7 * Math.sqrt(Math.min(1, bps / maxRate));
-    const spread = (n, i, top = 60, bottom = H - 60) => (n === 1 ? cy : top + ((bottom - top) * i) / (n - 1));
-    const out = [];
-    // Redraws every few seconds must not restart the motion: phase it by the clock.
-    const now = performance.now() / 1000, phase = (period) => `style="animation-delay:-${(now % period).toFixed(2)}s"`;
-    out.push(`<defs><radialGradient id="halo"><stop offset="0" stop-color="var(--accent)" stop-opacity=".16"/><stop offset=".6" stop-color="var(--accent)" stop-opacity=".04"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></radialGradient></defs>`);
-
-    // Inbound (right side in RTL): forwarded ports, or the clients in general.
-    const ins = fwd.length ? fwd.map((f) => ({ f, label: f.ports, sub: `${MODES_FWD[f.mode] ? MODES_FWD[f.mode][0] : "NAT"}، ${f.proto === "both" ? "TCP+UDP" : f.proto.toUpperCase()}`, t: tunnel(f.tunnel) }))
-      : [{ label: "کاربران", sub: "هنوز پورتی فوروارد نشده", t: null }];
-    ins.forEach((s, i) => {
-      const y = spread(ins.length, i, 70, H - 70), x = 860;
-      const r = s.t ? rate(s.t.name) : { rx: 0, tx: 0 };
-      const cls = s.t ? curveClass(s.t) : "";
-      const d = `M${x} ${y} C ${x - 170} ${y}, ${cx + 230} ${cy}, ${cx + 128} ${cy}`;
-      out.push(`<path class="curve ${cls}" d="${d}" stroke-width="${width(r.rx + r.tx).toFixed(1)}"/>`);
-      if (!reduceMotion && cls.includes("hot")) out.push(`<path class="flow" d="${d}" ${phase(1.4)}/>`);
-      out.push(`<circle class="node ${s.t && s.t.up ? "up" : ""}" cx="${x}" cy="${y}" r="5"/>`);
-      out.push(`<text x="${x + 16}" y="${y - 2}" text-anchor="start" class="t-strong">${esc(s.label)}</text>`);
-      out.push(`<text x="${x + 16}" y="${y + 16}" text-anchor="end" direction="rtl" class="t-faint">${esc(s.sub)}</text>`);
-    });
-
-    // Destinations (left side): every tunnel is its own curve into the node.
-    dests.forEach((g, i) => {
-      const y = spread(dests.length, i), x = 150;
-      const k = g.tunnels.length;
-      const anyUp = g.tunnels.some((t) => t.up);
-      if (!k) {
-        const d = `M${cx - 128} ${cy} C ${cx - 250} ${cy}, ${x + 190} ${y}, ${x + 12} ${y}`;
-        out.push(`<path class="curve wait" d="${d}" stroke-width="1.5"/>`);
-      }
-      g.tunnels.forEach((t, j) => {
-        const off = (j - (k - 1) / 2) * 7, r = rate(t.name), cls = curveClass(t);
-        const d = `M${cx - 128} ${cy + off * 0.4} C ${cx - 250} ${cy + off * 0.4}, ${x + 190} ${y + off}, ${x + 12} ${y + off}`;
-        out.push(`<g class="hit" role="button" tabindex="0" data-act="drawer" data-type="tunnel" data-name="${esc(t.name)}" aria-label="تانل ${esc(t.name)}"><path d="${d}" stroke="transparent" stroke-width="16" fill="none"/><path class="curve ${cls}" d="${d}" stroke-width="${width(r.rx + r.tx).toFixed(1)}"/></g>`);
-        if (!reduceMotion && cls.includes("hot")) out.push(`<path class="flow rev" d="${d}" ${phase(1.4)}/>`);
+  // The items on the arc for each category, each already carrying a name, a
+  // sub-line, a status, a live rate and (for tunnels) a health chip.
+  function arcItems(cat) {
+    if (cat === "servers") {
+      return destinations().map((g) => {
+        const r = g.tunnels.reduce((a, t) => ({ rx: a.rx + rate(t.name).rx, tx: a.tx + rate(t.name).tx }), { rx: 0, tx: 0 });
+        const st = !g.paired ? "warn" : g.tunnels.some((t) => tunHealth(t) === "ok") ? "ok" : g.tunnels.length ? "bad" : "warn";
+        return { key: g.key, type: "dest", name: g.name, sub: g.ip, st, rate: r, chips: [g.tunnels.length + " تانل"] };
       });
-      const sel = S.drawer && S.drawer.type === "dest" && S.drawer.key === g.key;
-      const label = g.tunnels.map((t) => t.name).join("، ") || (g.paired ? "بدون تانل" : "منتظر اتصال");
-      const r = g.tunnels.reduce((a, t) => a + rate(t.name).rx + rate(t.name).tx, 0);
-      out.push(`<g class="hit ${sel ? "sel" : ""}" role="button" tabindex="0" data-act="drawer" data-type="dest" data-key="${esc(g.key)}" aria-label="${esc(g.name)}">
-        <circle class="node ${anyUp ? "up" : ""}" cx="${x}" cy="${y}" r="11"/>
-        <circle cx="${x}" cy="${y}" r="3.5" fill="${anyUp ? "var(--accent)" : g.paired ? "var(--ink-3)" : "var(--warn)"}"/>
-        <text x="${x - 22}" y="${y - 4}" text-anchor="start" direction="rtl" class="t-strong">${esc(g.name)}</text>
-        <text x="${x - 22}" y="${y + 14}" text-anchor="end" class="t-faint">${esc(g.ip || "")}</text>
-        <text x="${x - 22}" y="${y + 31}" text-anchor="start" direction="rtl" class="t-faint">${esc(label)}${r > 1000 ? " · " + esc(fmtRate(r)) : ""}</text></g>`);
-    });
-
-    // The core: this server, with the live total in its centre.
-    const tr = total(), [v, u] = splitRate(tr.rx + tr.tx);
-    const ring = (rad, n, size, op) => { let s = ""; for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; s += `<circle class="ring-dot" cx="${(cx + rad * Math.cos(a)).toFixed(1)}" cy="${(cy + rad * Math.sin(a)).toFixed(1)}" r="${size}" opacity="${op}"/>`; } return s; };
-    let ticks = ""; for (let i = 0; i < 96; i++) { const a = (i / 96) * Math.PI * 2, r1 = 150, r2 = i % 8 ? 156 : 162; ticks += `<line class="ring-tick" x1="${(cx + r1 * Math.cos(a)).toFixed(1)}" y1="${(cy + r1 * Math.sin(a)).toFixed(1)}" x2="${(cx + r2 * Math.cos(a)).toFixed(1)}" y2="${(cy + r2 * Math.sin(a)).toFixed(1)}"/>`; }
-    out.push(`<circle class="halo" cx="${cx}" cy="${cy}" r="200"/>`);
-    out.push(`<g class="spin r" ${phase(140)}>${ticks}</g>`);
-    out.push(`<g class="spin" ${phase(90)}>${ring(132, 64, 1.3, 0.35)}</g>`);
-    out.push(`<g class="spin r" ${phase(140)}>${ring(118, 40, 1.7, 0.6)}</g>`);
-    out.push(`<circle class="core-disc" cx="${cx}" cy="${cy}" r="100"/>`);
-    out.push(`<text x="${cx}" y="${cy - 34}" text-anchor="middle" class="t-faint">${esc(ov.node.name)}</text>`);
-    out.push(`<text x="${cx}" y="${cy + 14}" text-anchor="middle" class="t-num" data-live-num="1">${esc(v)}</text>`);
-    out.push(`<text x="${cx}" y="${cy + 38}" text-anchor="middle" class="t-unit" direction="ltr">${esc(u)}</text>`);
-    out.push(`<text x="${cx}" y="${cy + 60}" text-anchor="middle" class="t-faint">ترافیک لحظه‌ای</text>`);
-    return raw(`<svg class="stage" direction="ltr" viewBox="0 0 ${W} ${H}" role="img" aria-label="جریان ترافیک از پورت‌های این سرور، از طریق تانل‌ها، به سرورهای مقصد">${out.join("")}</svg>`);
+    }
+    if (cat === "ports") {
+      return (S.ov.forwards || []).map((f) => ({
+        key: f.tunnel + "|" + f.ports, type: "port", name: f.ports, sub: (f.peer || f.tunnel),
+        st: tunnel(f.tunnel) ? tunHealth(tunnel(f.tunnel)) : "warn", rate: prate(f),
+        chips: [MODES_FWD[f.mode] ? MODES_FWD[f.mode][0] : "NAT", f.proto === "both" ? "TCP+UDP" : f.proto.toUpperCase()],
+      }));
+    }
+    let list = visible();
+    if (cat === "issues") list = list.filter((t) => tunHealth(t) !== "ok");
+    return list.map((t) => ({
+      key: t.name, type: "tunnel", name: t.name, sub: kindTitle(t), st: tunHealth(t), rate: rate(t.name),
+      health: t.health, chips: [t.peer || "دستگاه دیگر"],
+    }));
   }
 
-  // Phone layout: the same information as a list.
-  function stageList() {
-    const dests = destinations(), tr = total();
+  const CATS = [
+    ["tunnels", "تانل‌ها", I.tunnel],
+    ["servers", "سرورها", I.server],
+    ["ports", "پورت‌ها", I.ports],
+    ["issues", "نیازمند بررسی", I.alert],
+  ];
+  const catCount = (c) => c === "tunnels" ? visible().length : c === "servers" ? destinations().length : c === "ports" ? (S.ov.forwards || []).length : visible().filter((t) => tunHealth(t) !== "ok").length;
+
+  function orbit() {
+    const ov = S.ov;
+    if (!visible().length && !ov.peers.length) return html`<div class="empty">${I.globe(34)}<b>هنوز مقصدی ندارید</b>یک سرور خارج اضافه کنید یا مستقیم یک تانل بسازید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
+    let cat = S.cat;
+    if (cat === "issues" && !catCount("issues")) cat = "tunnels";
+    const items = arcItems(cat);
+    const W = 1000, H = Math.max(440, Math.min(760, 140 + items.length * 48)), cy = H / 2;
+    const core = { x: 824, y: cy, r: 92 }, colX = 548;
+    const maxRate = Math.max(8e5, ...items.map((it) => it.rate.rx + it.rate.tx), ...visible().map((t) => rate(t.name).rx + rate(t.name).tx));
+    const width = (bps) => 1 + 5.5 * Math.sqrt(Math.min(1, bps / maxRate));
+    const o = [];
+    const now = performance.now() / 1000, phase = (p) => `style="animation-delay:-${(now % p).toFixed(2)}s"`;
+    o.push(`<defs>
+      <radialGradient id="halo"><stop offset="0" stop-color="var(--accent)" stop-opacity=".18"/><stop offset=".55" stop-color="var(--accent)" stop-opacity=".05"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></radialGradient>
+      <radialGradient id="orb"><stop offset="0" stop-color="var(--orb-1)"/><stop offset=".6" stop-color="var(--orb-2)"/><stop offset="1" stop-color="var(--orb-3)"/></radialGradient>
+      <filter id="soft"><feGaussianBlur stdDeviation="2.2"/></filter></defs>`);
+
+    // Column of category cards, from the core.
+    const colY = (i, n) => cy - ((n - 1) * 74) / 2 + i * 74;
+    CATS.forEach(([id, label, icon], i) => {
+      const y = colY(i, CATS.length), on = id === cat, n = catCount(id);
+      const d = `M${core.x - core.r - 4} ${cy} C ${core.x - 190} ${cy}, ${colX + 220} ${y}, ${colX + 116} ${y}`;
+      o.push(`<path class="spoke ${on ? "on" : ""}" d="${d}"/>`);
+      o.push(`<g class="hit catcard ${on ? "on" : ""}" role="button" tabindex="0" data-act="cat" data-cat="${id}" aria-label="${esc(label)}">
+        <rect x="${colX - 116}" y="${y - 28}" width="232" height="56" rx="13"/>
+        <text class="cc-n" x="${colX + 96}" y="${y - 2}" text-anchor="end">${n}</text>
+        <text class="cc-l" x="${colX + 96}" y="${y + 17}" text-anchor="end">${esc(label)}</text>
+        <g transform="translate(${colX - 96},${y - 11})" class="cc-i">${iconMarkup(icon)}</g></g>`);
+    });
+
+    // Fan from the selected card to the arc of items.
+    const cardY = colY(CATS.findIndex(([id]) => id === cat), CATS.length);
+    const fanX = colX - 116, arcX = 150;
+    const spread = (i, n) => (n === 1 ? cy : 70 + ((H - 140) * i) / (n - 1));
+    if (!items.length) {
+      o.push(`<text class="t-faint" x="${arcX + 120}" y="${cy}" text-anchor="middle">خالی</text>`);
+    }
+    items.forEach((it, i) => {
+      const y = spread(i, items.length), r = it.rate.rx + it.rate.tx;
+      const cls = it.st === "bad" ? "down" : it.st === "warn" ? "wait" : r > 1500 ? "up hot" : "up";
+      const d = `M${fanX} ${cardY} C ${fanX - 150} ${cardY}, ${arcX + 180} ${y}, ${arcX + 14} ${y}`;
+      const sel = S.drawer && (S.drawer.name === it.key || S.drawer.key === it.key);
+      const meta = it.health && it.health.probes >= 3 ? `${it.health.passes ? ms(it.health.ping_ms) : "بدون پاسخ"}${it.health.loss >= 1 ? " · افت " + it.health.loss.toFixed(0) + "٪" : ""}`
+        : (r > 800 ? fmtRate(r) : (it.chips[0] || ""));
+      o.push(`<g class="hit arcitem ${sel ? "sel" : ""}" role="button" tabindex="0" data-act="arc" data-key="${esc(it.key)}" data-type="${it.type}" aria-label="${esc(it.name)}">
+        <rect x="0" y="${y - 20}" width="${arcX + 140}" height="40" fill="transparent"/>
+        <path d="${d}" stroke="transparent" stroke-width="16" fill="none"/>
+        <path class="line ${cls}" d="${d}" stroke-width="${width(r).toFixed(1)}"/>
+        <circle class="pin ${it.st}" cx="${arcX}" cy="${y}" r="4.5"/>
+        <text class="ai-n" x="${arcX - 16}" y="${y - 3}" text-anchor="end" direction="rtl">${esc(trim(it.name, 22))}</text>
+        <text class="ai-s" x="${arcX - 16}" y="${y + 13}" text-anchor="end" direction="rtl">${esc(meta)}</text></g>`);
+      if (!reduceMotion && cls.includes("hot")) o.push(`<path class="flow" d="${d}" ${phase(1.4)}/>`);
+    });
+
+    // The core: this server, a glowing orb crowned by its recent traffic.
+    o.push(`<circle class="halo" cx="${core.x}" cy="${core.y}" r="200"/>`);
+    o.push(crown(core, now));
+    o.push(`<circle class="orb-glow" cx="${core.x}" cy="${core.y}" r="${core.r}" filter="url(#soft)"/>`);
+    o.push(`<circle class="orb" cx="${core.x}" cy="${core.y}" r="${core.r}" fill="url(#orb)"/>`);
+    const tr = total(), [v, u] = splitRate(tr.rx + tr.tx);
+    o.push(`<text class="t-faint" x="${core.x}" y="${core.y - 30}" text-anchor="middle">${esc(ov.node.name)}</text>`);
+    o.push(`<text class="orb-num" x="${core.x}" y="${core.y + 12}" text-anchor="middle" data-live-num="1">${esc(v)}</text>`);
+    o.push(`<text class="orb-unit" x="${core.x}" y="${core.y + 34}" text-anchor="middle" direction="ltr">${esc(u)}</text>`);
+    o.push(`<text class="t-faint" x="${core.x}" y="${core.y + 56}" text-anchor="middle">ترافیک لحظه‌ای</text>`);
+    return raw(`<svg class="orbit" direction="ltr" viewBox="0 0 ${W} ${H}" role="img" aria-label="نمای زنده‌ی سرور، دسته‌ها و ${esc(cat)}">${o.join("")}</svg>`);
+  }
+
+  // crown draws a radial waveform around the orb from the recent total-rate
+  // history: each sample is a bar, mirrored so it rings the whole core.
+  function crown(core, now) {
+    const h = S.hist.length ? S.hist : [0];
+    const max = Math.max(1, ...h);
+    const n = 72, bars = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+      const idx = Math.floor((Math.min(i, n - 1 - i) / (n / 2)) * (h.length - 1));
+      const lv = h[Math.max(0, idx)] / max;
+      const r0 = core.r + 10, r1 = r0 + 6 + lv * 30;
+      const x0 = core.x + r0 * Math.cos(a), y0 = core.y + r0 * Math.sin(a);
+      const x1 = core.x + r1 * Math.cos(a), y1 = core.y + r1 * Math.sin(a);
+      bars.push(`<line class="cr" x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" opacity="${(0.25 + 0.6 * lv).toFixed(2)}"/>`);
+    }
+    const rot = (now * 2) % 360;
+    return `<g class="crown" transform="rotate(${rot.toFixed(1)} ${core.x} ${core.y})">${bars.join("")}</g>`;
+  }
+
+  const trim = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s);
+  // Pull the path data out of an icon() SVG so it can be placed in the stage.
+  function iconMarkup(icon) { const m = part(icon(16)).match(/<svg[^>]*>([\s\S]*)<\/svg>/); return raw(m ? m[1] : ""); }
+
+  // Phone layout: the same information as a tap-through list.
+  function orbitList() {
+    const tr = total(), cat = (S.cat === "issues" && !catCount("issues")) ? "tunnels" : S.cat, items = arcItems(cat);
     return html`<div class="panel"><div class="in" style="text-align:center"><div class="faint small">ترافیک لحظه‌ای</div>
         <div style="font-size:42px;font-weight:200;direction:ltr" data-live="total-rate">${fmtRate(tr.rx + tr.tx)}</div></div></div>
-      ${dests.length ? html`<div class="panel"><div class="list">${dests.map((g) => html`<button class="item" style="all:unset;display:block;border-bottom:1px solid var(--line);cursor:pointer" data-act="drawer" data-type="dest" data-key="${g.key}">
-        <div style="display:flex;gap:12px;align-items:center;padding:12px 16px"><i class="dot ${g.tunnels.some((t) => t.up) ? "ok" : g.paired ? "" : "warn"}"></i>
-          <div class="grow"><b>${g.name}</b><div class="faint small"><span class="ltr">${g.ip || ""}</span></div></div>
-          <div class="small muted">${g.tunnels.length} تانل</div></div></button>`)}</div></div>`
-        : html`<div class="empty"><b>هنوز مقصدی ندارید</b><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`}`;
+      <div class="catrow">${CATS.map(([id, label]) => html`<button class="catchip ${id === cat ? "on" : ""}" data-act="cat" data-cat="${id}">${label}<b>${catCount(id)}</b></button>`)}</div>
+      ${items.length ? html`<div class="panel"><div class="list">${items.map((it) => html`<button class="item" style="all:unset;display:block;border-bottom:1px solid var(--line);cursor:pointer" data-act="arc" data-key="${it.key}" data-type="${it.type}">
+        <div style="display:flex;gap:12px;align-items:center;padding:12px 16px"><i class="dot ${it.st}"></i>
+          <div class="grow"><b>${it.name}</b><div class="faint small">${it.sub || ""}</div></div>
+          <div class="small muted ltr">${it.rate.rx + it.rate.tx > 800 ? fmtRate(it.rate.rx + it.rate.tx) : (it.health && it.health.probes >= 3 ? (it.health.passes ? ms(it.health.ping_ms) : "—") : "")}</div></div></button>`)}</div></div>`
+        : html`<div class="empty"><b>خالی</b></div>`}`;
   }
-
   // Sum of every visible tunnel's 5-minute buckets, as bits/s.
   function totalSeries() {
     const out = new Array(288).fill(0);
@@ -455,7 +537,7 @@
       body = html`<header><div><h3>${t.name}</h3><div class="sub">${kindTitle(t)} به ${t.peer || "دستگاه دیگر"} <span class="ltr">${t.far_ip}</span></div></div>
           <button class="btn sm ghost icon" data-act="drawer-close" aria-label="بستن">${I.x(16)}</button></header>
         <div class="body">
-          <div class="row">${stateEl(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : ""}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.managed ? html`<span class="tag warn">از سرور اصلی</span>` : ""}</div>
+          <div class="row">${stateEl(t)}${healthTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : ""}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.managed ? html`<span class="tag warn">از سرور اصلی</span>` : ""}</div>
           <div class="figs">
             <div><div class="k">دانلود</div><div class="v ltr" data-live="rx:${t.name}">${fmtRate(r.rx)}</div></div>
             <div><div class="k">آپلود</div><div class="v ltr" data-live="tx:${t.name}">${fmtRate(r.tx)}</div></div>
@@ -558,7 +640,7 @@
   }
 
   function tunnelDetail(t) {
-    const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto" }));
+    const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { noDF: !!t.settings.no_df, mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto" }));
     const base = (t.stack && t.stack[0]) || { kind: t.kind };
     const crypto = ["wireguard", "obfs"].includes(base.kind);
     const m = S.mtu[t.name];
@@ -615,11 +697,13 @@
         ${kind === "obfs" ? html`<div class="field"><label>Padding (بایت)</label><input class="input ltr" type="number" min="0" max="255" data-bind="${path}.padding" value="${st.padding || ""}" placeholder="0"><span class="help">تا این تعداد بایت تصادفی به هر بسته اضافه می‌شود تا اندازه‌ها چیزی را لو ندهند. هزینه‌اش همین مقدار از MTU است.</span></div>` : ""}
         ${["obfs", "wireguard"].includes(kind) ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="25"><span class="help">نگه‌داشتن مسیر NAT باز؛ ‎-1 یعنی خاموش.</span></div>` : ""}
         ${kind === "wireguard" ? html`<div class="field full"><label>کلید عمومی طرف مقابل</label><input class="input ltr" data-bind="${path}.peer_key" value="${st.peer_key || ""}" placeholder="فقط وقتی آن طرف NeoTunnel ندارد"><span class="help">برای میکروتیک یا هر WireGuard دیگر؛ بین دو سرور NeoTunnel کلیدها خودکار ساخته می‌شوند.</span></div>` : ""}
+        <div class="field"><label>DSCP بسته‌های بیرونی</label><input class="input ltr" type="number" min="0" max="63" data-bind="${path}.dscp" value="${st.dscp || ""}" placeholder="ارث‌بری"><span class="help">کلاس کیفیت سرویس؛ خالی = همان کلاس بسته‌ی داخلی. فقط تانل‌های کرنلی.</span></div>
+        <div class="field full"><label class="switch"><input type="checkbox" data-act="st-check" data-path="${path}.noDF" ${st.noDF ? "checked" : ""}>اجازه‌ی تکه‌تکه شدن بسته‌ها در مسیر</label><span class="help">پیش‌فرض خاموش است (بیت Don't-Fragment روشن): سریع‌تر، ولی به MTU درست نیاز دارد. روشنش کنید اگر مسیر MTU کوچکی دارد و تانل بسته‌های بزرگ را می‌اندازد.</span></div>
       </div>`;
   }
 
   function settingsBody(st) {
-    const out = { encrypt: st.encrypt || "", ttl: +st.ttl || 0, padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), mtu: 0, mtu_probe: false };
+    const out = { encrypt: st.encrypt || "", ttl: +st.ttl || 0, dscp: +st.dscp || 0, no_df: !!st.noDF, padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), mtu: 0, mtu_probe: false };
     if (st.mtuMode === "manual") out.mtu = +st.mtu || 0;
     if (st.mtuMode === "probe") out.mtu_probe = true;
     return out;
@@ -745,7 +829,7 @@
           <div class="bars"><div class="bar" style="width:${((r.down_bps / max) * 100).toFixed(1)}%" title="دانلود ${fmtRate(r.down_bps)}"></div><div class="bar tx" style="width:${((r.up_bps / max) * 100).toFixed(1)}%" title="آپلود ${fmtRate(r.up_bps)}"></div></div>
           <div class="small ltr" style="text-align:end">${fmtRate(r.down_bps)}<br><span class="faint">${fmtRate(r.up_bps)}</span></div></div>`)}</div></div>` : ""}
       ${failed.map((r) => html`<div class="small"><b>${resultTitle(r)}</b> <span class="faint ltr">${r.error}</span></div>`)}
-      <details class="adv"><summary>گزارش کامل ${I.chev(16)}</summary><div class="in"><div class="console" id="console">${(j.log || []).map((l) => html`<div>${l}</div>`)}</div></div></details>
+      <details class="adv" ${S.logOpen || j.status === "running" ? "open" : ""} data-act="log-toggle"><summary>گزارش کامل ${I.chev(16)}</summary><div class="in"><div class="console" id="console">${(j.log || []).map((l) => html`<div>${l}</div>`)}</div></div></details>
     </div></div>`;
   }
 
@@ -770,7 +854,7 @@
     try { S.job = await api("GET", "jobs/" + S.job.id); } catch { /* retry */ }
     const lv = S.job.live || {};
     if (lv.phase && lv.value) { if (S.pv.seq !== lv.seq) S.pv = { seq: lv.seq }; S.pv[lv.phase] = lv.value; }
-    if (S.route === "speed" && !S.modal && !S.edit) draw();
+    if (S.route === "speed" && !S.modal && !S.edit) { draw(); const c = $("#console"); if (c) c.scrollTop = c.scrollHeight; }
     if (S.job.status === "running") setTimeout(pollJob, 500);
     else toast(S.job.status === "done" ? "تست تمام شد" : S.job.error || "تست متوقف شد", S.job.status === "done" ? "ok" : "bad");
   }
@@ -1001,7 +1085,7 @@
       step: 1, dest: ov.peers.length ? "peer" : "new", peer: ov.peers.length ? ov.peers[0].name : "", newName: "", newIP: "", remote: "",
       mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false,
       protect: d.obfs ? "obfs" : d.encrypt ? "ipsec" : "none", encrypt: d.encrypt || "aes-gcm-128",
-      fmode: d.forward_mode || "nat", pver: 2, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
+      fmode: d.forward_mode || "nat", pver: 2, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", dscp: "", noDF: false, padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
     }, preset);
     if (preset.peer) { S.wiz.dest = "peer"; S.wiz.step = preset.mode ? 3 : 2; }
     openModal(wizardView);
@@ -1092,10 +1176,13 @@
       S.speed.only = t.checked ? only.concat(t.value) : only;
     }
     if (t.dataset.act === "def-check") { S.defs[t.dataset.key] = t.checked; S.edit = true; }
+    if (t.dataset.act === "st-check") { setPath(t.dataset.path, t.checked); if (!t.closest(".modal")) S.edit = true; }
   });
   document.addEventListener("toggle", (e) => {
     const d = e.target;
-    if (!(d instanceof HTMLDetailsElement) || d.dataset.act !== "adv-toggle") return;
+    if (!(d instanceof HTMLDetailsElement)) return;
+    if (d.dataset.act === "log-toggle") { S.logOpen = d.open; return; }
+    if (d.dataset.act !== "adv-toggle") return;
     if (d.dataset.name) { if (S.tset[d.dataset.name]) S.tset[d.dataset.name].adv = d.open; } else if (S.wiz) S.wiz.adv = d.open;
   }, true);
 
@@ -1144,6 +1231,16 @@
       S.drawer = el.dataset.type === "dest" ? { type: "dest", key: el.dataset.key } : { type: "tunnel", name: el.dataset.name };
       draw(); const c = $(".drawer .btn"); if (c) c.focus();
       if (el.dataset.type === "tunnel") refreshTraffic().then(() => { if (S.drawer) draw(); });
+    },
+    cat(el) { S.cat = el.dataset.cat; draw(); },
+    // An item on the arc: ports open their forwards page, the rest the drawer.
+    arc(el) {
+      const type = el.dataset.type, key = el.dataset.key;
+      if (type === "port") { location.hash = "#/ports"; return; }
+      S.drawerEnter = !S.drawer;
+      S.drawer = type === "dest" ? { type: "dest", key } : { type: "tunnel", name: key };
+      draw(); const c = $(".drawer .btn"); if (c) c.focus();
+      if (type === "tunnel") refreshTraffic().then(() => { if (S.drawer) draw(); });
     },
     "drawer-close"() { S.drawer = null; draw(); },
     "open-tunnel"(el) { S.drawer = null; S.open = el.dataset.name; location.hash = "#/tunnels"; draw(); },

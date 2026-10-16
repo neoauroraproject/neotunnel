@@ -55,7 +55,13 @@ func (s *Server) Handler() http.Handler {
 	s.init()
 	inner := http.NewServeMux()
 	assets, _ := fs.Sub(static, "static")
-	inner.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assets))))
+	// Revalidate assets so an upgrade's new app.js/app.css are picked up
+	// instead of a stale cached copy.
+	fileServer := http.StripPrefix("/assets/", http.FileServer(http.FS(assets)))
+	inner.Handle("GET /assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		fileServer.ServeHTTP(w, r)
+	}))
 	inner.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := static.ReadFile("static/index.html")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
