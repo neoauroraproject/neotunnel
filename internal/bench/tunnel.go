@@ -41,6 +41,6 @@ func TestTunnel(ctx context.Context, id *identity.Identity, st *config.State, na
 	}
 	r := &Runner{ID: id, State: st, Peer: *p, Opts: o, Progress: progress}
 	var err error
-	res.Latency, res.Up, res.Down, err = r.Measure(ctx, target.Addr())
+	res.Latency, res.Up, res.Down, err = r.MeasureTunnel(ctx, t.Name, target.Addr())
 	return res, err
 }

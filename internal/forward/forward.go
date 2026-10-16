@@ -23,6 +23,8 @@ type Rule struct {
 	To     uint16 // target port; 0 = keep the original port
 	// Transparent forwards keep the client's address (no masquerade).
 	Transparent bool
+	// Key identifies the forward for its traffic counters ("tcp/443").
+	Key string
 }
 
 type Ruleset struct {

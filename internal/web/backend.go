@@ -75,6 +75,11 @@ type NodeInfo struct {
 	MemTotal uint64     `json:"mem_total"`
 	MemUsed  uint64     `json:"mem_used"`
 	BBR      bool       `json:"bbr"`
+	// NIC is the public interface: what the datacenter counts. Rx is the
+	// incoming traffic, usually the billed direction.
+	NIC      string       `json:"nic,omitempty"`
+	NICToday traffic.Pair `json:"nic_today"`
+	NICMonth traffic.Pair `json:"nic_month"`
 }
 
 type MasterInfo struct {
@@ -104,6 +109,8 @@ type TunnelView struct {
 	Managed bool   `json:"managed"` // defined by our master, read-only here
 	Error   string `json:"error,omitempty"`
 
+	// Health is the live ping/loss through the tunnel (nil until probed).
+	Health *HealthView `json:"health,omitempty"`
 	// Stack lists the layers under the tunnel, bottom first (e.g. obfs, sit).
 	Stack    []LayerView     `json:"stack,omitempty"`
 	Settings manage.Settings `json:"settings"`
@@ -112,9 +119,13 @@ type TunnelView struct {
 	Encrypt  string          `json:"encrypt,omitempty"`  // IPsec or the kind's own encryption
 	PathMTU  int             `json:"path_mtu,omitempty"` // measured, when probing
 	WGKey    string          `json:"wg_key,omitempty"`   // our WireGuard public key
+	VNI      uint32          `json:"vni,omitempty"`
 	Total    traffic.Pair    `json:"total"`
 	Today    traffic.Pair    `json:"today"`
 	Month    traffic.Pair    `json:"month"`
+	Tests    traffic.Pair    `json:"tests"`      // speed tests, not in the totals
+	Wire     uint64          `json:"wire_today"` // today's bytes on the network, overhead included
+	Overhead int             `json:"overhead"`   // bytes each packet gains on the wire
 }
 
 // LayerView is one tunnel of a stack.
@@ -172,6 +183,11 @@ type ForwardView struct {
 	Public string `json:"public"` // this node's public address
 	Mode   string `json:"mode"`
 	ProxyV int    `json:"proxy_version,omitempty"`
+	// Traffic of this port, the client's own bytes before the tunnel wraps
+	// them. Rx/Tx are absolute totals; the panel diffs them into a rate.
+	Rx    uint64       `json:"rx"`
+	Tx    uint64       `json:"tx"`
+	Today traffic.Pair `json:"today"`
 }
 
 type PanelInfo struct {
@@ -191,4 +207,13 @@ type Command struct {
 	Label string `json:"label"`
 	Run   string `json:"run"`
 	Where string `json:"where"` // which server to run it on
+}
+
+// HealthView is a tunnel's live ping and loss, from traffic the daemon
+// sends through it (so "passes" means packets really get across).
+type HealthView struct {
+	Ping   float64 `json:"ping_ms"`
+	Loss   float64 `json:"loss"`
+	Passes bool    `json:"passes"`
+	Last   int64   `json:"last"`
 }

@@ -114,6 +114,14 @@ type Tunnel struct {
 	// MTUProbe measures the path MTU to the far end and sizes the tunnel
 	// from it (re-checked periodically) instead of assuming 1500.
 	MTUProbe bool `json:"mtu_probe,omitempty"`
+	// NoDF clears the Don't-Fragment bit on the outer packets, so an
+	// oversized packet is fragmented on the path instead of dropped. Default
+	// (false) sets DF, which is faster but needs a correct MTU.
+	NoDF bool `json:"no_df,omitempty"`
+	// DSCP is the outer packets' DSCP class: 0 inherits from the inner
+	// packet, 1-63 sets a fixed class (e.g. for a provider that prioritizes
+	// one). Only kernel IP tunnels honor it.
+	DSCP uint8 `json:"dscp,omitempty"`
 
 	// Secret seeds every key of the tunnel (IPsec, WireGuard, NeoObfs):
 	// 32 random bytes, base64, shared by both sides.

@@ -8,6 +8,7 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/forward"
 	"neotunnel/internal/obfs"
 	"neotunnel/internal/pmtu"
 	"neotunnel/internal/relay"
@@ -65,16 +66,36 @@ func account(ctx context.Context, store *traffic.Store) {
 		if name, ok := traffic.TakeResetRequest(); ok {
 			store.Reset(name, now)
 		}
+		// Speed tests leave the totals. Their requests are written after the
+		// test, so taking them before this sample means their bytes are in.
+		excludes := traffic.TakeExcludes()
 		if st, err := config.Load(); err == nil {
-			ts, _ := st.Effective()
+			ts, fs := st.Effective()
 			names := make([]string, 0, len(ts))
 			for _, tn := range ts {
 				names = append(names, tn.Name)
 				if ls := engine.State(engine.Ifname(tn.Name)); ls.Exists {
-					store.Sample(tn.Name, ls.RxBytes, ls.TxBytes, now)
+					store.Sample(tn.Name, counters(ls), now)
+				}
+			}
+			if cs := forward.ReadCounters(); cs != nil {
+				for _, f := range fs {
+					n := forward.CounterName(f.Proto, f.Ports)
+					names = append(names, traffic.Port+f.Proto+"/"+f.Ports)
+					u, d := cs[n+"u"], cs[n+"d"]
+					store.Sample(traffic.Port+f.Proto+"/"+f.Ports,
+						traffic.Pair{Rx: d.Bytes, Tx: u.Bytes, RxP: d.Packets, TxP: u.Packets}, now)
 				}
 			}
 			store.Keep(names, now)
+		}
+		if nic := engine.PublicIface(); nic != "" {
+			if ls := engine.State(nic); ls.Exists {
+				store.Sample(traffic.NIC, counters(ls), now)
+			}
+		}
+		for _, e := range excludes {
+			store.Subtract(e.Tunnel, e.Pair, now)
 		}
 		if time.Since(lastSave) >= saveEvery {
 			if err := store.Save(); err != nil {
@@ -129,4 +150,8 @@ func probeMTUs(ctx context.Context, changed func()) {
 		case <-t.C:
 		}
 	}
+}
+
+func counters(ls engine.LinkState) traffic.Pair {
+	return traffic.Pair{Rx: ls.RxBytes, Tx: ls.TxBytes, RxP: ls.RxPkts, TxP: ls.TxPkts}
 }

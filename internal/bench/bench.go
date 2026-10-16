@@ -19,6 +19,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/probe"
+	"neotunnel/internal/traffic"
 )
 
 type Options struct {
@@ -260,7 +261,7 @@ func (r *Runner) Run(ctx context.Context, c Candidate) Result {
 		}
 		target, _ := config.Inner(n, far)
 		var err error
-		if res.Latency, res.Up, res.Down, err = r.Measure(ctx, target.Addr()); err != nil {
+		if res.Latency, res.Up, res.Down, err = r.MeasureTunnel(ctx, t.Name, target.Addr()); err != nil {
 			res.Err = err.Error()
 		}
 		return res
@@ -363,4 +364,25 @@ func Table(rs []Result) string {
 			ms(r.Latency.Avg), ms(r.Latency.Jitter), r.Latency.Loss(), Rate(r.Up), Rate(r.Down))
 	}
 	return b.String()
+}
+
+// MeasureTunnel measures through an existing tunnel and keeps the test's
+// bytes out of the tunnel's traffic totals, here and on the peer (which
+// sees the same bytes the other way round).
+func (r *Runner) MeasureTunnel(ctx context.Context, tunnel string, addr netip.Addr) (probe.LatencyResult, float64, float64, error) {
+	iface := engine.Ifname(tunnel)
+	before := engine.State(iface)
+	lat, up, down, err := r.Measure(ctx, addr)
+	after := engine.State(iface)
+	if before.Exists && after.Exists && after.RxBytes >= before.RxBytes && after.TxBytes >= before.TxBytes {
+		d := traffic.Pair{Rx: after.RxBytes - before.RxBytes, Tx: after.TxBytes - before.TxBytes,
+			RxP: after.RxPkts - before.RxPkts, TxP: after.TxPkts - before.TxPkts}
+		traffic.RequestExclude(tunnel, d)
+		if r.client != nil {
+			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			r.client.ExcludeTraffic(cctx, tunnel, traffic.Pair{Rx: d.Tx, Tx: d.Rx, RxP: d.TxP, TxP: d.RxP})
+			cancel()
+		}
+	}
+	return lat, up, down, err
 }

@@ -19,4 +19,14 @@ type LinkState struct {
 	MTU     int
 	RxBytes uint64
 	TxBytes uint64
+	RxPkts  uint64
+	TxPkts  uint64
+}
+
+// Finding is one thing Doctor noticed: a problem, something it cleaned up, or
+// an OK note.
+type Finding struct {
+	OK      bool // true = healthy, false = a problem or a cleanup
+	Fixed   bool // true = Doctor removed a leftover
+	Message string
 }

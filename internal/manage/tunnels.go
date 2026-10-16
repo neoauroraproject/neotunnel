@@ -61,6 +61,8 @@ type Settings struct {
 	MTU       int    `json:"mtu,omitempty"`       // the user-facing tunnel's MTU
 	MTUProbe  bool   `json:"mtu_probe,omitempty"` // size from the measured path MTU
 	TTL       uint8  `json:"ttl,omitempty"`
+	NoDF      bool   `json:"no_df,omitempty"`     // let the path fragment oversized packets
+	DSCP      uint8  `json:"dscp,omitempty"`      // outer DSCP class, 0 = inherit
 	Encrypt   string `json:"encrypt,omitempty"`   // IPsec cipher on the bottom tunnel
 	Padding   int    `json:"padding,omitempty"`   // NeoObfs
 	Keepalive int    `json:"keepalive,omitempty"` // WireGuard / NeoObfs
@@ -78,6 +80,9 @@ func (s Settings) validate() error {
 	}
 	if s.Padding < 0 || s.Padding > 255 {
 		return fmt.Errorf("padding must be 0-255 bytes")
+	}
+	if s.DSCP > 63 {
+		return fmt.Errorf("DSCP must be 0-63")
 	}
 	if s.Keepalive < -1 || s.Keepalive > 3600 {
 		return fmt.Errorf("keepalive must be -1 (off), 0 (default) or up to 3600 seconds")
@@ -188,6 +193,7 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 		}
 		if i == 0 {
 			t.MTUProbe, t.TTL, t.Keepalive, t.Padding, t.PeerKey = req.MTUProbe, req.TTL, req.Keepalive, req.Padding, req.PeerKey
+			t.NoDF, t.DSCP = req.NoDF, req.DSCP
 			ki, _ := config.LookupKind(k)
 			if !ki.Encrypted {
 				t.Encrypt = req.Encrypt
@@ -278,6 +284,7 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 		}
 		top.MTU = set.MTU
 		b.MTUProbe, b.TTL, b.Encrypt = set.MTUProbe, set.TTL, set.Encrypt
+		b.NoDF, b.DSCP = set.NoDF, set.DSCP
 		b.Keepalive, b.Padding = set.Keepalive, set.Padding
 		if b.Kind == config.KindWireGuard {
 			b.PeerKey = set.PeerKey
@@ -306,7 +313,7 @@ func SettingsOf(st *config.State, name string) (Settings, uint16) {
 		return config.Tunnel{}
 	}
 	top, b := find(name), find(stack[0])
-	return Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, Encrypt: b.Encrypt,
+	return Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, NoDF: b.NoDF, DSCP: b.DSCP, Encrypt: b.Encrypt,
 		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey}, b.Port
 }
 
@@ -350,7 +357,7 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		return config.Tunnel{}, err
 	}
 	t := config.Tunnel{Name: name, Kind: kind, Over: o.Over, MTU: o.MTU, Port: o.Port, VNI: o.VNI,
-		MTUProbe: o.MTUProbe, TTL: o.TTL, Encrypt: o.Encrypt, Padding: o.Padding, Keepalive: o.Keepalive, PeerKey: o.PeerKey}
+		MTUProbe: o.MTUProbe, TTL: o.TTL, NoDF: o.NoDF, DSCP: o.DSCP, Encrypt: o.Encrypt, Padding: o.Padding, Keepalive: o.Keepalive, PeerKey: o.PeerKey}
 	if o.MTU == 0 {
 		t.MTU = o.Settings.MTU
 	}

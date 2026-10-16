@@ -12,9 +12,9 @@ func store() *Store {
 func TestDeltasSurviveRecreation(t *testing.T) {
 	s := store()
 	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
-	s.Sample("t1", 1000, 500, t0) // baseline
-	s.Sample("t1", 3000, 700, t0.Add(10*time.Second))
-	s.Sample("t1", 400, 100, t0.Add(20*time.Second)) // interface re-created
+	s.Sample("t1", Pair{Rx: 1000, Tx: 500}, t0) // baseline
+	s.Sample("t1", Pair{Rx: 3000, Tx: 700}, t0.Add(10*time.Second))
+	s.Sample("t1", Pair{Rx: 400, Tx: 100}, t0.Add(20*time.Second)) // interface re-created
 	sum := s.Summaries(t0.Add(30 * time.Second))["t1"]
 	if sum.Total.Rx != 2400 || sum.Total.Tx != 300 {
 		t.Fatalf("total %+v, want rx 2400 tx 300", sum.Total)
@@ -30,9 +30,9 @@ func TestDeltasSurviveRecreation(t *testing.T) {
 func TestSeriesRollsAndDaysSplit(t *testing.T) {
 	s := store()
 	t0 := time.Date(2026, 10, 16, 23, 50, 0, 0, time.UTC)
-	s.Sample("t", 0, 0, t0)
-	s.Sample("t", 100, 0, t0.Add(time.Minute))
-	s.Sample("t", 300, 0, t0.Add(20*time.Minute)) // next day, 4 buckets later
+	s.Sample("t", Pair{Rx: 0, Tx: 0}, t0)
+	s.Sample("t", Pair{Rx: 100, Tx: 0}, t0.Add(time.Minute))
+	s.Sample("t", Pair{Rx: 300, Tx: 0}, t0.Add(20*time.Minute)) // next day, 4 buckets later
 	sum := s.Summaries(t0.Add(20 * time.Minute))["t"]
 	if sum.Today.Rx != 200 {
 		t.Errorf("today %d, want 200", sum.Today.Rx)
@@ -53,9 +53,9 @@ func TestSeriesRollsAndDaysSplit(t *testing.T) {
 func TestKeepAndReset(t *testing.T) {
 	s := store()
 	now := time.Now()
-	s.Sample("a", 0, 0, now)
-	s.Sample("a", 10, 10, now)
-	s.Sample("b", 0, 0, now)
+	s.Sample("a", Pair{Rx: 0, Tx: 0}, now)
+	s.Sample("a", Pair{Rx: 10, Tx: 10}, now)
+	s.Sample("b", Pair{Rx: 0, Tx: 0}, now)
 	s.Keep([]string{"a"}, now)
 	if _, ok := s.Tunnels["b"]; ok {
 		t.Error("removed tunnel kept")
@@ -64,8 +64,23 @@ func TestKeepAndReset(t *testing.T) {
 	if s.Tunnels["a"].Total.Rx != 0 {
 		t.Error("reset kept totals")
 	}
-	s.Sample("a", 15, 10, now)
+	s.Sample("a", Pair{Rx: 15, Tx: 10}, now)
 	if s.Tunnels["a"].Total.Rx != 5 {
 		t.Errorf("after reset only new traffic counts, got %d", s.Tunnels["a"].Total.Rx)
+	}
+}
+
+func TestSubtractMovesTestTraffic(t *testing.T) {
+	s := store()
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	s.Sample("t", Pair{}, now)
+	s.Sample("t", Pair{Rx: 5000, Tx: 300, RxP: 10, TxP: 4}, now.Add(10*time.Second))
+	s.Subtract("t", Pair{Rx: 4000, Tx: 1000, RxP: 8, TxP: 2}, now.Add(20*time.Second))
+	sum := s.Summaries(now.Add(30 * time.Second))["t"]
+	if sum.Total != (Pair{Rx: 1000, RxP: 2, TxP: 2}) || sum.Today != sum.Total {
+		t.Errorf("after the test: total %+v today %+v", sum.Total, sum.Today)
+	}
+	if sum.Tests.Rx != 4000 || sum.Series[Buckets-1].Rx != 1000 {
+		t.Errorf("tests %+v, last bucket %+v", sum.Tests, sum.Series[Buckets-1])
 	}
 }

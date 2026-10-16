@@ -35,6 +35,8 @@ type LinkSpec struct {
 	FOU    bool           `json:"fou,omitempty"` // Port is a FOU (UDP) encapsulation port
 	TTL    uint8          `json:"ttl"`
 	MTU    int            `json:"mtu"`
+	NoDF   bool           `json:"no_df,omitempty"`
+	DSCP   uint8          `json:"dscp,omitempty"`
 	Addrs  []netip.Prefix `json:"addrs"`
 	Parent string         `json:"parent,omitempty"`
 
@@ -60,14 +62,14 @@ func (l LinkSpec) Hash() string {
 		keys = hex.EncodeToString(d[:6])
 	}
 	b, _ := json.Marshal(struct {
-		K        config.Kind
-		L, R     netip.Addr
-		Key, VNI uint32
-		Port     uint16
-		FOU      bool
-		TTL      uint8
-		Keys     string `json:",omitempty"`
-	}{l.Kind, l.Local, l.Remote, l.Key, l.VNI, l.Port, l.FOU, l.TTL, keys})
+		K         config.Kind
+		L, R      netip.Addr
+		Key, VNI  uint32
+		Port      uint16
+		FOU, NoDF bool
+		TTL, DSCP uint8
+		Keys      string `json:",omitempty"`
+	}{l.Kind, l.Local, l.Remote, l.Key, l.VNI, l.Port, l.FOU, l.NoDF, l.TTL, l.DSCP, keys})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:8])
 }
@@ -206,6 +208,8 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		Local:     local,
 		Remote:    remote,
 		TTL:       t.TTL,
+		NoDF:      t.NoDF,
+		DSCP:      t.DSCP,
 		MTU:       t.MTU,
 		Side:      me,
 		Secret:    t.Secret,
@@ -230,6 +234,13 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		return nil, fmt.Errorf("%s cannot run on a port", t.Kind)
 	}
 	overhead := ki.OverheadFor(under6, t.Port != 0)
+	// Routers like MikroTik send GRE without a key, and Linux only matches
+	// keyless packets to a keyless tunnel: toward a far end that doesn't run
+	// NeoTunnel, GRE goes without one.
+	keyless := ki.IsGRE() && t.Sides[other].Node == ""
+	if keyless {
+		overhead -= 4
+	}
 	if t.Kind == config.KindObfs {
 		overhead += t.Padding
 	}
@@ -255,7 +266,9 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 	}
 	switch t.Kind {
 	case config.KindGRE, config.KindGRETAP, config.KindIP6GRE, config.KindIP6GRETAP, config.KindL2TPv3:
-		s.Key = t.Key
+		if !keyless {
+			s.Key = t.Key
+		}
 	case config.KindVXLAN, config.KindGENEVE:
 		s.VNI, s.Port = t.VNI, t.Port
 		if s.Port == 0 {

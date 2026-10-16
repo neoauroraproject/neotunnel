@@ -45,18 +45,24 @@ func buildLink(s LinkSpec) (netlink.Link, error) {
 	if s.FOU {
 		encap, dport = tunnelEncapFOU, s.Port
 	}
+	// DF on the outer packet by default (fast, needs a correct MTU); clearing
+	// it lets the path fragment an oversized packet instead of dropping it.
+	df := uint8(1)
+	if s.NoDF {
+		df = 0
+	}
 	switch s.Kind {
 	case config.KindSIT:
-		return &netlink.Sittun{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, PMtuDisc: 1, Proto: unix.IPPROTO_IPV6,
+		return &netlink.Sittun{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, Tos: s.DSCP << 2, PMtuDisc: df, Proto: unix.IPPROTO_IPV6,
 			EncapType: encap, EncapDport: dport}, nil
 	case config.KindIPIP:
-		return &netlink.Iptun{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, PMtuDisc: 1,
+		return &netlink.Iptun{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, Tos: s.DSCP << 2, PMtuDisc: df,
 			EncapType: encap, EncapDport: dport}, nil
 	case config.KindGRE, config.KindIP6GRE:
-		return &netlink.Gretun{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, PMtuDisc: 1, IKey: s.Key, OKey: s.Key,
+		return &netlink.Gretun{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, Tos: s.DSCP << 2, PMtuDisc: df, IKey: s.Key, OKey: s.Key,
 			EncapType: encap, EncapDport: dport}, nil
 	case config.KindGRETAP, config.KindIP6GRETAP:
-		return &netlink.Gretap{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, PMtuDisc: 1, IKey: s.Key, OKey: s.Key,
+		return &netlink.Gretap{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, Tos: s.DSCP << 2, PMtuDisc: df, IKey: s.Key, OKey: s.Key,
 			EncapType: encap, EncapDport: dport}, nil
 	case config.KindIPIP6:
 		return &netlink.Ip6tnl{LinkAttrs: attrs, Local: l, Remote: r, Ttl: s.TTL, Proto: unix.IPPROTO_IPIP, Flags: ip6tnlIgnEncapLimit}, nil

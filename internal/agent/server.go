@@ -21,6 +21,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/probe"
+	"neotunnel/internal/traffic"
 	"neotunnel/internal/version"
 )
 
@@ -45,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/bench/up", s.fromMaster(s.benchUp))
 	mux.HandleFunc("POST /v1/bench/down", s.fromMaster(s.benchDown))
 	mux.HandleFunc("POST /v1/upgrade", s.fromMaster(s.upgrade))
+	mux.HandleFunc("POST /v1/traffic/exclude", s.fromMaster(s.excludeTraffic))
 	return mux
 }
 
@@ -327,4 +329,17 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(0) // systemd (Restart=always) starts the new binary
 	}()
+}
+
+func (s *Server) excludeTraffic(w http.ResponseWriter, r *http.Request) {
+	var req ExcludeRequest
+	if err := readJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := traffic.RequestExclude(req.Tunnel, req.Bytes); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

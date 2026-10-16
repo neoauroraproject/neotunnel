@@ -17,6 +17,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/firewall"
 	"neotunnel/internal/fleet"
+	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/manage"
 	"neotunnel/internal/pmtu"
@@ -33,6 +34,8 @@ type Live struct {
 	Problems func() []string
 	// Traffic is the daemon's traffic accounting (nil: totals unavailable).
 	Store *traffic.Store
+	// Health is the daemon's per-tunnel ping/loss tracker.
+	Health *health.Tracker
 	// Reconcile asks the daemon to apply the state now.
 	Reconcile func()
 }
@@ -71,15 +74,22 @@ func (l *Live) Overview() (Overview, error) {
 	var sums map[string]traffic.Summary
 	if l.Store != nil {
 		sums = l.Store.Summaries(time.Now())
+		if s, ok := sums[traffic.NIC]; ok {
+			ov.Node.NIC, ov.Node.NICToday, ov.Node.NICMonth = engine.PublicIface(), s.Today, s.Month
+		}
 	}
-	ov.Tunnels = tunnelViews(st, sums)
+	var hs map[string]health.State
+	if l.Health != nil {
+		hs = l.Health.Snapshot()
+	}
+	ov.Tunnels = tunnelViews(st, sums, hs)
 	ov.Peers = peerViews(st)
-	ov.Forwards = forwardViews(st)
+	ov.Forwards = forwardViews(st, sums)
 	ov.Commands = commands(st)
 	return ov, nil
 }
 
-func tunnelViews(st *config.State, sums map[string]traffic.Summary) []TunnelView {
+func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[string]health.State) []TunnelView {
 	ts, _ := st.Effective()
 	_, renderErrs := engine.Render(st, engine.RouteSource)
 	carriers := map[string]bool{}
@@ -135,6 +145,9 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary) []TunnelView
 		if t.Kind == config.KindWireGuard {
 			v.WGKey, _ = engine.WireGuardPublicKey(t, me)
 		}
+		if t.Kind == config.KindVXLAN || t.Kind == config.KindGENEVE {
+			v.VNI = t.VNI
+		}
 		if _, local := st.Tunnel(t.Name); !local {
 			v.Managed = true
 			if st.Managed != nil {
@@ -153,8 +166,15 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary) []TunnelView
 		}
 		ls := engine.State(engine.Ifname(t.Name))
 		v.Up, v.MTU, v.Rx, v.Tx = ls.Up, ls.MTU, ls.RxBytes, ls.TxBytes
+		if h, ok := hs[t.Name]; ok && h.Probes > 0 {
+			v.Health = &HealthView{Ping: h.AvgMs, Loss: h.Loss, Passes: h.Passes, Last: h.Last}
+		}
 		if s, ok := sums[t.Name]; ok {
-			v.Total, v.Today, v.Month = s.Total, s.Today, s.Month
+			v.Total, v.Today, v.Month, v.Tests = s.Total, s.Today, s.Month, s.Tests
+		}
+		if under, err := netip.ParseAddr(v.FarIP); err == nil {
+			v.Overhead = stackOverhead(ts, stack, under.Is6(), true)
+			v.Wire = wire(v.Today, v.Overhead)
 		}
 		for _, e := range renderErrs {
 			if containsTunnel(e.Error(), t.Name) {
@@ -200,7 +220,7 @@ func peerViews(st *config.State) []PeerView {
 	return out
 }
 
-func forwardViews(st *config.State) []ForwardView {
+func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardView {
 	ts, fs := st.Effective()
 	out := []ForwardView{}
 	for _, f := range fs {
@@ -208,6 +228,9 @@ func forwardViews(st *config.State) []ForwardView {
 			Mode: f.ModeOf(), ProxyV: f.ProxyVersion}
 		if v.Mode == config.ForwardProxy && v.ProxyV == 0 {
 			v.ProxyV = 2
+		}
+		if s, ok := sums[traffic.Port+f.Proto+"/"+f.Ports]; ok {
+			v.Rx, v.Tx, v.Today = s.Total.Rx, s.Total.Tx, s.Today
 		}
 		if t, ok := tunnelByName(ts, f.Tunnel); ok {
 			me := 0
@@ -475,21 +498,8 @@ func MeasureMTU(ctx context.Context, st *config.State, name string, changed func
 	if pmtu.Save(remote, m) && bottom.MTUProbe && changed != nil {
 		changed()
 	}
-	rep := MTUReport{Remote: remote.String(), PathMTU: m, Current: engine.State(engine.Ifname(name)).MTU, Probing: bottom.MTUProbe}
-	for _, n := range stack {
-		t, _ := tunnelByName(ts, n)
-		ki, err := config.LookupKind(t.Kind)
-		if err != nil {
-			continue
-		}
-		rep.Overhead += ki.OverheadFor(remote.Is6() && t.Over == "", t.Port != 0 && t.Over == "")
-		if t.Kind == config.KindObfs {
-			rep.Overhead += t.Padding
-		}
-		if t.Encrypt != "" {
-			rep.Overhead += config.ESPOverhead
-		}
-	}
+	rep := MTUReport{Remote: remote.String(), PathMTU: m, Current: engine.State(engine.Ifname(name)).MTU, Probing: bottom.MTUProbe,
+		Overhead: stackOverhead(ts, stack, remote.Is6(), false)}
 	rep.Best = m - rep.Overhead
 	return rep, nil
 }
@@ -543,4 +553,36 @@ func (l *Live) Backup() ([]byte, error) {
 		return nil, err
 	}
 	return json.MarshalIndent(st, "", "  ")
+}
+
+// stackOverhead is what every layer of a stack (bottom first) adds to a
+// packet. Worst case for MTU sizing; with average padding for traffic
+// estimates.
+func stackOverhead(ts []config.Tunnel, stack []string, under6, avgPad bool) int {
+	o := 0
+	for _, n := range stack {
+		t, _ := tunnelByName(ts, n)
+		ki, err := config.LookupKind(t.Kind)
+		if err != nil {
+			continue
+		}
+		o += ki.OverheadFor(under6 && t.Over == "", t.Port != 0 && t.Over == "")
+		if t.Kind == config.KindObfs {
+			if avgPad {
+				o += t.Padding / 2
+			} else {
+				o += t.Padding
+			}
+		}
+		if t.Encrypt != "" {
+			o += config.ESPOverhead
+		}
+	}
+	return o
+}
+
+// wire estimates the bytes a tunnel's traffic takes on the network,
+// encapsulation included: payload plus the per-packet overhead.
+func wire(p traffic.Pair, overhead int) uint64 {
+	return p.Rx + p.Tx + (p.RxP+p.TxP)*uint64(overhead)
 }

@@ -2,6 +2,7 @@ package forward
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -72,7 +73,7 @@ func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []erro
 			continue
 		}
 		rs.Rules = append(rs.Rules, Rule{Iface: iface, Proto: ps, Ports: ports, Target: target.Addr(), To: f.To,
-			Transparent: f.ModeOf() == config.ForwardTransparent})
+			Transparent: f.ModeOf() == config.ForwardTransparent, Key: f.Proto + "/" + f.Ports})
 	}
 	for _, name := range st.ReturnPaths() {
 		if iface, up := ifByTunnel[name]; up {
@@ -186,6 +187,28 @@ func Script(rs Ruleset) string {
 	b.WriteString("    oifname \"nt-*\" tcp flags & (syn|rst) == syn tcp option maxseg size set rt mtu\n")
 	b.WriteString("    iifname \"nt-*\" tcp flags & (syn|rst) == syn tcp option maxseg size set rt mtu\n")
 	b.WriteString("  }\n")
+	// Per-forward byte counters, in the client's own bytes (before the
+	// tunnel wraps them): upload is counted on the way in, download on the
+	// way out, each by the forward's public port. The daemon reads these.
+	if names := counterNames(rs.Rules); len(names) > 0 {
+		for _, n := range names {
+			fmt.Fprintf(&b, "  counter %s { }\n  counter %s { }\n", n+"u", n+"d")
+		}
+		b.WriteString("  chain account_in {\n    type filter hook prerouting priority -150; policy accept;\n")
+		for _, r := range rs.Rules {
+			for _, p := range r.Proto {
+				fmt.Fprintf(&b, "    iifname != \"nt-*\" %s dport { %s } counter name %su\n", p, r.Ports, counterName(r.Key))
+			}
+		}
+		b.WriteString("  }\n")
+		b.WriteString("  chain account_out {\n    type filter hook postrouting priority 110; policy accept;\n")
+		for _, r := range rs.Rules {
+			for _, p := range r.Proto {
+				fmt.Fprintf(&b, "    oifname != \"nt-*\" %s sport { %s } counter name %sd\n", p, r.Ports, counterName(r.Key))
+			}
+		}
+		b.WriteString("  }\n")
+	}
 	if len(rs.Returns) > 0 {
 		// Return paths: connections that arrive through the tunnel from
 		// clients elsewhere are marked, and so is every packet of them (TCP
@@ -231,3 +254,29 @@ func ProtectScript(ps []Protect) string {
 	b.WriteString("  }\n}\n")
 	return b.String()
 }
+
+// counterName is the nftables named-counter prefix for a forward key; "u"
+// and "d" are appended for the upload and download directions.
+func counterName(key string) string {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return fmt.Sprintf("nt%08x", h.Sum32())
+}
+
+// counterNames returns the unique counter prefixes of a ruleset, in order.
+func counterNames(rules []Rule) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range rules {
+		if r.Key == "" || seen[r.Key] {
+			continue
+		}
+		seen[r.Key] = true
+		out = append(out, counterName(r.Key))
+	}
+	return out
+}
+
+// CounterName exposes the counter prefix so the daemon can read a forward's
+// bytes: CounterName(proto, ports)+"u" and +"d".
+func CounterName(proto, ports string) string { return counterName(proto + "/" + ports) }

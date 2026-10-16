@@ -16,6 +16,7 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/identity"
+	"neotunnel/internal/traffic"
 	"neotunnel/internal/version"
 )
 
@@ -136,4 +137,10 @@ func Register(ctx context.Context, id *identity.Identity, m *config.Managed) err
 		Token: m.EnrollToken, Name: m.Self, Version: version.Version, Arch: version.Arch(),
 		AgentPort: DefaultPort, Revision: m.Revision,
 	}, nil, nil)
+}
+
+// ExcludeTraffic tells the peer to keep a speed test out of a tunnel's
+// totals. Peers older than this call answer 404, which is fine to ignore.
+func (c *Client) ExcludeTraffic(ctx context.Context, tunnel string, d traffic.Pair) error {
+	return c.do(ctx, "POST", "/v1/traffic/exclude", ExcludeRequest{Tunnel: tunnel, Bytes: d}, nil, nil)
 }

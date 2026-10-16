@@ -202,3 +202,22 @@ func TestL2TPv3Ports(t *testing.T) {
 		t.Errorf("l2tpv3/udp outer %d/%d", p, port)
 	}
 }
+
+func TestGREToRouterIsKeyless(t *testing.T) {
+	st := &config.State{Self: "a"}
+	tn := config.Tunnel{Name: "mk", Kind: config.KindGRE, Sides: [2]config.Side{{Node: "a"}, {Endpoint: "203.0.113.99"}}}
+	st.Allocate(&tn)
+	st.Tunnels = []config.Tunnel{tn}
+	specs, errs := Render(st, fixedSource("198.51.100.1"))
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if specs[0].Key != 0 || specs[0].MTU != 1476 {
+		t.Errorf("GRE to a router must be keyless with MTU 1476: %+v", specs[0])
+	}
+	managed := peerTunnel(config.KindGRE, nil)
+	ms, _ := Render(managed, fixedSource("198.51.100.1"))
+	if ms[0].Key == 0 || ms[0].MTU != 1472 {
+		t.Errorf("GRE between NeoTunnel servers keeps its key: %+v", ms[0])
+	}
+}

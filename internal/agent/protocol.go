@@ -5,6 +5,7 @@ package agent
 import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/traffic"
 )
 
 const DefaultPort = 7710
@@ -66,4 +67,11 @@ type BenchUpResponse struct {
 
 type BenchDownRequest struct {
 	Names []string `json:"names"`
+}
+
+// ExcludeRequest moves a speed test's bytes out of a tunnel's traffic
+// totals on the peer.
+type ExcludeRequest struct {
+	Tunnel string       `json:"tunnel"`
+	Bytes  traffic.Pair `json:"bytes"`
 }
