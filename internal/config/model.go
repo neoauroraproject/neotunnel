@@ -25,8 +25,26 @@ type State struct {
 	Forwards []Forward `json:"forwards,omitempty"`
 	Peers    []Peer    `json:"peers,omitempty"`
 
-	Managed *Managed `json:"managed,omitempty"`
-	Panel   *Panel   `json:"panel,omitempty"`
+	Managed  *Managed  `json:"managed,omitempty"`
+	Panel    *Panel    `json:"panel,omitempty"`
+	Defaults *Defaults `json:"defaults,omitempty"`
+}
+
+// Defaults pre-fill the advanced options of new tunnels and forwards.
+type Defaults struct {
+	Encrypt     string `json:"encrypt,omitempty"`      // IPsec cipher for new tunnels to NeoTunnel servers
+	MTUProbe    bool   `json:"mtu_probe,omitempty"`    // measure the path MTU of new tunnels
+	Obfs        bool   `json:"obfs,omitempty"`         // run new tunnels over a NeoObfs layer
+	Padding     int    `json:"padding,omitempty"`      // NeoObfs random padding
+	ForwardMode string `json:"forward_mode,omitempty"` // nat, transparent, proxy
+}
+
+// D returns the defaults, never nil.
+func (s *State) D() Defaults {
+	if s.Defaults == nil {
+		return Defaults{}
+	}
+	return *s.Defaults
 }
 
 // Panel is the web panel's configuration (nil = panel disabled).
@@ -93,6 +111,24 @@ type Tunnel struct {
 	Port uint16 `json:"port,omitempty"`
 	MTU  int    `json:"mtu,omitempty"` // 0 = automatic
 	TTL  uint8  `json:"ttl,omitempty"` // 0 = 255
+	// MTUProbe measures the path MTU to the far end and sizes the tunnel
+	// from it (re-checked periodically) instead of assuming 1500.
+	MTUProbe bool `json:"mtu_probe,omitempty"`
+
+	// Secret seeds every key of the tunnel (IPsec, WireGuard, NeoObfs):
+	// 32 random bytes, base64, shared by both sides.
+	Secret string `json:"secret,omitempty"`
+	// Encrypt protects the tunnel's outer packets with kernel IPsec (ESP in
+	// transport mode, like MikroTik's ipsec-secret); see Ciphers.
+	Encrypt string `json:"encrypt,omitempty"`
+	// Padding adds up to this many random bytes to NeoObfs packets so their
+	// sizes don't reveal the traffic inside.
+	Padding int `json:"padding,omitempty"`
+	// Keepalive in seconds for WireGuard and NeoObfs (0 = 25, -1 = off).
+	Keepalive int `json:"keepalive,omitempty"`
+	// PeerKey is a WireGuard far end's public key when it doesn't run
+	// NeoTunnel (e.g. a MikroTik); managed ends derive keys from Secret.
+	PeerKey string `json:"peer_key,omitempty"`
 
 	// Mode labels the user-facing tunnel of a stack (e.g. "6to4").
 	Mode string `json:"mode,omitempty"`
@@ -124,6 +160,48 @@ type Forward struct {
 	Proto  string `json:"proto"`        // tcp, udp, both
 	Ports  string `json:"ports"`        // "443,8080-8090"
 	To     uint16 `json:"to,omitempty"` // target port on the far end; 0 = same port
+	// Mode decides what the far end sees as the client's address:
+	//   nat (default)  this node's tunnel address (kernel DNAT + masquerade)
+	//   transparent    the real client IP (kernel; the far end routes replies
+	//                  back through the tunnel, so it must run NeoTunnel)
+	//   proxy          a PROXY protocol header carrying the client's address,
+	//                  sent by a relay in the daemon (nginx, HAProxy, Xray...)
+	Mode string `json:"mode,omitempty"`
+	// ProxyVersion is the PROXY protocol version: 2 (default, TCP and UDP)
+	// or 1 (text, TCP only).
+	ProxyVersion int `json:"proxy_version,omitempty"`
+}
+
+// Forward modes.
+const (
+	ForwardNAT         = "nat"
+	ForwardTransparent = "transparent"
+	ForwardProxy       = "proxy"
+)
+
+// ModeOf returns the forward's mode with the default filled in.
+func (f Forward) ModeOf() string {
+	if f.Mode == "" {
+		return ForwardNAT
+	}
+	return f.Mode
+}
+
+// ValidForwardMode checks a mode and PROXY protocol version for proto.
+func ValidForwardMode(mode string, version int, proto string) error {
+	switch mode {
+	case "", ForwardNAT, ForwardTransparent:
+	case ForwardProxy:
+		if version != 0 && version != 1 && version != 2 {
+			return fmt.Errorf("PROXY protocol version must be 1 or 2")
+		}
+		if version == 1 && proto != "tcp" {
+			return fmt.Errorf("PROXY protocol v1 only works with TCP; use v2 for UDP")
+		}
+	default:
+		return fmt.Errorf("bad forward mode %q (nat, transparent, proxy)", mode)
+	}
+	return nil
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,9}$`)
@@ -163,9 +241,15 @@ func (s *State) ForPeer(peer string) ([]Tunnel, []Forward) {
 			ts = append(ts, t)
 		}
 	}
+	touches := map[string]bool{}
+	for _, t := range ts {
+		touches[t.Name] = true
+	}
 	var fs []Forward
 	for _, f := range s.Forwards {
-		if f.Node == peer {
+		// The far end of a transparent forward must know about it to route
+		// replies back through the tunnel.
+		if f.Node == peer || (f.ModeOf() == ForwardTransparent && touches[f.Tunnel]) {
 			fs = append(fs, f)
 		}
 	}
@@ -211,6 +295,30 @@ func (s *State) Effective() (ts []Tunnel, fs []Forward) {
 		}
 	}
 	return ts, fs
+}
+
+// ReturnPaths lists this node's tunnels that carry transparent forwards from
+// the other side: replies to those clients must go back through the tunnel.
+func (s *State) ReturnPaths() []string {
+	fs := append([]Forward(nil), s.Forwards...)
+	if s.Managed != nil {
+		fs = append(fs, s.Managed.Forwards...)
+	}
+	ts, _ := s.Effective()
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range fs {
+		if f.ModeOf() != ForwardTransparent || s.IsSelf(f.Node) || seen[f.Tunnel] {
+			continue
+		}
+		for _, t := range ts {
+			if t.Name == f.Tunnel {
+				seen[f.Tunnel] = true
+				out = append(out, f.Tunnel)
+			}
+		}
+	}
+	return out
 }
 
 // IsSelf reports whether a node name in a definition refers to this node,

@@ -1,6 +1,7 @@
 "use strict";
 // NeoTunnel panel. No framework: views are template strings with escaping,
-// events are delegated through data-act / data-bind attributes.
+// events are delegated through data-act / data-bind attributes. While a form
+// is being edited, the 3-second refresh only patches [data-live] values.
 (() => {
   // ---------- templating ----------
   const RAW = Symbol("raw");
@@ -9,50 +10,53 @@
   const part = (v) => (v == null || v === false ? "" : Array.isArray(v) ? v.map(part).join("") : v[RAW] ? v.s : esc(v));
   const html = (strs, ...vals) => raw(strs.reduce((out, s, i) => out + s + (i < vals.length ? part(vals[i]) : ""), ""));
   const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  const reduceMotion = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // ---------- icons (stroke, 24px grid) ----------
-  const svg = (d, size = 18) => raw(`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`);
+  const svg = (d, size = 18) => raw(`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`);
   const I = {
-    home: (s) => svg('<rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/>', s),
+    home: (s) => svg('<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8" stroke-dasharray="2 3"/><path d="M4 12H2M22 12h-2"/>', s),
     tunnel: (s) => svg('<circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12c2-4 7-4 9 0"/><path d="M7.5 12c2 4 7 4 9 0"/>', s),
     server: (s) => svg('<rect x="3.5" y="4" width="17" height="6.5" rx="2"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="2"/><path d="M7 7.25h.01M7 16.75h.01M11 7.25h6M11 16.75h6"/>', s),
     ports: (s) => svg('<path d="M4 7h11"/><path d="m12 4 3 3-3 3"/><path d="M20 17H9"/><path d="m12 14-3 3 3 3"/>', s),
     gauge: (s) => svg('<path d="M4.5 17a8.5 8.5 0 1 1 15 0"/><path d="m12 13 4-5"/><circle cx="12" cy="13" r="1.4"/>', s),
     term: (s) => svg('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9 3 3-3 3M12.5 15H17"/>', s),
-    gear: (s) => svg('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>', s),
+    gear: (s) => svg('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>', s),
     plus: (s) => svg('<path d="M12 5v14M5 12h14"/>', s),
     trash: (s) => svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>', s),
     copy: (s) => svg('<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>', s),
     play: (s) => svg('<path d="M7 5v14l11-7z"/>', s),
     sync: (s) => svg('<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/>', s),
-    up: (s) => svg('<path d="M12 19V5M6 11l6-6 6 6"/>', s),
-    down: (s) => svg('<path d="M12 5v14M6 13l6 6 6-6"/>', s),
     moon: (s) => svg('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>', s),
     sun: (s) => svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>', s),
     out: (s) => svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M9 8l-4 4 4 4M5 12h11"/>', s),
     check: (s) => svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>', s),
     x: (s) => svg('<path d="M6 6l12 12M18 6 6 18"/>', s),
-    key: (s) => svg('<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3M14.5 8.5l2 2"/>', s),
-    cpu: (s) => svg('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>', s),
-    bolt: (s) => svg('<path d="M13 3 5 14h6l-1 7 8-11h-6z"/>', s),
-    globe: (s) => svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>', s),
     alert: (s) => svg('<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/>', s),
+    lock: (s) => svg('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', s),
+    mask: (s) => svg('<path d="M3 8c3-2 15-2 18 0-1 7-4 10-9 10S4 15 3 8z"/><path d="M8 11h2M14 11h2"/>', s),
+    chev: (s) => svg('<path d="m6 9 6 6 6-6"/>', s),
+    ruler: (s) => svg('<path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/>', s),
     upgrade: (s) => svg('<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>', s),
+    download: (s) => svg('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>', s),
+    globe: (s) => svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>', s),
   };
 
   // ---------- formatting ----------
   const fmtRate = (bps) => {
     if (!bps || bps < 1) return "0 bps";
-    const u = [["Gbps", 1e9], ["Mbps", 1e6], ["Kbps", 1e3]];
-    for (const [n, d] of u) if (bps >= d) return `${(bps / d).toFixed(bps / d >= 100 ? 0 : 1)} ${n}`;
+    for (const [n, d] of [["Gbps", 1e9], ["Mbps", 1e6], ["Kbps", 1e3]]) if (bps >= d) return `${(bps / d).toFixed(bps / d >= 100 ? 0 : 1)} ${n}`;
     return `${Math.round(bps)} bps`;
   };
+  const splitRate = (bps) => { const [v, u] = fmtRate(bps).split(" "); return [v, u]; };
   const fmtBytes = (n) => {
     if (!n) return "0 B";
     const u = ["B", "KB", "MB", "GB", "TB", "PB"];
     const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
-    return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`;
+    return `${(n / 1024 ** i).toFixed(i ? (n / 1024 ** i >= 100 ? 0 : 1) : 0)} ${u[i]}`;
   };
+  const splitBytes = (n) => fmtBytes(n).split(" ");
   const fmtUptime = (s) => {
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
     if (d) return `${d} روز و ${h} ساعت`;
@@ -67,32 +71,48 @@
     if (s < 86400) return `${Math.floor(s / 3600)} ساعت پیش`;
     return `${Math.floor(s / 86400)} روز پیش`;
   };
-  const ms = (v) => (v || v === 0 ? `${v.toFixed(v < 10 ? 2 : 1)} ms` : "-");
+  const ms = (v) => (v || v === 0 ? `${v.toFixed(v < 10 ? 1 : 0)} ms` : "-");
+  const greeting = () => {
+    const h = new Date().getHours();
+    return h < 5 ? "شب بخیر" : h < 12 ? "صبح بخیر" : h < 16 ? "ظهر بخیر" : h < 20 ? "عصر بخیر" : "شب بخیر";
+  };
 
-  const MODE_INFO = {
-    "6to4": ["SIT با IPv6 خصوصی و IPIP6 برای IPv4. سبک، سریع، بدون نرم‌افزار اضافه.", true],
-    "6to4-gre": ["مثل 6to4، با لایه‌ی GRE6 که هم IPv4 و هم IPv6 را می‌برد.", false],
-    ipip: ["ساده‌ترین و کم‌سربارترین تانل IPv4.", false],
-    gre: ["GRE استاندارد؛ سازگار با میکروتیک و بیشتر روترها.", false],
-    sit: ["فقط IPv6 روی IPv4.", false],
-    gretap: ["لایه ۲ (Ethernet) روی GRE؛ مشابه EoIP میکروتیک.", false],
-    vxlan: ["لایه ۲ روی UDP؛ مناسب شبکه‌های مجازی.", false],
-    geneve: ["لایه ۲ روی UDP، نسل جدیدتر VXLAN.", false],
+  // ---------- protocols: what each tunnel kind is good for ----------
+  const PROTO = {
+    "6to4": { t: "6to4", d: "دو لایه‌ی سبک در کرنل: SIT یک شبکه‌ی IPv6 خصوصی بین دو سرور می‌سازد و IPIP6 ترافیک IPv4 را روی آن می‌برد. بهترین ترکیب سرعت و پایداری در بیشتر مسیرها.", layer: 3, carry: "IPv4", over: 60, crypt: "ندارد (IPsec اختیاری)", mt: "بله، 6to4 + IPIPv6", best: "پیشنهاد پیش‌فرض ایران ⇄ خارج", rec: true },
+    "6to4-gre": { t: "6to4 + GRE6", d: "مثل 6to4، ولی لایه‌ی دوم GRE روی IPv6 است و هم IPv4 و هم IPv6 را می‌برد.", layer: 3, carry: "IPv4 و IPv6", over: 68, crypt: "ندارد (IPsec اختیاری)", mt: "بله، 6to4 + GREv6", best: "وقتی IPv6 هم باید از تانل رد شود" },
+    ipip: { t: "IPIP", d: "ساده‌ترین تانل IPv4: فقط یک هدر ۲۰ بایتی. کمترین سربار و پردازش.", layer: 3, carry: "IPv4", over: 20, crypt: "ندارد (IPsec اختیاری)", mt: "بله، IPIP", best: "بیشترین سرعت روی مسیر تمیز" },
+    gre: { t: "GRE", d: "تانل استاندارد GRE با کلید؛ با میکروتیک و بیشتر روترها سازگار است و هر دو نسخه‌ی IP را می‌برد.", layer: 3, carry: "IPv4 و IPv6", over: 28, crypt: "ندارد (IPsec اختیاری)", mt: "بله، GRE", best: "اتصال به روتر یا میکروتیک" },
+    sit: { t: "SIT", d: "فقط IPv6 روی IPv4. پایه‌ی 6to4؛ تنها وقتی مفید است که فقط IPv6 لازم باشد.", layer: 3, carry: "IPv6", over: 20, crypt: "ندارد (IPsec اختیاری)", mt: "بله، 6to4", best: "شبکه‌ی IPv6 بین دو سرور" },
+    wireguard: { t: "WireGuard", d: "تانل رمزنگاری‌شده در خود کرنل (ChaCha20-Poly1305). کلیدها از رمز مشترک تانل ساخته می‌شوند؛ پشت NAT هم کار می‌کند.", layer: 3, carry: "IPv4 و IPv6", over: 60, crypt: "دارد، در کرنل", mt: "بله، RouterOS 7", best: "رمزنگاری سریع، اتصال به میکروتیک", udp: true },
+    obfs: { t: "NeoObfs", d: "لایه‌ی رمزنگاری و مبهم‌سازی NeoTunnel: هر بسته داخل UDP با XChaCha20-Poly1305 رمز می‌شود و هیچ بایت ثابتی ندارد، پس شبیه نویز تصادفی است. اندازه‌ی بسته‌ها هم با padding تغییر می‌کند.", layer: 3, carry: "IPv4 و IPv6", over: 82, crypt: "دارد، XChaCha20", mt: "خیر؛ دو طرف NeoTunnel", best: "مسیرهایی که پروتکل‌ها را شناسایی و فیلتر می‌کنند", udp: true },
+    gretap: { t: "GRETAP", d: "لایه ۲ (Ethernet) روی GRE؛ دو سر مثل یک سوییچ مشترک رفتار می‌کنند.", layer: 2, carry: "Ethernet", over: 42, crypt: "ندارد (IPsec اختیاری)", mt: "شبیه EoIP، ولی با آن سازگار نیست", best: "بریج کردن دو شبکه" },
+    vxlan: { t: "VXLAN", d: "لایه ۲ روی UDP؛ استاندارد شبکه‌های مجازی دیتاسنتر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "بله، RouterOS 7", best: "لایه ۲ روی مسیری که فقط UDP رد می‌شود", udp: true },
+    geneve: { t: "GENEVE", d: "نسل جدیدتر VXLAN با هدر انعطاف‌پذیر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "خیر", best: "لایه ۲ بین سرورهای لینوکسی", udp: true },
+    l2tpv3: { t: "L2TPv3", d: "شبه‌سیم Ethernet استاندارد با شناسه‌های ایستا، روی IP (پروتکل 115) یا روی UDP اگر پورت بدهید.", layer: 2, carry: "Ethernet", over: 38, crypt: "ندارد (IPsec اختیاری)", mt: "روترهایی که L2TPv3 ایستا دارند", best: "لایه ۲ سازگار با تجهیزات شبکه" },
+  };
+  const MODES_FWD = {
+    nat: ["NAT", "سرویس مقصد آدرس داخلی تانل را می‌بیند. ساده و سازگار با همه‌چیز."],
+    transparent: ["IP واقعی کاربر", "سرویس مقصد IP واقعی کاربر را می‌بیند، برای TCP و UDP و بدون هیچ تنظیمی در برنامه. پاسخ‌ها خودکار از همان تانل برمی‌گردند؛ سرور مقصد باید NeoTunnel داشته باشد."],
+    proxy: ["PROXY protocol", "یک رله‌ی سبک، هدر PROXY (نسخه‌ی ۱ یا ۲) با IP و پورت کاربر را اول اتصال می‌فرستد. سرویس مقصد (nginx، HAProxy، Xray) باید proxy_protocol را بپذیرد. UDP فقط با نسخه‌ی ۲."],
   };
   const BENCH = [
-    ["direct", "مسیر مستقیم (بدون تانل)"], ["6to4", "6to4"], ["6to4-udp", "6to4 روی UDP"], ["6to4-gre", "6to4 + GRE6"],
+    ["direct", "مسیر مستقیم"], ["6to4", "6to4"], ["6to4-udp", "6to4 روی UDP"], ["6to4-gre", "6to4 + GRE6"],
     ["ipip", "IPIP"], ["gre", "GRE"], ["gretap", "GRETAP"], ["vxlan", "VXLAN"], ["geneve", "GENEVE"],
   ];
+  const kindTitle = (t) => { const p = PROTO[t.mode] || PROTO[t.kind]; return p ? p.t : (t.mode || t.kind).toUpperCase(); };
+  const cipherTitle = (c) => ({ "aes-gcm-128": "AES-128-GCM", "aes-gcm-256": "AES-256-GCM", "chacha20-poly1305": "ChaCha20", wireguard: "WireGuard", "xchacha20-poly1305": "XChaCha20" }[c] || c);
 
   // ---------- state ----------
-  const store = (k, v) => { try { v === undefined ? null : localStorage.setItem(k, v); return localStorage.getItem(k); } catch { return null; } };
+  const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(k, v); return localStorage.getItem(k); } catch { return null; } };
   const S = {
-    authed: true, ov: null, prev: null, rates: {}, live: true,
-    route: (location.hash.slice(2) || "dashboard"),
+    authed: true, ov: null, rates: {}, live: true, traffic: {}, system: null,
+    route: location.hash.slice(2) || "dashboard",
     theme: store("nt-theme") || "dark",
-    modal: null, wiz: null, form: {},
-    jobs: [], job: null, speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) },
-    settingsDrawn: false,
+    modal: null, wiz: null, form: {}, drawer: null,
+    open: null, tset: {}, edit: false, fwdEdit: {},
+    sec: store("nt-settings") || "node", defs: null,
+    jobs: [], job: null, pv: {}, speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
   };
   document.documentElement.dataset.theme = S.theme;
 
@@ -113,9 +133,10 @@
   function toast(msg, kind = "ok") {
     const el = document.createElement("div");
     el.className = `toast ${kind}`;
+    el.setAttribute("role", kind === "ok" ? "status" : "alert");
     el.innerHTML = part(html`${kind === "ok" ? I.check() : I.alert()}<div>${msg}</div>`);
     $("#toasts").appendChild(el);
-    setTimeout(() => el.remove(), kind === "ok" ? 3500 : 7000);
+    setTimeout(() => el.remove(), kind === "ok" ? 3500 : 8000);
   }
 
   async function copy(text) {
@@ -140,351 +161,594 @@
         }
       }
       S.ov = ov; S.live = true; S.authed = true;
-    } catch (e) {
+    } catch {
       S.live = false;
     }
-    if (!S.modal || S.modal.passive) draw();
+    if (S.modal && !S.modal.passive) return;
+    if (S.edit) patchLive(); else draw();
   }
 
-  // User-facing tunnels: hide carriers that only exist under another tunnel.
-  const visibleTunnels = () => (S.ov ? S.ov.tunnels.filter((t) => !t.carrier) : []);
+  async function refreshTraffic() {
+    try { S.traffic = (await api("GET", "traffic")) || {}; } catch { /* keep */ }
+  }
+
+  const visible = () => (S.ov ? S.ov.tunnels.filter((t) => !t.carrier) : []);
   const tunnel = (name) => S.ov && S.ov.tunnels.find((t) => t.name === name);
   const rate = (name) => S.rates[name] || { rx: 0, tx: 0 };
-  const totalRate = () => visibleTunnels().reduce((a, t) => ({ rx: a.rx + rate(t.name).rx, tx: a.tx + rate(t.name).tx }), { rx: 0, tx: 0 });
+  const total = () => visible().reduce((a, t) => ({ rx: a.rx + rate(t.name).rx, tx: a.tx + rate(t.name).tx }), { rx: 0, tx: 0 });
   const peer = (name) => S.ov && S.ov.peers.find((p) => p.name === name);
+  const status = (t) => {
+    if (t.error) return ["bad", "خطا"];
+    const p = t.peer && peer(t.peer);
+    if (p && !p.paired) return ["warn", "منتظر سرور مقصد"];
+    return t.up ? ["ok", "فعال"] : ["bad", "قطع"];
+  };
+  const stateEl = (t) => { const [c, l] = status(t); return html`<span class="state"><i class="dot ${c}"></i>${l}</span>`; };
+  const sumToday = () => visible().reduce((a, t) => a + t.today.rx + t.today.tx, 0);
+  const sumMonth = () => visible().reduce((a, t) => a + t.month.rx + t.month.tx, 0);
+
+  // Live values, patched in place while a form is open.
+  function liveText(key) {
+    const [kind, name] = key.split(":");
+    const r = rate(name), t = tunnel(name);
+    switch (kind) {
+      case "rx": return fmtRate(r.rx);
+      case "tx": return fmtRate(r.tx);
+      case "today": return t ? fmtBytes(t.today.rx + t.today.tx) : "-";
+      case "total-rate": { const x = total(); return fmtRate(x.rx + x.tx); }
+    }
+    return null;
+  }
+  function patchLive() {
+    for (const el of $$("[data-live]")) {
+      const v = liveText(el.dataset.live);
+      if (v != null && el.textContent !== v) el.textContent = v;
+    }
+    const lv = $(".live"); if (lv) lv.classList.toggle("off", !S.live);
+  }
 
   // ---------- views ----------
   const NAV = [
-    ["dashboard", "داشبورد", I.home],
-    ["tunnels", "تانل‌ها", I.tunnel],
-    ["servers", "سرورها", I.server],
-    ["ports", "پورت‌ها", I.ports],
-    ["speed", "تست سرعت", I.gauge],
-    ["commands", "دستورها", I.term],
-    ["settings", "تنظیمات", I.gear],
+    ["dashboard", "داشبورد", I.home], ["tunnels", "تانل‌ها", I.tunnel], ["servers", "سرورها", I.server],
+    ["ports", "پورت‌ها", I.ports], ["speed", "تست سرعت", I.gauge], ["commands", "دستورها", I.term], ["settings", "تنظیمات", I.gear],
   ];
 
   function draw() {
     const app = $("#app");
-    if (!S.authed) { app.innerHTML = part(viewLogin()); $("#login-user") && $("#login-user").focus(); return; }
+    if (!S.authed) { app.innerHTML = part(viewLogin()); const u = $("#login-user"); if (u) u.focus(); return; }
     if (!S.ov) { app.innerHTML = part(html`<div class="login-wrap"><div class="muted">در حال بارگذاری…</div></div>`); return; }
-    // Forms on the settings page keep their values: draw them once per visit.
-    if (S.route === "settings" && S.settingsDrawn && $(".main")) { drawChrome(); return; }
+    const y = window.scrollY;
     app.innerHTML = part(viewShell());
-    S.settingsDrawn = S.route === "settings";
+    window.scrollTo(0, y);
     drawModal();
-  }
-
-  // Update only the sidebar/topbar status without touching page forms.
-  function drawChrome() {
-    const live = $(".live");
-    if (live) live.classList.toggle("off", !S.live);
+    wireCharts();
   }
 
   function viewLogin() {
-    return html`
-      <div class="login-wrap">
-        <div class="card login">
-          <div class="brand"><img src="assets/logo.svg" alt=""><div><b>NeoTunnel</b><small>مدیریت تانل‌های سرور</small></div></div>
-          <h1>ورود به پنل</h1>
-          <form data-form="login">
-            <div class="field"><label for="login-user">نام کاربری</label><input class="input ltr" id="login-user" name="user" autocomplete="username" required></div>
-            <div class="field"><label for="login-pass">رمز عبور</label><input class="input ltr" id="login-pass" name="password" type="password" autocomplete="current-password" required></div>
-            <button class="btn primary" type="submit">ورود</button>
-          </form>
-          <p class="muted small" style="text-align:center;margin:18px 0 0">رمز را فراموش کرده‌اید؟ روی سرور اجرا کنید: <code>sudo neotunnel panel password</code></p>
-        </div>
-      </div>`;
+    return html`<div class="login-wrap"><div class="panel login">
+      <div class="brand"><img src="assets/logo.svg" alt=""><div><b>NeoTunnel</b><small>مدیریت تانل‌های سرور</small></div></div>
+      <h1>ورود به پنل</h1>
+      <form data-form="login">
+        <div class="field"><label for="login-user">نام کاربری</label><input class="input ltr" id="login-user" name="user" autocomplete="username" required></div>
+        <div class="field"><label for="login-pass">رمز عبور</label><input class="input ltr" id="login-pass" name="password" type="password" autocomplete="current-password" required></div>
+        <button class="btn primary" type="submit">ورود</button>
+      </form>
+      <p class="help" style="text-align:center;margin:18px 0 0">رمز را فراموش کرده‌اید؟ روی سرور اجرا کنید: <code class="ltr">sudo neotunnel panel password</code></p>
+    </div></div>`;
   }
 
   function viewShell() {
     const ov = S.ov;
-    const counts = { tunnels: visibleTunnels().length, servers: ov.peers.length, ports: ov.forwards.length };
+    const counts = { tunnels: visible().length, servers: ov.peers.length, ports: ov.forwards.length };
     const page = { dashboard: viewDashboard, tunnels: viewTunnels, servers: viewServers, ports: viewPorts, speed: viewSpeed, commands: viewCommands, settings: viewSettings }[S.route] || viewDashboard;
-    const [title, sub, actions] = pageHead();
-    return html`
-      <div class="shell">
-        <aside class="sidebar">
-          <div class="brand"><img src="assets/logo.svg" alt=""><div><b>NeoTunnel</b><small>${ov.node.version}</small></div></div>
-          <nav class="nav">
-            ${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "active" : ""}">${icon()}<span>${label}</span>${counts[id] != null ? html`<span class="count">${counts[id]}</span>` : ""}</a>`)}
-          </nav>
-          <div class="sidebar-foot">
-            <div class="node-card">
-              <div class="name">${I.server(16)} ${ov.node.name}</div>
-              <div class="meta"><span class="ltr">${ov.node.address || "-"}</span></div>
-              <div class="meta">${ov.master ? `مدیریت‌شده توسط ${ov.master.name}` : ov.peers.length ? `سرور اصلی ${ov.peers.length} سرور` : "سرور اصلی"}</div>
-            </div>
-            <div class="foot-actions">
-              <button class="btn sm ghost" data-act="theme" title="تغییر تم">${S.theme === "dark" ? I.sun(16) : I.moon(16)}</button>
-              <span class="spacer"></span>
-              <button class="btn sm ghost" data-act="logout">${I.out(16)} خروج</button>
-            </div>
+    const [title, sub, tools] = pageHead();
+    return html`<div class="shell">
+      <aside class="rail" aria-label="منو">
+        <div class="brand"><img src="assets/logo.svg" alt=""><div><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></div></div>
+        <nav class="nav">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon()}<span>${label}</span>${counts[id] != null ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
+        <div class="rail-foot">
+          <div class="me"><b>${ov.node.name}</b><span class="ltr">${ov.node.address || "-"}</span></div>
+          <div class="rail-actions">
+            <button class="btn sm ghost icon" data-act="theme" title="${S.theme === "dark" ? "تم روشن" : "تم تیره"}" aria-label="تغییر تم">${S.theme === "dark" ? I.sun(16) : I.moon(16)}</button>
+            <span class="grow"></span>
+            <button class="btn sm ghost" data-act="logout">${I.out(16)} خروج</button>
           </div>
-        </aside>
-        <main class="main">
-          <div class="topbar">
-            <div><h1>${title}</h1><div class="sub">${sub}</div></div>
-            <div class="actions">
-              <span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط"}</span>
-              ${actions}
-            </div>
-          </div>
-          ${ov.errors && ov.errors.length ? html`<div class="callout bad" style="margin-bottom:16px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => html`<div class="mono small">${e}</div>`)}</div>` : ""}
-          ${page()}
-        </main>
-      </div>`;
+        </div>
+      </aside>
+      <main class="main">
+        ${S.route === "dashboard" ? "" : html`<div class="head"><div><h1>${title}</h1><div class="sub">${sub}</div></div>
+          <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط با سرور"}</span>${tools}</div></div>`}
+        ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:16px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => html`<div class="mono">${e}</div>`)}</div>` : ""}
+        ${page()}
+      </main>
+    </div>${S.drawer ? viewDrawer() : ""}`;
   }
 
   function pageHead() {
     const add = html`<button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button>`;
     switch (S.route) {
-      case "tunnels": return ["تانل‌ها", "هر تانل می‌تواند روی پورت جداگانه و به سرور جداگانه برود", add];
-      case "servers": return ["سرورها", "سرورهای مقصد (خارج) که از اینجا مدیریت می‌شوند", html`<button class="btn" data-act="sync-all">${I.sync(16)} همگام‌سازی همه</button><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button>`];
-      case "ports": return ["پورت‌ها", "پورت‌های این سرور که به مقصدهای مختلف فوروارد می‌شوند", html`<button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button>`];
+      case "tunnels": return ["تانل‌ها", "روی هر تانل بزنید تا جزئیات و تنظیمات پیشرفته باز شود", add];
+      case "servers": return ["سرورها", "سرورهای مقصد که از همین پنل مدیریت می‌شوند", html`<button class="btn" data-act="sync-all">${I.sync(16)} همگام‌سازی همه</button><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button>`];
+      case "ports": return ["پورت‌ها", "پورت‌های این سرور و اینکه کاربر از کدام تانل به کجا می‌رسد", html`<button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button>`];
       case "speed": return ["تست سرعت", "پینگ، جیتر، افت بسته و پهنای باند واقعی بین دو سرور", ""];
-      case "commands": return ["دستورها", "معادل خط فرمان کارهای پنل، با مقادیر واقعی همین سرور", ""];
-      case "settings": return ["تنظیمات", "نام سرور، آدرس، پورت پنل و رمز عبور", ""];
-      default: return ["داشبورد", `${S.ov.node.name} · ${S.ov.node.address || ""}`, add];
+      case "commands": return ["دستورها", "معادل خط فرمان کارهای پنل، با نام‌ها و آدرس‌های همین سرور", ""];
+      case "settings": return ["تنظیمات", "سرور، دسترسی پنل، پیش‌فرض تانل‌ها، شبکه و نگهداری", ""];
     }
+    return ["", "", add];
   }
 
-  // ---------- dashboard ----------
+  // ---------- dashboard: the flow stage ----------
   function viewDashboard() {
-    const ov = S.ov, ts = visibleTunnels();
-    const up = ts.filter((t) => t.up).length;
-    const paired = ov.peers.filter((p) => p.paired).length;
-    const tr = totalRate();
+    const ov = S.ov, ts = visible(), up = ts.filter((t) => t.up).length;
+    const tr = total();
     const mem = ov.node.mem_total ? (ov.node.mem_used / ov.node.mem_total) * 100 : 0;
-    return html`
-      <div class="stack">
-        <div class="grid stats">
-          <div class="card stat accent"><div class="glyph">${I.tunnel(20)}</div><div class="label">تانل‌های فعال</div>
-            <div class="value">${up}<small>/ ${ts.length}</small></div><div class="foot">${ts.length ? (up === ts.length ? "همه سالم" : `${ts.length - up} تانل قطع است`) : "هنوز تانلی ساخته نشده"}</div></div>
-          <div class="card stat"><div class="glyph">${I.server(20)}</div><div class="label">سرورهای متصل</div>
-            <div class="value">${paired}<small>/ ${ov.peers.length}</small></div><div class="foot">${ov.peers.length - paired ? `${ov.peers.length - paired} سرور منتظر اتصال` : "همه متصل"}</div></div>
-          <div class="card stat"><div class="glyph">${I.bolt(20)}</div><div class="label">ترافیک لحظه‌ای</div>
-            <div class="value ltr" style="font-size:21px">${I.down(15)} ${fmtRate(tr.rx)}</div><div class="foot ltr">${I.up(13)} ${fmtRate(tr.tx)}</div></div>
-          <div class="card stat"><div class="glyph">${I.cpu(20)}</div><div class="label">منابع سرور</div>
-            <div class="value">${ov.node.load[0].toFixed(2)}<small>بار / ${ov.node.cpus} هسته</small></div>
-            <div class="foot">حافظه ${fmtBytes(ov.node.mem_used)} از ${fmtBytes(ov.node.mem_total)}</div><div class="meter"><b style="width:${mem.toFixed(0)}%"></b></div></div>
-        </div>
-        <div class="grid two">
-          <div class="card"><h2>${I.globe(18)} نقشه‌ی اتصال‌ها <span class="hint">خط متحرک = ترافیک در جریان</span></h2>${topology()}</div>
-          <div class="card"><h2>${I.tunnel(18)} تانل‌ها <span class="hint"><a href="#/tunnels">همه</a></span></h2>${miniTunnels()}</div>
-        </div>
-        ${!ov.node.bbr ? html`<div class="callout warn">${I.bolt(16)} بهینه‌سازی شبکه (BBR) روی این سرور فعال نیست. برای سرعت بیشتر روی سرور اجرا کنید: <code>sudo neotunnel optimize</code></div>` : ""}
-      </div>`;
+    const load = ov.node.cpus ? (ov.node.load[0] / ov.node.cpus) * 100 : 0;
+    const series = totalSeries();
+    const [tv, tu] = splitBytes(sumToday()), [mv, mu] = splitBytes(sumMonth());
+    return html`<div class="head">
+        <div><h1 class="greet">${greeting()}</h1><div class="sub">سرور <b>${ov.node.name}</b> <span class="ltr faint">${ov.node.address || ""}</span>${ov.master ? html` · مدیریت از ${ov.master.name}` : ""}</div></div>
+        <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط با سرور"}</span><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>
+      </div>
+      <div class="stage-wrap">${stage()}</div>
+      <div class="stage-list stack">${stageList()}</div>
+      <div class="kpis">
+        <div class="kpi"><div class="k">ترافیک امروز</div><div class="v">${tv}<small>${tu}</small></div>${spark(series)}<div class="f">۲۴ ساعت گذشته، هر نقطه ۵ دقیقه</div></div>
+        <div class="kpi"><div class="k">این ماه</div><div class="v">${mv}<small>${mu}</small></div><div class="f">مجموع همه‌ی تانل‌ها، با وجود ری‌استارت و ریبوت</div></div>
+        <div class="kpi"><div class="k">تانل‌های فعال</div><div class="v">${up}<small>از ${ts.length}</small></div>
+          <div class="f">${ts.length ? (up === ts.length ? "همه سالم‌اند" : `${ts.length - up} تانل نیاز به بررسی دارد`) : "هنوز تانلی ساخته نشده"}</div>
+          <div class="f">${ov.peers.filter((p) => p.paired).length} سرور متصل از ${ov.peers.length}</div></div>
+        <div class="kpi"><div class="k">منابع سرور</div><div class="v">${ov.node.load[0].toFixed(2)}<small>بار روی ${ov.node.cpus} هسته</small></div>
+          <div class="meter" title="بار پردازنده"><b class="${load > 90 ? "bad" : load > 70 ? "warn" : ""}" style="width:${Math.min(100, load).toFixed(0)}%"></b></div>
+          <div class="f">حافظه ${fmtBytes(ov.node.mem_used)} از ${fmtBytes(ov.node.mem_total)} (${mem.toFixed(0)}٪)</div></div>
+      </div>
+      ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:20px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}
+      ${tr.rx + tr.tx === 0 && ts.length ? "" : ""}`;
   }
 
-  function miniTunnels() {
-    const ts = visibleTunnels();
-    if (!ts.length) return html`<div class="empty">${I.tunnel(28)}<b>اولین تانل را بسازید</b>6to4 پیشنهاد می‌شود: سریع و سبک<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
-    return html`<table class="table"><thead><tr><th>نام</th><th>مقصد</th><th>وضعیت</th><th style="text-align:end">ترافیک</th></tr></thead><tbody>
-      ${ts.slice(0, 7).map((t) => html`<tr>
-        <td><b>${t.name}</b> <span class="chip violet">${t.mode || t.kind}</span></td>
-        <td class="muted">${t.peer || html`<span class="ltr">${t.far_ip}</span>`}</td>
-        <td>${statusChip(t)}</td>
-        <td class="num small">↓ ${fmtRate(rate(t.name).rx)}<br><span class="faint">↑ ${fmtRate(rate(t.name).tx)}</span></td></tr>`)}
-    </tbody></table>`;
-  }
-
-  function statusChip(t) {
-    if (t.error) return html`<span class="chip bad"><i></i>خطا</span>`;
-    const p = t.peer && peer(t.peer);
-    if (p && !p.paired) return html`<span class="chip warn"><i></i>منتظر سرور</span>`;
-    return t.up ? html`<span class="chip ok"><i></i>فعال</span>` : html`<span class="chip bad"><i></i>قطع</span>`;
-  }
-
-  // Topology: this server on the right, destinations on the left.
-  function topology() {
-    const ov = S.ov;
-    const groups = new Map();
-    for (const t of visibleTunnels()) {
+  // Destinations: one node per peer or far address; each tunnel is a curve.
+  function destinations() {
+    const ov = S.ov, groups = new Map();
+    for (const t of visible()) {
       const key = t.peer || t.far_ip;
-      if (!groups.has(key)) groups.set(key, { name: t.peer || "دستگاه خارجی", ip: t.far_ip, tunnels: [], paired: true });
+      if (!groups.has(key)) groups.set(key, { key, name: t.peer || "دستگاه دیگر", ip: t.far_ip, tunnels: [], paired: true, peer: !!t.peer && !!peer(t.peer) });
       groups.get(key).tunnels.push(t);
     }
     for (const p of ov.peers) {
-      if (!groups.has(p.name)) groups.set(p.name, { name: p.name, ip: p.address, tunnels: [], paired: p.paired });
+      if (!groups.has(p.name)) groups.set(p.name, { key: p.name, name: p.name, ip: p.address, tunnels: [], paired: p.paired, peer: true });
       const g = groups.get(p.name); g.paired = p.paired; g.ip = p.address;
     }
-    if (ov.master && !groups.size) groups.set(ov.master.name, { name: ov.master.name, ip: ov.master.address.replace(/:\d+$/, ""), tunnels: [], paired: ov.master.paired });
-    const list = [...groups.values()];
-    if (!list.length) return html`<div class="empty">${I.globe(28)}<b>هنوز سروری وصل نیست</b>یک سرور مقصد اضافه کنید تا نقشه ساخته شود<br><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button></div>`;
-    const W = 800, H = 360, n = list.length;
-    const sx = 650, sy = H / 2;
-    const gap = Math.min(112, (H - 70) / Math.max(1, n - 1));
-    const y0 = sy - (gap * (n - 1)) / 2;
-    const nodes = list.map((g, i) => {
-      const y = n === 1 ? sy : y0 + i * gap, x = 150;
-      const anyUp = g.tunnels.some((t) => t.up);
-      const flowing = g.tunnels.some((t) => rate(t.name).rx + rate(t.name).tx > 1000);
-      const st = !g.paired ? "wait" : anyUp ? "up" : g.tunnels.length ? "down" : "wait";
-      const path = `M${sx - 105} ${sy} C ${sx - 230} ${sy}, ${x + 230} ${y}, ${x + 105} ${y}`;
-      const label = g.tunnels.map((t) => t.name + (t.port ? `:${t.port}` : "")).join(" · ") || (g.paired ? "بدون تانل" : "منتظر اتصال");
-      return { g, x, y, st, flowing, path, label };
+    if (ov.master && !groups.size) groups.set(ov.master.name, { key: ov.master.name, name: ov.master.name, ip: ov.master.address.replace(/:\d+$/, ""), tunnels: [], paired: ov.master.paired });
+    return [...groups.values()];
+  }
+
+  function curveClass(t) {
+    const [c] = status(t);
+    if (c === "warn") return "wait";
+    if (c === "bad") return "down";
+    const r = rate(t.name);
+    return r.rx + r.tx > 2000 ? "up hot" : "up";
+  }
+
+  function stage() {
+    const ov = S.ov, dests = destinations(), fwd = ov.forwards;
+    if (!dests.length) return html`<div class="empty">${I.globe(32)}<b>هنوز مقصدی ندارید</b>یک سرور خارج اضافه کنید یا مستقیم یک تانل بسازید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
+    const W = 1000, H = Math.max(420, Math.min(640, 90 + Math.max(dests.length, fwd.length) * 70)), cx = 500, cy = H / 2;
+    const maxRate = Math.max(1e6, ...visible().map((t) => rate(t.name).rx + rate(t.name).tx));
+    const width = (bps) => 1.5 + 7 * Math.sqrt(Math.min(1, bps / maxRate));
+    const spread = (n, i, top = 60, bottom = H - 60) => (n === 1 ? cy : top + ((bottom - top) * i) / (n - 1));
+    const out = [];
+    // Redraws every few seconds must not restart the motion: phase it by the clock.
+    const now = performance.now() / 1000, phase = (period) => `style="animation-delay:-${(now % period).toFixed(2)}s"`;
+    out.push(`<defs><radialGradient id="halo"><stop offset="0" stop-color="var(--accent)" stop-opacity=".16"/><stop offset=".6" stop-color="var(--accent)" stop-opacity=".04"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></radialGradient></defs>`);
+
+    // Inbound (right side in RTL): forwarded ports, or the clients in general.
+    const ins = fwd.length ? fwd.map((f) => ({ f, label: f.ports, sub: `${MODES_FWD[f.mode] ? MODES_FWD[f.mode][0] : "NAT"}، ${f.proto === "both" ? "TCP+UDP" : f.proto.toUpperCase()}`, t: tunnel(f.tunnel) }))
+      : [{ label: "کاربران", sub: "هنوز پورتی فوروارد نشده", t: null }];
+    ins.forEach((s, i) => {
+      const y = spread(ins.length, i, 70, H - 70), x = 860;
+      const r = s.t ? rate(s.t.name) : { rx: 0, tx: 0 };
+      const cls = s.t ? curveClass(s.t) : "";
+      const d = `M${x} ${y} C ${x - 170} ${y}, ${cx + 230} ${cy}, ${cx + 128} ${cy}`;
+      out.push(`<path class="curve ${cls}" d="${d}" stroke-width="${width(r.rx + r.tx).toFixed(1)}"/>`);
+      if (!reduceMotion && cls.includes("hot")) out.push(`<path class="flow" d="${d}" ${phase(1.4)}/>`);
+      out.push(`<circle class="node ${s.t && s.t.up ? "up" : ""}" cx="${x}" cy="${y}" r="5"/>`);
+      out.push(`<text x="${x + 16}" y="${y - 2}" text-anchor="start" class="t-strong">${esc(s.label)}</text>`);
+      out.push(`<text x="${x + 16}" y="${y + 16}" text-anchor="end" direction="rtl" class="t-faint">${esc(s.sub)}</text>`);
     });
-    return html`<svg class="topo" viewBox="0 0 ${W} ${H}" role="img" aria-label="نقشه‌ی اتصال سرورها">
-      <defs><linearGradient id="auroraLine" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${W}" y2="0"><stop offset="0" stop-color="#a78bfa"/><stop offset=".5" stop-color="#38bdf8"/><stop offset="1" stop-color="#2dd4bf"/></linearGradient></defs>
-      ${nodes.map((d) => raw(`<path class="link ${d.st}" d="${d.path}"/>${d.st === "up" && d.flowing ? `<path class="flow" d="${d.path}"/>` : ""}`))}
-      ${nodes.map((d) => raw(`<text class="tag" x="${d.x + 118}" y="${d.y - 12}" text-anchor="start" direction="ltr">${esc(d.label)}</text>`))}
-      ${nodes.map((d) => raw(`<g><rect class="node-bg" x="${d.x - 105}" y="${d.y - 31}" width="210" height="62" rx="15"/>
-        <circle class="dot ${d.st}" cx="${d.x + 84}" cy="${d.y - 8}" r="5.5"/>
-        <text x="${d.x + 72}" y="${d.y - 3}" text-anchor="start" direction="rtl" font-weight="700">${esc(d.g.name)}</text>
-        <text class="sub" x="${d.x - 90}" y="${d.y + 19}" text-anchor="start" direction="ltr">${esc(d.g.ip || "")}</text></g>`))}
-      ${raw(`<g><rect class="node-self" x="${sx - 105}" y="${sy - 38}" width="210" height="76" rx="18"/>
-        <text x="${sx + 88}" y="${sy - 7}" text-anchor="start" direction="rtl" font-weight="800" font-size="16">${esc(ov.node.name)}</text>
-        <text class="sub" x="${sx - 90}" y="${sy + 22}" text-anchor="start" direction="ltr">${esc(ov.node.address || "")}</text>
-        <text class="tag" x="${sx + 88}" y="${sy + 22}" text-anchor="start" direction="rtl">${ov.master ? "این سرور" : "سرور اصلی"}</text></g>`)}
-    </svg>`;
+
+    // Destinations (left side): every tunnel is its own curve into the node.
+    dests.forEach((g, i) => {
+      const y = spread(dests.length, i), x = 150;
+      const k = g.tunnels.length;
+      const anyUp = g.tunnels.some((t) => t.up);
+      if (!k) {
+        const d = `M${cx - 128} ${cy} C ${cx - 250} ${cy}, ${x + 190} ${y}, ${x + 12} ${y}`;
+        out.push(`<path class="curve wait" d="${d}" stroke-width="1.5"/>`);
+      }
+      g.tunnels.forEach((t, j) => {
+        const off = (j - (k - 1) / 2) * 7, r = rate(t.name), cls = curveClass(t);
+        const d = `M${cx - 128} ${cy + off * 0.4} C ${cx - 250} ${cy + off * 0.4}, ${x + 190} ${y + off}, ${x + 12} ${y + off}`;
+        out.push(`<g class="hit" role="button" tabindex="0" data-act="drawer" data-type="tunnel" data-name="${esc(t.name)}" aria-label="تانل ${esc(t.name)}"><path d="${d}" stroke="transparent" stroke-width="16" fill="none"/><path class="curve ${cls}" d="${d}" stroke-width="${width(r.rx + r.tx).toFixed(1)}"/></g>`);
+        if (!reduceMotion && cls.includes("hot")) out.push(`<path class="flow rev" d="${d}" ${phase(1.4)}/>`);
+      });
+      const sel = S.drawer && S.drawer.type === "dest" && S.drawer.key === g.key;
+      const label = g.tunnels.map((t) => t.name).join("، ") || (g.paired ? "بدون تانل" : "منتظر اتصال");
+      const r = g.tunnels.reduce((a, t) => a + rate(t.name).rx + rate(t.name).tx, 0);
+      out.push(`<g class="hit ${sel ? "sel" : ""}" role="button" tabindex="0" data-act="drawer" data-type="dest" data-key="${esc(g.key)}" aria-label="${esc(g.name)}">
+        <circle class="node ${anyUp ? "up" : ""}" cx="${x}" cy="${y}" r="11"/>
+        <circle cx="${x}" cy="${y}" r="3.5" fill="${anyUp ? "var(--accent)" : g.paired ? "var(--ink-3)" : "var(--warn)"}"/>
+        <text x="${x - 22}" y="${y - 4}" text-anchor="start" direction="rtl" class="t-strong">${esc(g.name)}</text>
+        <text x="${x - 22}" y="${y + 14}" text-anchor="end" class="t-faint">${esc(g.ip || "")}</text>
+        <text x="${x - 22}" y="${y + 31}" text-anchor="start" direction="rtl" class="t-faint">${esc(label)}${r > 1000 ? " · " + esc(fmtRate(r)) : ""}</text></g>`);
+    });
+
+    // The core: this server, with the live total in its centre.
+    const tr = total(), [v, u] = splitRate(tr.rx + tr.tx);
+    const ring = (rad, n, size, op) => { let s = ""; for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; s += `<circle class="ring-dot" cx="${(cx + rad * Math.cos(a)).toFixed(1)}" cy="${(cy + rad * Math.sin(a)).toFixed(1)}" r="${size}" opacity="${op}"/>`; } return s; };
+    let ticks = ""; for (let i = 0; i < 96; i++) { const a = (i / 96) * Math.PI * 2, r1 = 150, r2 = i % 8 ? 156 : 162; ticks += `<line class="ring-tick" x1="${(cx + r1 * Math.cos(a)).toFixed(1)}" y1="${(cy + r1 * Math.sin(a)).toFixed(1)}" x2="${(cx + r2 * Math.cos(a)).toFixed(1)}" y2="${(cy + r2 * Math.sin(a)).toFixed(1)}"/>`; }
+    out.push(`<circle class="halo" cx="${cx}" cy="${cy}" r="200"/>`);
+    out.push(`<g class="spin r" ${phase(140)}>${ticks}</g>`);
+    out.push(`<g class="spin" ${phase(90)}>${ring(132, 64, 1.3, 0.35)}</g>`);
+    out.push(`<g class="spin r" ${phase(140)}>${ring(118, 40, 1.7, 0.6)}</g>`);
+    out.push(`<circle class="core-disc" cx="${cx}" cy="${cy}" r="100"/>`);
+    out.push(`<text x="${cx}" y="${cy - 34}" text-anchor="middle" class="t-faint">${esc(ov.node.name)}</text>`);
+    out.push(`<text x="${cx}" y="${cy + 14}" text-anchor="middle" class="t-num" data-live-num="1">${esc(v)}</text>`);
+    out.push(`<text x="${cx}" y="${cy + 38}" text-anchor="middle" class="t-unit" direction="ltr">${esc(u)}</text>`);
+    out.push(`<text x="${cx}" y="${cy + 60}" text-anchor="middle" class="t-faint">ترافیک لحظه‌ای</text>`);
+    return raw(`<svg class="stage" direction="ltr" viewBox="0 0 ${W} ${H}" role="img" aria-label="جریان ترافیک از پورت‌های این سرور، از طریق تانل‌ها، به سرورهای مقصد">${out.join("")}</svg>`);
+  }
+
+  // Phone layout: the same information as a list.
+  function stageList() {
+    const dests = destinations(), tr = total();
+    return html`<div class="panel"><div class="in" style="text-align:center"><div class="faint small">ترافیک لحظه‌ای</div>
+        <div style="font-size:42px;font-weight:200;direction:ltr" data-live="total-rate">${fmtRate(tr.rx + tr.tx)}</div></div></div>
+      ${dests.length ? html`<div class="panel"><div class="list">${dests.map((g) => html`<button class="item" style="all:unset;display:block;border-bottom:1px solid var(--line);cursor:pointer" data-act="drawer" data-type="dest" data-key="${g.key}">
+        <div style="display:flex;gap:12px;align-items:center;padding:12px 16px"><i class="dot ${g.tunnels.some((t) => t.up) ? "ok" : g.paired ? "" : "warn"}"></i>
+          <div class="grow"><b>${g.name}</b><div class="faint small"><span class="ltr">${g.ip || ""}</span></div></div>
+          <div class="small muted">${g.tunnels.length} تانل</div></div></button>`)}</div></div>`
+        : html`<div class="empty"><b>هنوز مقصدی ندارید</b><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`}`;
+  }
+
+  // Sum of every visible tunnel's 5-minute buckets, as bits/s.
+  function totalSeries() {
+    const out = new Array(288).fill(0);
+    for (const t of visible()) {
+      const s = S.traffic[t.name];
+      if (!s || !s.series) continue;
+      s.series.forEach((p, i) => { out[i] += ((p.rx + p.tx) * 8) / 300; });
+    }
+    return out;
+  }
+
+  function spark(vals) {
+    if (!vals.some((v) => v > 0)) return html`<svg class="spark" viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true"><path class="l" d="M0 33H200"/></svg>`;
+    const max = Math.max(...vals), n = vals.length;
+    const pts = vals.map((v, i) => [(i / (n - 1)) * 200, 32 - (v / max) * 28]);
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join("");
+    const last = pts[n - 1];
+    return raw(`<svg class="spark" viewBox="-4 0 208 36" preserveAspectRatio="none" role="img" aria-label="ترافیک ۲۴ ساعت گذشته"><path class="a" d="${d}L200 34L0 34Z"/><path class="l" d="${d}"/><circle cx="${last[0]}" cy="${last[1]}" r="3"/></svg>`);
+  }
+
+  // ---------- drawer ----------
+  function viewDrawer() {
+    const d = S.drawer;
+    let body = "";
+    if (d.type === "dest") {
+      const g = destinations().find((x) => x.key === d.key);
+      if (!g) { S.drawer = null; return ""; }
+      const p = peer(g.key);
+      body = html`<header><div><h3>${g.name}</h3><div class="sub ltr">${g.ip || ""}</div></div><button class="btn sm ghost icon" data-act="drawer-close" aria-label="بستن">${I.x(16)}</button></header>
+        <div class="body">
+          ${p ? html`<dl class="kv"><dt>وضعیت</dt><dd>${!p.paired ? "منتظر اجرای دستور اتصال" : p.in_sync ? "متصل و همگام" : "عقب از آخرین تغییرات"}</dd>
+            <dt>نسخه</dt><dd class="ltr">${p.version || "-"} ${p.arch || ""}</dd><dt>آخرین ارتباط</dt><dd>${ago(p.last_seen)}</dd></dl>` : ""}
+          <div><h4>تانل‌ها</h4>${g.tunnels.length ? html`<div class="layers">${g.tunnels.map((t) => html`<button class="layer" style="cursor:pointer;text-align:start;font:inherit;color:inherit" data-act="drawer" data-type="tunnel" data-name="${t.name}">
+              <i class="dot ${status(t)[0]}"></i><span class="k">${t.name}</span><span class="faint">${kindTitle(t)}</span><span class="m ltr" data-live="rx:${t.name}">${fmtRate(rate(t.name).rx)}</span></button>`)}</div>`
+            : html`<div class="muted small">هنوز تانلی به این مقصد نیست.</div>`}</div>
+          <div class="row">${p ? html`<button class="btn sm" data-act="setup" data-name="${p.name}">${I.term(15)} دستور اتصال</button>` : ""}
+            <button class="btn sm primary" data-act="wizard" data-peer="${p ? p.name : ""}">${I.plus(15)} تانل به این مقصد</button></div>
+        </div>`;
+    } else {
+      const t = tunnel(d.name);
+      if (!t) { S.drawer = null; return ""; }
+      const r = rate(t.name), fwd = S.ov.forwards.filter((f) => f.tunnel === t.name), tr = S.traffic[t.name];
+      body = html`<header><div><h3>${t.name}</h3><div class="sub">${kindTitle(t)} به ${t.peer || "دستگاه دیگر"} <span class="ltr">${t.far_ip}</span></div></div>
+          <button class="btn sm ghost icon" data-act="drawer-close" aria-label="بستن">${I.x(16)}</button></header>
+        <div class="body">
+          <div class="row">${stateEl(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : ""}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.managed ? html`<span class="tag warn">از سرور اصلی</span>` : ""}</div>
+          <div class="figs">
+            <div><div class="k">دانلود</div><div class="v ltr" data-live="rx:${t.name}">${fmtRate(r.rx)}</div></div>
+            <div><div class="k">آپلود</div><div class="v ltr" data-live="tx:${t.name}">${fmtRate(r.tx)}</div></div>
+            <div><div class="k">امروز</div><div class="v ltr" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</div></div>
+            <div><div class="k">این ماه</div><div class="v ltr">${fmtBytes(t.month.rx + t.month.tx)}</div></div>
+            <div><div class="k">از ابتدا</div><div class="v ltr">${fmtBytes(t.total.rx + t.total.tx)}</div></div>
+            <div><div class="k">MTU</div><div class="v ltr">${t.mtu || "-"}</div></div>
+          </div>
+          <div><h4>۲۴ ساعت گذشته</h4>${tr ? chart(t.name, tr.series) : html`<div class="muted small">آمار بعد از چند دقیقه کار سرویس جمع می‌شود.</div>`}</div>
+          <div><h4>لایه‌ها</h4><div class="layers">${(t.stack || []).map((l) => html`<div class="layer"><i class="dot ${l.up ? "ok" : "bad"}"></i><span class="k">${l.name}</span><span class="faint">${l.kind}</span><span class="m">MTU ${l.mtu || "-"}</span></div>`)}</div></div>
+          <dl class="kv">
+            ${t.here4 ? html`<dt>IPv4 این طرف / آن طرف</dt><dd class="ltr">${t.here4.split("/")[0]} ⇄ ${t.there4}</dd>` : ""}
+            ${t.here6 ? html`<dt>IPv6</dt><dd class="ltr small">${t.here6.split("/")[0]} ⇄ ${t.there6}</dd>` : ""}
+            ${t.base_port ? html`<dt>پورت UDP</dt><dd class="ltr">${t.base_port}</dd>` : ""}
+            ${t.path_mtu ? html`<dt>MTU مسیر (اندازه‌گیری‌شده)</dt><dd class="ltr">${t.path_mtu}</dd>` : ""}
+            ${t.wg_key ? html`<dt>کلید عمومی WireGuard</dt><dd class="ltr small">${t.wg_key}</dd>` : ""}
+            ${fwd.length ? html`<dt>پورت‌ها</dt><dd>${fwd.map((f) => html`<span class="tag ltr">${f.ports}${f.to ? " → " + f.to : ""}</span> `)}</dd>` : ""}
+          </dl>
+          ${t.error ? html`<div class="note bad"><div class="mono">${t.error}</div></div>` : ""}
+          <div class="row">
+            <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
+            ${t.managed ? "" : html`<button class="btn sm" data-act="mtu" data-name="${t.name}">${I.ruler(15)} بهترین MTU</button>
+              <button class="btn sm" data-act="open-tunnel" data-name="${t.name}">${I.gear(15)} تنظیمات</button>`}
+          </div>
+        </div>`;
+    }
+    const enter = S.drawerEnter ? " enter" : "";
+    S.drawerEnter = false;
+    return html`<div class="drawer-scrim${enter}" data-act="drawer-close"></div><aside class="drawer${enter}" role="dialog" aria-modal="true" aria-label="جزئیات">${body}</aside>`;
+  }
+
+  // Received / sent over the last 24 hours (two series, one axis, bits/s).
+  function chart(id, series) {
+    const W = 400, H = 150, P = { l: 4, r: 44, t: 8, b: 20 };
+    const rx = series.map((p) => (p.rx * 8) / 300), tx = series.map((p) => (p.tx * 8) / 300);
+    const max = Math.max(1000, ...rx, ...tx), n = series.length;
+    const nice = niceMax(max);
+    const x = (i) => P.l + (i / (n - 1)) * (W - P.l - P.r), y = (v) => P.t + (1 - v / nice) * (H - P.t - P.b);
+    const line = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("");
+    const area = (vals) => `${line(vals)}L${x(n - 1)} ${y(0)}L${x(0)} ${y(0)}Z`;
+    let grid = "";
+    for (const f of [0, 0.5, 1]) grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(nice * f)}" y2="${y(nice * f)}"/><text class="axis" x="${W - P.r + 6}" y="${y(nice * f) + 4}" text-anchor="start" direction="ltr">${fmtRate(nice * f)}</text>`;
+    grid += `<text class="axis" x="${x(0)}" y="${H - 4}" text-anchor="start">۲۴ ساعت پیش</text><text class="axis" x="${x(n - 1)}" y="${H - 4}" text-anchor="end">اکنون</text>`;
+    CHARTS[id] = { rx, tx, n, x, y, W, H };
+    return html`<div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span></div>
+      <div class="chart" data-chart="${id}">${raw(`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="نمودار ترافیک ۲۴ ساعت" style="direction:ltr">${grid}
+        <path class="area rx" d="${area(rx)}"/><path class="area tx" d="${area(tx)}"/><path class="line rx" d="${line(rx)}"/><path class="line tx" d="${line(tx)}"/>
+        <g class="hover" style="display:none"><line class="cross" y1="${P.t}" y2="${H - P.b}"/><circle class="mark rx" r="4"/><circle class="mark tx" r="4"/></g></svg>`)}<div class="tip" hidden></div></div>`;
+  }
+  const CHARTS = {};
+  const niceMax = (v) => { const e = 10 ** Math.floor(Math.log10(v)), m = v / e; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * e; };
+
+  function wireCharts() {
+    for (const el of $$("[data-chart]")) {
+      const c = CHARTS[el.dataset.chart]; if (!c) continue;
+      const svgEl = $("svg", el), g = $(".hover", el), tip = $(".tip", el);
+      const move = (e) => {
+        const box = svgEl.getBoundingClientRect();
+        const px = ((e.clientX - box.left) / box.width) * c.W;
+        let i = Math.round(((px - c.x(0)) / (c.x(c.n - 1) - c.x(0))) * (c.n - 1));
+        i = Math.max(0, Math.min(c.n - 1, i));
+        g.style.display = "";
+        $("line", g).setAttribute("x1", c.x(i)); $("line", g).setAttribute("x2", c.x(i));
+        const [m1, m2] = $$("circle", g);
+        m1.setAttribute("cx", c.x(i)); m1.setAttribute("cy", c.y(c.rx[i]));
+        m2.setAttribute("cx", c.x(i)); m2.setAttribute("cy", c.y(c.tx[i]));
+        const mins = (c.n - 1 - i) * 5;
+        tip.hidden = false;
+        tip.innerHTML = part(html`<div class="faint">${mins ? (mins >= 60 ? `${Math.floor(mins / 60)} ساعت و ${mins % 60} دقیقه پیش` : `${mins} دقیقه پیش`) : "اکنون"}</div>
+          <div class="s"><i style="background:var(--rx)"></i>دانلود <b class="ltr">${fmtRate(c.rx[i])}</b></div><div class="s"><i style="background:var(--tx)"></i>آپلود <b class="ltr">${fmtRate(c.tx[i])}</b></div>`);
+        const left = (c.x(i) / c.W) * box.width;
+        tip.style.left = Math.min(box.width - tip.offsetWidth, Math.max(0, left - tip.offsetWidth / 2)) + "px";
+        tip.style.top = "-8px";
+      };
+      svgEl.addEventListener("pointermove", move);
+      svgEl.addEventListener("pointerleave", () => { g.style.display = "none"; tip.hidden = true; });
+    }
   }
 
   // ---------- tunnels ----------
   function viewTunnels() {
-    const ts = visibleTunnels();
-    if (!ts.length) return html`<div class="empty">${I.tunnel(30)}<b>هیچ تانلی وجود ندارد</b>با چند کلیک یک تانل 6to4 بسازید؛ اگر مسیر پروتکل‌ها را می‌بندد، آن را روی یک پورت UDP اجرا کنید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
-    return html`<div class="grid cards">${ts.map(tunnelCard)}</div>`;
+    const ts = visible();
+    if (!ts.length) return html`<div class="panel"><div class="empty">${I.tunnel(32)}<b>هیچ تانلی وجود ندارد</b>با چند کلیک یک تانل 6to4 بسازید؛ اگر مسیر پروتکل‌ها را می‌بندد، روی پورت UDP یا با NeoObfs اجرایش کنید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div></div>`;
+    return html`<div class="panel"><div class="list">${ts.map(tunnelRow)}</div></div>`;
   }
 
-  function tunnelCard(t) {
-    const r = rate(t.name);
-    const under = t.over ? tunnel(t.over) : null;
-    const fwd = S.ov.forwards.filter((f) => f.tunnel === t.name);
-    return html`<div class="card tunnel-card">
-      <div class="tunnel-head">
-        <div class="ico">${I.tunnel(22)}</div>
-        <div><div class="title">${t.name}</div><div class="route">${S.ov.node.name} ← ${t.peer || "دستگاه خارجی"} · <span class="ltr">${t.far_ip}</span></div></div>
-        <div class="chips">${statusChip(t)}</div>
-      </div>
-      <div class="row">
-        <span class="chip violet">${t.mode || t.kind}</span>
-        <span class="chip">لایه ${t.layer}</span>
-        ${t.port || (under && under.port) ? html`<span class="chip info mono">UDP ${t.port || under.port}</span>` : html`<span class="chip">پروتکل خام</span>`}
-        ${t.managed ? html`<span class="chip warn">از سرور اصلی</span>` : ""}
-      </div>
-      <dl class="kv">
-        ${t.here4 ? html`<dt>IPv4 این طرف / آن طرف</dt><dd><span class="ltr">${t.here4.split("/")[0]}</span> ⇄ <span class="ltr">${t.there4}</span></dd>` : ""}
-        ${t.here6 ? html`<dt>IPv6 این طرف / آن طرف</dt><dd><span class="ltr small">${t.here6.split("/")[0]} ⇄ ${t.there6}</span></dd>` : ""}
-        ${under ? html`<dt>زیرساخت</dt><dd><span class="ltr small">${under.kind} ${under.name}</span> · <span class="ltr small">${under.here6 ? under.here6.split("/")[0] : ""}</span></dd>` : ""}
-        <dt>MTU</dt><dd class="mono">${t.mtu || "-"}</dd>
-        ${fwd.length ? html`<dt>پورت‌ها</dt><dd>${fwd.map((f) => html`<span class="chip mono">${f.ports}${f.to ? "→" + f.to : ""}</span> `)}</dd>` : ""}
-      </dl>
-      <div class="rates">
-        <div class="rate"><small>${I.down(13)} دریافت</small><b>${fmtRate(r.rx)}</b><div class="total">${fmtBytes(t.rx)}</div></div>
-        <div class="rate"><small>${I.up(13)} ارسال</small><b>${fmtRate(r.tx)}</b><div class="total">${fmtBytes(t.tx)}</div></div>
-      </div>
-      ${t.error ? html`<div class="err-line">${t.error}</div>` : ""}
-      <div class="card-actions">
-        <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
-        <button class="btn sm icon" data-act="copy" data-text="${t.there4 || t.there6}" title="کپی IP داخلی مقصد">${I.copy(15)}</button>
-        ${t.peer && peer(t.peer) ? html`<button class="btn sm icon" data-act="setup" data-name="${t.peer}" title="دستورهای سرور مقصد">${I.term(15)}</button>` : ""}
-        <span class="spacer"></span>
-        ${t.managed ? "" : html`<button class="btn sm danger icon" data-act="del-tunnel" data-name="${t.name}" title="حذف تانل">${I.trash(15)}</button>`}
-      </div>
+  function tunnelRow(t) {
+    const r = rate(t.name), open = S.open === t.name;
+    return html`<div class="item ${open ? "open" : ""}">
+      <button class="sum" data-act="toggle-tunnel" data-name="${t.name}" aria-expanded="${open}">
+        <i class="dot ${status(t)[0]}"></i>
+        <div class="name">${t.name}<small>${kindTitle(t)}${t.base_port ? ` روی UDP ${t.base_port}` : ""}</small></div>
+        <div class="muted small hide-sm">${t.peer || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
+        <div class="cell-tags hide-sm">${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}</div>
+        <div class="rate"><b data-live="rx:${t.name}">${fmtRate(r.rx)}</b> ↓<br><span data-live="tx:${t.name}">${fmtRate(r.tx)}</span> ↑</div>
+        <span class="chev">${I.chev(16)}</span>
+      </button>
+      ${open ? tunnelDetail(t) : ""}
     </div>`;
+  }
+
+  function tunnelDetail(t) {
+    const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto" }));
+    const base = (t.stack && t.stack[0]) || { kind: t.kind };
+    const crypto = ["wireguard", "obfs"].includes(base.kind);
+    const m = S.mtu[t.name];
+    return html`<div class="detail">
+      <div class="stack">
+        <div class="figs">
+          <div><div class="k">امروز</div><div class="v ltr" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</div></div>
+          <div><div class="k">این ماه</div><div class="v ltr">${fmtBytes(t.month.rx + t.month.tx)}</div></div>
+          <div><div class="k">از ابتدا</div><div class="v ltr">${fmtBytes(t.total.rx + t.total.tx)}</div></div>
+        </div>
+        <dl class="kv">
+          ${t.here4 ? html`<dt>IPv4 این طرف ⇄ آن طرف</dt><dd class="ltr">${t.here4.split("/")[0]} ⇄ ${t.there4}</dd>` : ""}
+          ${t.here6 ? html`<dt>IPv6</dt><dd class="ltr small">${t.here6.split("/")[0]} ⇄ ${t.there6}</dd>` : ""}
+          <dt>لایه‌ها</dt><dd>${(t.stack || []).map((l) => html`<span class="tag ltr">${l.kind} · ${l.mtu || "-"}</span> `)}</dd>
+          <dt>MTU فعلی</dt><dd class="ltr">${t.mtu || "-"}${t.path_mtu ? ` (path ${t.path_mtu})` : ""}</dd>
+          ${t.wg_key ? html`<dt>کلید عمومی WireGuard</dt><dd class="ltr small">${t.wg_key} <button class="btn sm ghost icon" data-act="copy" data-text="${t.wg_key}" aria-label="کپی کلید">${I.copy(14)}</button></dd>` : ""}
+        </dl>
+        ${m ? html`<div class="note ok">مسیر تا <span class="ltr">${m.remote}</span> بسته‌های <b>${m.path_mtu}</b> بایتی را بدون شکستن رد می‌کند. با ${m.overhead} بایت سربار لایه‌ها، بهترین MTU این تانل <b>${m.best}</b> است${m.probing ? " و تانل خودکار با آن تنظیم می‌شود." : "."}</div>` : ""}
+        ${t.error ? html`<div class="note bad"><div class="mono">${t.error}</div></div>` : ""}
+        <div class="row">
+          <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
+          ${t.managed ? "" : html`<button class="btn sm" data-act="mtu" data-name="${t.name}">${I.ruler(15)} پیدا کردن بهترین MTU</button>`}
+          <button class="btn sm" data-act="drawer" data-type="tunnel" data-name="${t.name}">نمودار و جزئیات</button>
+          ${t.peer && peer(t.peer) ? html`<button class="btn sm ghost" data-act="setup" data-name="${t.peer}">${I.term(15)} دستور اتصال</button>` : ""}
+          <span class="grow"></span>
+          ${t.managed ? "" : html`<button class="btn sm danger" data-act="del-tunnel" data-name="${t.name}">${I.trash(15)} حذف</button>`}
+        </div>
+      </div>
+      ${t.managed ? html`<div class="note">این تانل را سرور اصلی (${S.ov.master ? S.ov.master.name : ""}) تعریف کرده؛ تنظیماتش را از همان‌جا تغییر دهید.</div>` : html`<form class="stack" data-form="tunnel-settings" data-name="${t.name}">
+        <div class="field"><span class="lbl">رمزنگاری</span>
+          ${crypto ? html`<div class="help">${PROTO[base.kind === "obfs" ? "obfs" : "wireguard"].t} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.</div>`
+            : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}</select>
+            <span class="help">IPsec در کرنل روی بسته‌های بیرونی همین تانل؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ${38} بایت از MTU.</span>`}</div>
+        <details class="adv" ${S.tset[t.name].adv ? "open" : ""} data-act="adv-toggle" data-name="${t.name}">
+          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
+          <div class="in">${advancedFields(`tset.${t.name}`, st, base.kind, true)}</div>
+        </details>
+        <div class="form-foot"><button class="btn primary" type="submit">ذخیره‌ی تنظیمات</button><button class="btn ghost" type="button" data-act="reset-tset" data-name="${t.name}">بازگردانی</button></div>
+      </form>`}
+    </div>`;
+  }
+
+  // The advanced options, shared by the wizard and the tunnel editor.
+  function advancedFields(path, st, kind, editing) {
+    const mm = st.mtuMode || "auto";
+    return html`<div class="field"><span class="lbl">MTU</span>
+        <div class="seg" role="radiogroup">${[["auto", "خودکار"], ["probe", "اندازه‌گیری مسیر"], ["manual", "دستی"]].map(([v, l]) => html`<button type="button" role="radio" aria-checked="${mm === v}" class="${mm === v ? "on" : ""}" data-act="set" data-path="${path}.mtuMode" data-value="${v}">${l}</button>`)}</div>
+        ${mm === "manual" ? html`<input class="input ltr" type="number" min="576" max="9000" data-bind="${path}.mtu" value="${st.mtu || ""}" placeholder="1400" aria-label="MTU">` : ""}
+        <span class="help">${mm === "auto" ? "از ۱۵۰۰ و سربار همه‌ی لایه‌ها حساب می‌شود." : mm === "probe" ? "NeoTunnel با بسته‌های بدون شکستن، MTU واقعی مسیر تا مقصد را پیدا می‌کند، هر ۳۰ دقیقه دوباره می‌سنجد و تانل را با آن تنظیم می‌کند." : "فقط وقتی مقدار درست را می‌دانید."}</span></div>
+      <div class="grid2">
+        <div class="field"><label>پورت UDP${editing ? "" : " (اختیاری)"}</label><input class="input ltr" type="number" min="1" max="65535" data-bind="${path}.port" value="${st.port || ""}" placeholder="${["obfs", "wireguard"].includes(kind) ? "خودکار" : "پروتکل خام"}">
+          <span class="help">${PROTO[kind] && PROTO[kind].udp || kind === "obfs" || kind === "wireguard" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی = پروتکل خام (سریع‌ترین). با پورت، تانل داخل UDP می‌رود؛ وقتی مسیر پروتکل 41 یا 47 را می‌بندد."}</span></div>
+        <div class="field"><label>TTL</label><input class="input ltr" type="number" min="1" max="255" data-bind="${path}.ttl" value="${st.ttl || ""}" placeholder="255"><span class="help">TTL بسته‌های بیرونی.</span></div>
+        ${kind === "obfs" ? html`<div class="field"><label>Padding (بایت)</label><input class="input ltr" type="number" min="0" max="255" data-bind="${path}.padding" value="${st.padding || ""}" placeholder="0"><span class="help">تا این تعداد بایت تصادفی به هر بسته اضافه می‌شود تا اندازه‌ها چیزی را لو ندهند. هزینه‌اش همین مقدار از MTU است.</span></div>` : ""}
+        ${["obfs", "wireguard"].includes(kind) ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="25"><span class="help">نگه‌داشتن مسیر NAT باز؛ ‎-1 یعنی خاموش.</span></div>` : ""}
+        ${kind === "wireguard" ? html`<div class="field full"><label>کلید عمومی طرف مقابل</label><input class="input ltr" data-bind="${path}.peer_key" value="${st.peer_key || ""}" placeholder="فقط وقتی آن طرف NeoTunnel ندارد"><span class="help">برای میکروتیک یا هر WireGuard دیگر؛ بین دو سرور NeoTunnel کلیدها خودکار ساخته می‌شوند.</span></div>` : ""}
+      </div>`;
+  }
+
+  function settingsBody(st) {
+    const out = { encrypt: st.encrypt || "", ttl: +st.ttl || 0, padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), mtu: 0, mtu_probe: false };
+    if (st.mtuMode === "manual") out.mtu = +st.mtu || 0;
+    if (st.mtuMode === "probe") out.mtu_probe = true;
+    return out;
   }
 
   // ---------- servers ----------
   function viewServers() {
     const ov = S.ov;
-    const master = ov.master ? html`<div class="callout ${ov.master.paired ? "ok" : "warn"}">${I.server(16)} این سرور توسط <b>${ov.master.name}</b> (<span class="ltr">${ov.master.address}</span>) مدیریت می‌شود ${ov.master.paired ? "و متصل است." : "— هنوز به سرور اصلی نرسیده؛ سرویس مدام تلاش می‌کند."} تغییر تانل‌های آن فقط از پنل سرور اصلی ممکن است.</div>` : "";
-    if (!ov.peers.length) return html`${master}<div class="empty">${I.server(30)}<b>هنوز سروری اضافه نشده</b>سرور خارج را با نام و IP اضافه کنید؛ پنل دستور یک‌خطی اتصال را برای همان سرور می‌سازد.<br><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button></div>`;
-    return html`${master}<div class="grid cards" style="${master ? "margin-top:16px" : ""}">${ov.peers.map(serverCard)}</div>`;
-  }
-
-  function serverCard(p) {
-    const state = !p.paired ? html`<span class="chip warn"><i></i>منتظر اتصال</span>` : p.in_sync ? html`<span class="chip ok"><i></i>متصل و همگام</span>` : html`<span class="chip warn"><i></i>عقب از تنظیمات</span>`;
-    return html`<div class="card tunnel-card">
-      <div class="tunnel-head">
-        <div class="ico" style="color:var(--violet)">${I.server(22)}</div>
-        <div><div class="title">${p.name}</div><div class="route ltr">${p.address}</div></div>
-        <div class="chips">${state}</div>
-      </div>
-      <dl class="kv">
-        <dt>تانل‌ها</dt><dd>${p.tunnels}</dd>
-        <dt>نسخه</dt><dd class="mono">${p.version || "-"} ${p.arch ? "· " + p.arch : ""}</dd>
-        <dt>آخرین ارتباط</dt><dd>${ago(p.last_seen)}</dd>
-      </dl>
-      ${!p.paired ? html`<div class="callout warn small">دستور اتصال را روی <b>${p.name}</b> اجرا کنید؛ بعد از آن هر تغییر خودکار روی آن اعمال می‌شود.</div>` : ""}
-      <div class="card-actions">
-        <button class="btn sm ${p.paired ? "" : "primary"}" data-act="setup" data-name="${p.name}">${I.term(15)} دستور اتصال</button>
-        ${p.paired ? html`<button class="btn sm" data-act="bench" data-name="${p.name}">${I.gauge(15)} مقایسه‌ی سرعت</button>
-        <button class="btn sm icon" data-act="sync" data-name="${p.name}" title="همگام‌سازی">${I.sync(15)}</button>
-        <button class="btn sm icon" data-act="upgrade" data-name="${p.name}" title="ارتقا به نسخه‌ی همین سرور">${I.upgrade(15)}</button>` : ""}
-        <button class="btn sm icon" data-act="wizard" data-peer="${p.name}" title="تانل جدید به این سرور">${I.plus(15)}</button>
-        <span class="spacer"></span>
-        <button class="btn sm danger icon" data-act="del-server" data-name="${p.name}" title="حذف سرور">${I.trash(15)}</button>
-      </div>
-    </div>`;
+    const master = ov.master ? html`<div class="note ${ov.master.paired ? "ok" : "warn"}" style="margin-bottom:16px">این سرور توسط <b>${ov.master.name}</b> (<span class="ltr">${ov.master.address}</span>) مدیریت می‌شود ${ov.master.paired ? "و به آن متصل است." : "ولی هنوز به آن نرسیده؛ سرویس مدام تلاش می‌کند."} تانل‌های آن فقط از پنل سرور اصلی تغییر می‌کنند.</div>` : "";
+    if (!ov.peers.length) return html`${master}<div class="panel"><div class="empty">${I.server(32)}<b>هنوز سروری اضافه نشده</b>سرور خارج را با نام و IP اضافه کنید؛ پنل دستور یک‌خطی نصب و اتصال را برای همان سرور می‌سازد.<br><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button></div></div>`;
+    return html`${master}<div class="panel"><table class="t"><thead><tr><th>سرور</th><th>وضعیت</th><th class="hide-sm">تانل‌ها</th><th class="hide-sm">نسخه</th><th class="hide-sm">آخرین ارتباط</th><th></th></tr></thead><tbody>
+      ${ov.peers.map((p) => html`<tr>
+        <td><b>${p.name}</b><div class="faint small ltr">${p.address}</div></td>
+        <td>${!p.paired ? html`<span class="state"><i class="dot warn"></i>منتظر اتصال</span>` : p.in_sync ? html`<span class="state"><i class="dot ok"></i>متصل و همگام</span>` : html`<span class="state"><i class="dot warn"></i>عقب از تغییرات</span>`}</td>
+        <td class="hide-sm">${p.tunnels}</td><td class="hide-sm ltr small">${p.version || "-"} ${p.arch || ""}</td><td class="hide-sm small">${ago(p.last_seen)}</td>
+        <td><div class="row" style="justify-content:flex-end;flex-wrap:nowrap">
+          <button class="btn sm ${p.paired ? "" : "primary"}" data-act="setup" data-name="${p.name}">${I.term(15)} دستور اتصال</button>
+          ${p.paired ? html`<button class="btn sm icon" data-act="bench" data-name="${p.name}" title="مقایسه‌ی سرعت انواع تانل" aria-label="مقایسه‌ی سرعت">${I.gauge(15)}</button>
+          <button class="btn sm icon" data-act="sync" data-name="${p.name}" title="همگام‌سازی" aria-label="همگام‌سازی">${I.sync(15)}</button>
+          <button class="btn sm icon" data-act="upgrade" data-name="${p.name}" title="ارتقا به نسخه‌ی همین سرور" aria-label="ارتقا">${I.upgrade(15)}</button>` : ""}
+          <button class="btn sm danger icon" data-act="del-server" data-name="${p.name}" title="حذف سرور" aria-label="حذف سرور">${I.trash(15)}</button></div></td></tr>`)}
+    </tbody></table></div>`;
   }
 
   // ---------- ports ----------
   function viewPorts() {
     const fs = S.ov.forwards;
-    const intro = html`<div class="callout" style="margin-bottom:16px">${I.ports(16)} هر پورت این سرور می‌تواند به یک تانل و یک سرور/لوکیشن متفاوت برود؛ مثلاً 443 به آلمان و 2053 به هلند (روی پورت 443 مقصد).</div>`;
-    if (!fs.length) return html`${intro}<div class="empty">${I.ports(30)}<b>فورواردی تعریف نشده</b>ترافیک ورودی پورت‌های این سرور را از داخل تانل به سرور مقصد بفرستید.<br><button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button></div>`;
-    return html`${intro}<div class="card"><table class="table"><thead><tr><th>ورودی (این سرور)</th><th>پروتکل</th><th>تانل</th><th>مقصد</th><th></th></tr></thead><tbody>
-      ${fs.map((f) => html`<tr>
-        <td><span class="ltr"><b>${f.public}</b>:${f.ports}</span></td>
-        <td><span class="chip">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</span></td>
-        <td><span class="chip violet">${f.tunnel}</span></td>
-        <td>${f.peer || ""} <span class="ltr muted">${f.target}:${f.to || f.ports}</span></td>
-        <td style="text-align:end"><button class="btn sm danger" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}">${I.trash(15)}</button></td></tr>`)}
-    </tbody></table></div>`;
+    const intro = html`<div class="note" style="margin-bottom:16px">هر پورت این سرور می‌تواند از تانلی جدا به مقصدی جدا برود. ستون «IP کاربر» تعیین می‌کند سرویس مقصد چه آدرسی را به‌عنوان کاربر ببیند.</div>`;
+    if (!fs.length) return html`${intro}<div class="panel"><div class="empty">${I.ports(32)}<b>فورواردی تعریف نشده</b>ترافیک ورودی پورت‌های این سرور را از داخل تانل به سرور مقصد بفرستید.<br><button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button></div></div>`;
+    return html`${intro}<div class="panel"><table class="t"><thead><tr><th>ورودی</th><th class="hide-sm">پروتکل</th><th>تانل و مقصد</th><th>IP کاربر</th><th></th></tr></thead><tbody>
+      ${fs.map((f) => {
+        const k = f.tunnel + "|" + f.ports, ed = S.fwdEdit[k];
+        return html`<tr>
+          <td><b class="ltr">${f.ports}</b><div class="faint small ltr">${f.public}</div></td>
+          <td class="hide-sm">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</td>
+          <td>${f.tunnel} <span class="faint">به</span> ${f.peer || ""}<div class="faint small ltr">${f.target}:${f.to || f.ports}</div></td>
+          <td>${ed ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" style="height:32px;width:auto" data-bind="fwdEdit.${k}.mode" aria-label="حالت">${Object.entries(MODES_FWD).map(([v, [l]]) => html`<option value="${v}" ${ed.mode === v ? "selected" : ""}>${l}</option>`)}</select>
+              ${ed.mode === "proxy" ? html`<select class="input" style="height:32px;width:auto" data-bind="fwdEdit.${k}.proxy_version" aria-label="نسخه"><option value="2" ${+ed.proxy_version !== 1 ? "selected" : ""}>v2</option><option value="1" ${+ed.proxy_version === 1 ? "selected" : ""}>v1</option></select>` : ""}
+              <button class="btn sm primary" data-act="save-fwd" data-key="${k}">ذخیره</button><button class="btn sm ghost" data-act="cancel-fwd" data-key="${k}">انصراف</button></div>`
+            : html`<button class="btn sm ghost" data-act="edit-fwd" data-key="${k}" title="${MODES_FWD[f.mode][1]}">${MODES_FWD[f.mode][0]}${f.mode === "proxy" ? ` v${f.proxy_version || 2}` : ""}</button>`}</td>
+          <td style="text-align:end"><button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد">${I.trash(15)}</button></td></tr>`;
+      })}
+    </tbody></table></div>
+    <div class="panel" style="margin-top:16px"><header><h2>سه راه برای رساندن IP کاربر</h2></header><div class="in"><dl class="kv" style="grid-template-columns:auto 1fr">
+      ${Object.values(MODES_FWD).map(([l, d]) => html`<dt><b style="color:var(--ink)">${l}</b></dt><dd style="text-align:start">${d}</dd>`)}</dl></div></div>`;
   }
 
   // ---------- speed ----------
   function viewSpeed() {
-    const ts = visibleTunnels(), ps = S.ov.peers.filter((p) => p.paired);
-    const sp = S.speed;
+    const ts = visible(), ps = S.ov.peers.filter((p) => p.paired), sp = S.speed;
     if (!sp.tunnel && ts.length) sp.tunnel = ts[0].name;
     if (!sp.peer && ps.length) sp.peer = ps[0].name;
-    const running = S.job && S.job.status === "running";
-    return html`<div class="stack">
-      <div class="grid two" style="grid-template-columns:1fr 1.35fr">
-        <div class="card"><h2>${I.tunnel(18)} تست یک تانل</h2>
-          ${ts.length ? html`<div class="field"><label>تانل</label><select class="input" data-bind="speed.tunnel">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${t.name} — ${t.mode || t.kind} → ${t.peer || t.far_ip}</option>`)}</select>
-          <span class="help">پینگ، جیتر و افت بسته با ۱۰۰ بسته؛ سپس دانلود و آپلود هر کدام ۵ ثانیه.</span></div>
-          <div class="row" style="margin-top:14px"><button class="btn primary" data-act="run-test" ${running ? "disabled" : ""}>${I.play(15)} شروع تست</button></div>`
-          : html`<div class="muted">اول یک تانل بسازید.</div>`}
-        </div>
-        <div class="card"><h2>${I.gauge(18)} مقایسه‌ی همه‌ی انواع تانل <span class="hint">بهترین را پیدا کن</span></h2>
-          ${ps.length ? html`<div class="field"><label>سرور مقصد</label><select class="input" data-bind="speed.peer">${ps.map((p) => html`<option value="${p.name}" ${sp.peer === p.name ? "selected" : ""}>${p.name} — ${p.address}</option>`)}</select></div>
-          <div class="row" style="margin-top:12px">${BENCH.map(([id, label]) => html`<label class="check"><input type="checkbox" data-act="bench-only" value="${id}" ${sp.only.includes(id) ? "checked" : ""}>${label}</label>`)}</div>
-          <div class="row" style="margin-top:14px"><button class="btn primary" data-act="run-bench" ${running ? "disabled" : ""}>${I.play(15)} شروع مقایسه</button><span class="muted small">تانل‌های موقت ساخته، اندازه‌گیری و پاک می‌شوند؛ تانل‌های فعلی دست نمی‌خورند.</span></div>`
-          : html`<div class="muted">برای مقایسه، سرور مقصد باید متصل باشد.</div>`}
-        </div>
+    const j = S.job, running = j && j.status === "running";
+    return html`<div class="speed">
+      <div class="panel">${gauge(j)}</div>
+      <div class="stack">
+        <div class="panel"><header><h2>تست یک تانل</h2></header><div class="in">
+          ${ts.length ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" data-bind="speed.tunnel" aria-label="تانل">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${t.name}، ${kindTitle(t)} به ${t.peer || t.far_ip}</option>`)}</select>
+            <button class="btn primary" data-act="run-test" ${running ? "disabled" : ""}>${I.play(15)} شروع</button></div>
+            <p class="help">۱۰۰ بسته برای پینگ، جیتر و افت؛ بعد ۵ ثانیه آپلود و ۵ ثانیه دانلود با ۴ اتصال هم‌زمان.</p>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
+        </div></div>
+        <div class="panel"><header><h2>مقایسه‌ی انواع تانل</h2><span class="aside">بهترین را برای این مسیر پیدا کنید</span></header><div class="in">
+          ${ps.length ? html`<div class="field"><label for="bench-peer">سرور مقصد</label><select id="bench-peer" class="input" data-bind="speed.peer">${ps.map((p) => html`<option value="${p.name}" ${sp.peer === p.name ? "selected" : ""}>${p.name} (${p.address})</option>`)}</select></div>
+            <div class="row" style="margin-top:12px">${BENCH.map(([id, label]) => html`<label class="switch"><input type="checkbox" data-act="bench-only" value="${id}" ${sp.only.includes(id) ? "checked" : ""}>${label}</label>`)}</div>
+            <div class="row" style="margin-top:14px"><button class="btn primary" data-act="run-bench" ${running ? "disabled" : ""}>${I.play(15)} شروع مقایسه</button><span class="help">تانل‌های موقت ساخته، اندازه‌گیری و پاک می‌شوند؛ تانل‌های فعلی دست نمی‌خورند.</span></div>`
+            : html`<div class="muted">برای مقایسه، سرور مقصد باید متصل باشد.</div>`}
+        </div></div>
+        ${j ? jobResults(j) : ""}
       </div>
-      ${S.job ? jobView(S.job) : ""}
     </div>`;
   }
 
-  function jobView(j) {
-    const results = j.results || [];
-    const ok = results.filter((r) => !r.error);
-    const maxBw = Math.max(1, ...ok.map((r) => Math.max(r.down_bps, r.up_bps)));
-    const best = j.kind === "bench" ? ok.find((r) => r.name !== "direct") : null;
-    const statusChipJ = { running: html`<span class="chip info"><i></i>در حال اجرا</span>`, done: html`<span class="chip ok"><i></i>تمام شد</span>`, failed: html`<span class="chip bad"><i></i>ناموفق</span>`, cancelled: html`<span class="chip"><i></i>لغو شد</span>` }[j.status];
-    return html`<div class="card">
-      <h2>${I.term(18)} ${j.kind === "bench" ? "مقایسه با " : "تست تانل "}${j.target} ${statusChipJ}
-        <span class="hint">${j.status === "running" ? html`<button class="btn sm danger" data-act="cancel-job">توقف</button>` : ""}</span></h2>
-      ${j.error ? html`<div class="callout bad" style="margin-bottom:12px">${j.error}</div>` : ""}
-      ${results.length ? html`<table class="table" style="margin-bottom:14px"><thead><tr><th>تانل</th><th style="text-align:end">پینگ</th><th style="text-align:end">جیتر</th><th style="text-align:end">افت</th><th>دانلود</th><th>آپلود</th><th style="text-align:end">MTU</th><th></th></tr></thead><tbody>
-        ${results.map((r) => r.error ? html`<tr><td><b>${resultTitle(r)}</b></td><td colspan="7" class="muted small ltr">${r.error}</td></tr>` : html`<tr class="${best && r.name === best.name ? "best" : ""}">
-          <td><b>${best && r.name === best.name ? html`<span class="medal">★</span> ` : ""}${resultTitle(r)}</b></td>
-          <td class="num">${ms(r.ping_ms)}</td><td class="num">${ms(r.jitter_ms)}</td><td class="num">${r.loss.toFixed(0)}%</td>
-          <td><div class="row" style="flex-wrap:nowrap"><div class="bar down" style="flex:1"><b style="width:${((r.down_bps / maxBw) * 100).toFixed(1)}%"></b></div><span class="mono small">${r.down_bps ? fmtRate(r.down_bps) : "-"}</span></div></td>
-          <td><div class="row" style="flex-wrap:nowrap"><div class="bar up" style="flex:1"><b style="width:${((r.up_bps / maxBw) * 100).toFixed(1)}%"></b></div><span class="mono small">${r.up_bps ? fmtRate(r.up_bps) : "-"}</span></div></td>
-          <td class="num">${r.mtu || "-"}</td>
-          <td>${j.kind === "bench" && r.mode ? html`<button class="btn sm" data-act="wizard" data-peer="${j.target}" data-mode="${r.mode}" data-port="${r.port || ""}">ساخت</button>` : ""}</td></tr>`)}
-      </tbody></table>` : ""}
-      ${best ? html`<div class="callout ok" style="margin-bottom:12px">★ سریع‌ترین گزینه تا <b>${j.target}</b>: <b>${resultTitle(best)}</b> — دانلود ${fmtRate(best.down_bps)}، پینگ ${ms(best.ping_ms)}</div>` : ""}
-      <div class="console" id="console">${(j.log || []).map((l) => html`<div>${l}</div>`)}</div>
+  // The gauge: a 270° arc on a log scale up to 1 Gbps, with the three phases.
+  function gauge(j) {
+    const live = (j && j.live) || {}, running = j && j.status === "running";
+    const cx = 160, cy = 160, R = 120, start = 135, sweep = 270;
+    const pt = (deg, r = R) => { const a = (deg * Math.PI) / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+    const arc = (a0, a1, r = R) => { const [x0, y0] = pt(a0, r), [x1, y1] = pt(a1, r); return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`; };
+    const frac = (bps) => Math.max(0, Math.min(1, Math.log10(1 + bps / 1e6) / Math.log10(1001)));
+    const isBw = running && (live.phase === "upload" || live.phase === "download");
+    const f = isBw ? frac(live.value) : 0, len = (Math.PI * R * sweep) / 180;
+    let ticks = "";
+    for (const mbps of [0, 1, 10, 50, 100, 250, 500, 1000]) {
+      const a = start + sweep * frac(mbps * 1e6), [x0, y0] = pt(a, R + 12), [x1, y1] = pt(a, R + 18), [tx, ty] = pt(a, R + 32);
+      ticks += `<line class="tick" x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}"/><text x="${tx}" y="${ty + 4}" text-anchor="middle">${mbps >= 1000 ? "1G" : mbps}</text>`;
+    }
+    let big = "-", unit = "", what = "آماده";
+    const res = j && j.kind === "test" && j.results && j.results[0];
+    if (running) {
+      what = live.step || "در حال آماده‌سازی";
+      if (live.phase === "ping") { big = live.value ? live.value.toFixed(1) : "…"; unit = "ms"; what = "پینگ"; }
+      else if (isBw) { [big, unit] = splitRate(live.value); what = live.phase === "upload" ? "آپلود" : "دانلود"; }
+      else big = "…";
+    } else if (res && !res.error) { [big, unit] = splitRate(res.down_bps); what = "دانلود، آخرین تست"; }
+    const phase = (k, label, val) => html`<div class="phase ${running && live.phase === k ? "now" : ""}"><b>${val}</b>${label}</div>`;
+    const seen = (k) => (S.pv[k] ? (k === "ping" ? ms(S.pv[k]) : fmtRate(S.pv[k])) : "…");
+    const done = (k) => (res && !res.error ? (k === "ping" ? ms(res.ping_ms) : fmtRate(k === "upload" ? res.up_bps : res.down_bps)) : "-");
+    return html`<div class="gauge-box">
+      ${raw(`<svg class="gauge" viewBox="0 0 320 290" role="img" aria-label="سرعت لحظه‌ای">${ticks}
+        <path class="track" d="${arc(start, start + sweep)}"/>
+        <path class="fill ${live.phase === "upload" ? "tx" : ""}" d="${arc(start, start + sweep)}" stroke-dasharray="${len.toFixed(1)}" stroke-dashoffset="${(len * (1 - f)).toFixed(1)}"/>
+        <text class="big" x="${cx}" y="${cy + 12}" text-anchor="middle" direction="ltr">${esc(big)}</text>
+        <text class="unit" x="${cx}" y="${cy + 40}" text-anchor="middle" direction="ltr">${esc(unit)}</text>
+        <text class="what" x="${cx}" y="${cy + 92}" text-anchor="middle">${esc(what.length > 40 ? what.slice(0, 40) + "…" : what)}</text></svg>`)}
+      <div class="phases">${phase("ping", "پینگ", running ? seen("ping") : done("ping"))}
+        ${phase("upload", "آپلود", running ? seen("upload") : done("upload"))}
+        ${phase("download", "دانلود", running ? seen("download") : done("download"))}</div>
+      ${running ? html`<button class="btn sm danger" style="margin-top:16px" data-act="cancel-job">توقف تست</button>` : ""}
     </div>`;
   }
 
-  // Persian titles for benchmark rows (the server sends English ones).
+  function jobResults(j) {
+    const results = (j.results || []).filter((r) => !r.error), failed = (j.results || []).filter((r) => r.error);
+    const best = j.kind === "bench" ? results.find((r) => r.name !== "direct") : null;
+    const max = Math.max(1, ...results.map((r) => Math.max(r.down_bps, r.up_bps)));
+    const st = { running: "در حال اجرا", done: "تمام شد", failed: "ناموفق", cancelled: "متوقف شد" }[j.status];
+    return html`<div class="panel"><header><h2>${j.kind === "bench" ? "مقایسه با " : "تست تانل "}${j.target}</h2><span class="aside">${st}</span></header><div class="in stack">
+      ${j.error ? html`<div class="note bad">${j.error}</div>` : ""}
+      ${best ? html`<div class="note ok">سریع‌ترین گزینه تا <b>${j.target}</b>: <b>${resultTitle(best)}</b>، دانلود ${fmtRate(best.down_bps)} و پینگ ${ms(best.ping_ms)}.
+        ${best.mode ? html` <button class="btn sm primary" data-act="wizard" data-peer="${j.target}" data-mode="${best.mode}" data-port="${best.port || ""}">ساخت همین تانل</button>` : ""}</div>` : ""}
+      ${results.length ? html`<div><div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span></div><div class="rank">${results.map((r) => html`<div class="r ${best && r.name === best.name ? "best" : ""}">
+          <div><b class="nm">${resultTitle(r)}</b><div class="faint small">پینگ ${ms(r.ping_ms)}، جیتر ${ms(r.jitter_ms)}، افت ${r.loss.toFixed(0)}٪${r.mtu ? `، MTU ${r.mtu}` : ""}</div></div>
+          <div class="bars"><div class="bar" style="width:${((r.down_bps / max) * 100).toFixed(1)}%" title="دانلود ${fmtRate(r.down_bps)}"></div><div class="bar tx" style="width:${((r.up_bps / max) * 100).toFixed(1)}%" title="آپلود ${fmtRate(r.up_bps)}"></div></div>
+          <div class="small ltr" style="text-align:end">${fmtRate(r.down_bps)}<br><span class="faint">${fmtRate(r.up_bps)}</span></div></div>`)}</div></div>` : ""}
+      ${failed.map((r) => html`<div class="small"><b>${resultTitle(r)}</b> <span class="faint ltr">${r.error}</span></div>`)}
+      <details class="adv"><summary>گزارش کامل ${I.chev(16)}</summary><div class="in"><div class="console" id="console">${(j.log || []).map((l) => html`<div>${l}</div>`)}</div></div></details>
+    </div></div>`;
+  }
+
   const resultTitle = (r) => {
     const b = BENCH.find(([id]) => id === r.name);
     if (!b) return r.title;
@@ -494,6 +758,8 @@
   async function startJob(kind, target, only) {
     try {
       S.job = await api("POST", "jobs", { kind, target, only });
+      S.pv = {};
+      if (S.drawer) S.drawer = null;
       location.hash = "#/speed";
       draw(); pollJob();
     } catch (e) { toast(e.message, "bad"); }
@@ -502,93 +768,150 @@
   async function pollJob() {
     if (!S.job || S.job.status !== "running") return;
     try { S.job = await api("GET", "jobs/" + S.job.id); } catch { /* retry */ }
-    if (S.route === "speed" && !S.modal) {
-      draw();
-      const c = $("#console"); if (c) c.scrollTop = c.scrollHeight;
-    }
-    if (S.job.status === "running") setTimeout(pollJob, 1000);
+    const lv = S.job.live || {};
+    if (lv.phase && lv.value) { if (S.pv.seq !== lv.seq) S.pv = { seq: lv.seq }; S.pv[lv.phase] = lv.value; }
+    if (S.route === "speed" && !S.modal && !S.edit) draw();
+    if (S.job.status === "running") setTimeout(pollJob, 500);
     else toast(S.job.status === "done" ? "تست تمام شد" : S.job.error || "تست متوقف شد", S.job.status === "done" ? "ok" : "bad");
   }
 
   // ---------- commands ----------
   function codeBlock(label, cmd, where) {
-    return html`<div class="code-label">${label}${where ? html`<span class="chip where">روی ${where}</span>` : ""}</div>
-      <div class="code"><button class="btn sm icon copy" data-act="copy" data-text="${cmd}" title="کپی">${I.copy(15)}</button>${cmd}</div>`;
+    return html`<div class="cmd"><div class="lbl">${label}${where ? html`<span class="faint">روی ${where}</span>` : ""}</div>
+      <div class="code">${cmd}<button class="btn sm ghost icon" data-act="copy" data-text="${cmd}" aria-label="کپی">${I.copy(15)}</button></div></div>`;
   }
 
   function viewCommands() {
     const ov = S.ov;
     return html`<div class="stack">
-      <div class="card"><h2>${I.upgrade(18)} نصب یک‌خطی روی سرور جدید (اوبونتو)</h2>
-        <div class="muted small">نصب کامل با پنل (پورت تصادفی آزاد، رمز تصادفی). برای سرور مقصد بهتر است از دکمه‌ی «دستور اتصال» در صفحه‌ی سرورها استفاده کنید که همه‌ی تنظیمات را هم اعمال می‌کند.</div>
-        ${codeBlock("نصب با پنل", ov.install, "")}
-        ${codeBlock("نصب بدون پنل (سرور مقصد)", ov.install + " -s -- --no-panel", "")}
-      </div>
-      ${ov.commands.map((g) => html`<div class="card"><h2>${I.term(18)} ${g.title}</h2>${g.commands.map((c) => codeBlock(c.label, c.run, c.where))}</div>`)}
+      <div class="panel"><header><h2>نصب روی سرور جدید</h2></header><div class="in">
+        <div class="help">برای سرور مقصد بهتر است دکمه‌ی «دستور اتصال» در صفحه‌ی سرورها را بزنید؛ آن دستور تنظیمات را هم اعمال می‌کند.</div>
+        ${codeBlock("نصب با پنل", ov.install, "")}${codeBlock("نصب بدون پنل (سرور مقصد)", ov.install + " -s -- --no-panel", "")}</div></div>
+      ${ov.commands.map((g) => html`<div class="panel"><header><h2>${g.title}</h2></header><div class="in">${g.commands.map((c) => codeBlock(c.label, c.run, c.where))}</div></div>`)}
     </div>`;
   }
 
   // ---------- settings ----------
+  const SECS = [["node", "این سرور"], ["access", "دسترسی پنل"], ["defaults", "پیش‌فرض تانل‌ها"], ["net", "شبکه و سرعت"], ["traffic", "ترافیک"], ["maint", "نگهداری"], ["about", "درباره"]];
+
   function viewSettings() {
+    const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
+    return html`<div class="settings">
+      <nav class="snav" aria-label="بخش‌های تنظیمات">${SECS.map(([k, l]) => html`<button class="${S.sec === k ? "on" : ""}" data-act="sec" data-sec="${k}">${l}</button>`)}</nav>
+      <div class="spane">${pane()}</div></div>`;
+  }
+
+  function setNode() {
     const ov = S.ov;
-    return html`<div class="grid two" style="grid-template-columns:1fr 1fr">
-      <div class="card"><h2>${I.server(18)} این سرور</h2>
-        <form data-form="node" class="stack">
-          <div class="field"><label>نام سرور</label><input class="input ltr" name="name" value="${ov.node.name}"><span class="help">در نقشه و لینک‌های اتصال نمایش داده می‌شود.</span></div>
-          <div class="field"><label>IP عمومی</label><input class="input ltr" name="address" value="${ov.node.address}"><span class="help">سرورهای مقصد با این IP به این سرور وصل می‌شوند.</span></div>
-          <div><button class="btn primary" type="submit">ذخیره</button></div>
-        </form>
-      </div>
-      <div class="card"><h2>${I.globe(18)} پورت پنل</h2>
-        <form data-form="port" class="stack">
-          <div class="field"><label>پورت</label><input class="input ltr" name="port" type="number" min="1024" max="65535" value="${ov.panel.port}"><span class="help">آدرس فعلی: <span class="ltr">${ov.panel.url}</span><br>بعد از تغییر، پنل روی پورت جدید بالا می‌آید و به آن منتقل می‌شوید.</span></div>
-          <div><button class="btn primary" type="submit">تغییر پورت</button></div>
-        </form>
-      </div>
-      <div class="card"><h2>${I.key(18)} رمز عبور</h2>
-        <form data-form="password" class="stack">
-          <div class="field"><label>رمز فعلی</label><input class="input ltr" name="current" type="password" autocomplete="current-password" required></div>
-          <div class="field"><label>رمز جدید</label><input class="input ltr" name="next" type="password" autocomplete="new-password" minlength="8" required><span class="help">حداقل ۸ کاراکتر.</span></div>
-          <div class="field"><label>تکرار رمز جدید</label><input class="input ltr" name="again" type="password" autocomplete="new-password" required></div>
-          <div><button class="btn primary" type="submit">تغییر رمز</button></div>
-        </form>
-      </div>
-      <div class="card"><h2>${I.cpu(18)} درباره</h2>
-        <dl class="kv">
-          <dt>نسخه</dt><dd class="mono">${ov.node.version} · ${ov.node.arch}</dd>
-          <dt>کلید سرور</dt><dd class="mono">${ov.node.key}</dd>
-          <dt>کاربر پنل</dt><dd class="mono">${ov.panel.user}</dd>
-          <dt>روشن بودن سرور</dt><dd>${fmtUptime(ov.node.uptime_s)}</dd>
-          <dt>BBR</dt><dd>${ov.node.bbr ? html`<span class="chip ok">فعال</span>` : html`<span class="chip warn">غیرفعال</span>`}</dd>
-          <dt>کد منبع</dt><dd><a href="${ov.repo}" target="_blank" rel="noopener" class="ltr">${ov.repo.replace("https://", "")}</a></dd>
-        </dl>
-      </div>
-    </div>`;
+    return html`<div class="panel"><header><h2>این سرور</h2></header><div class="in"><form data-form="node" class="stack">
+      <div class="grid2"><div class="field"><label for="s-name">نام سرور</label><input id="s-name" class="input ltr" name="name" value="${ov.node.name}"><span class="help">در نقشه و دستورهای اتصال دیده می‌شود. حروف کوچک انگلیسی، عدد و خط تیره.</span></div>
+      <div class="field"><label for="s-ip">IP عمومی</label><input id="s-ip" class="input ltr" name="address" value="${ov.node.address}"><span class="help">سرورهای مقصد با این IP به این سرور وصل می‌شوند.</span></div></div>
+      <div class="form-foot"><button class="btn primary" type="submit">ذخیره</button></div></form></div></div>`;
+  }
+
+  function setAccess() {
+    const ov = S.ov;
+    return html`<div class="panel"><header><h2>آدرس پنل</h2></header><div class="in"><form data-form="port" class="stack">
+        <div class="field"><label for="s-port">پورت پنل</label><input id="s-port" class="input ltr" name="port" type="number" min="1024" max="65535" value="${ov.panel.port}" style="max-width:200px">
+        <span class="help">آدرس فعلی: <span class="ltr">${ov.panel.url}</span>. بعد از تغییر، پنل روی پورت جدید بالا می‌آید و به آن منتقل می‌شوید.</span></div>
+        <div class="form-foot"><button class="btn primary" type="submit">تغییر پورت</button></div></form></div></div>
+      <div class="panel"><header><h2>نام کاربری</h2></header><div class="in"><form data-form="user" class="stack">
+        <div class="field"><label for="s-user">نام کاربری ورود</label><input id="s-user" class="input ltr" name="user" value="${ov.panel.user}" autocomplete="username" style="max-width:280px"></div>
+        <div class="form-foot"><button class="btn primary" type="submit">ذخیره</button></div></form></div></div>
+      <div class="panel"><header><h2>رمز عبور</h2></header><div class="in"><form data-form="password" class="stack">
+        <div class="grid2"><div class="field full"><label for="s-cur">رمز فعلی</label><input id="s-cur" class="input ltr" name="current" type="password" autocomplete="current-password" required></div>
+        <div class="field"><label for="s-new">رمز جدید</label><input id="s-new" class="input ltr" name="next" type="password" autocomplete="new-password" minlength="8" required><span class="help">حداقل ۸ کاراکتر.</span></div>
+        <div class="field"><label for="s-again">تکرار رمز جدید</label><input id="s-again" class="input ltr" name="again" type="password" autocomplete="new-password" required></div></div>
+        <div class="form-foot"><button class="btn primary" type="submit">تغییر رمز</button></div></form></div></div>`;
+  }
+
+  function setDefaults() {
+    const d = S.defs || (S.defs = Object.assign({ encrypt: "", mtu_probe: false, obfs: false, padding: 0, forward_mode: "nat" }, S.ov.defaults));
+    if (!d.forward_mode) d.forward_mode = "nat";
+    return html`<div class="panel"><header><h2>پیش‌فرض تانل‌های جدید</h2></header><div class="in stack">
+      <p class="help" style="margin:0">این مقادیر در ساخت تانل (پنل، منو و دستور quick) از قبل انتخاب می‌شوند و هر بار قابل تغییرند.</p>
+      <div class="field"><label for="d-enc">رمزنگاری</label><select id="d-enc" class="input" data-bind="defs.encrypt" style="max-width:320px"><option value="">بدون رمزنگاری</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${d.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}</select></div>
+      <label class="switch"><input type="checkbox" data-act="def-check" data-key="mtu_probe" ${d.mtu_probe ? "checked" : ""}>اندازه‌گیری خودکار MTU مسیر</label>
+      <label class="switch"><input type="checkbox" data-act="def-check" data-key="obfs" ${d.obfs ? "checked" : ""}>اجرای تانل‌ها روی لایه‌ی NeoObfs</label>
+      <div class="field"><label for="d-pad">Padding پیش‌فرض NeoObfs (بایت)</label><input id="d-pad" class="input ltr" type="number" min="0" max="255" data-bind="defs.padding" value="${d.padding || ""}" placeholder="0" style="max-width:160px"></div>
+      <div class="field"><span class="lbl">IP کاربر در فورواردها</span><div class="seg">${Object.entries(MODES_FWD).map(([v, [l]]) => html`<button type="button" class="${d.forward_mode === v ? "on" : ""}" data-act="set" data-path="defs.forward_mode" data-value="${v}">${l}</button>`)}</div><span class="help">${MODES_FWD[d.forward_mode][1]}</span></div>
+      <div class="form-foot"><button class="btn primary" data-act="save-defaults">ذخیره‌ی پیش‌فرض‌ها</button></div>
+    </div></div>`;
+  }
+
+  function setNet() {
+    const si = S.system;
+    if (!si) { loadSystem(); return html`<div class="panel"><div class="in muted">در حال خواندن تنظیمات کرنل…</div></div>`; }
+    return html`<div class="panel"><header><h2>بهینه‌سازی شبکه</h2><span class="aside">${si.boosted ? html`<span class="state"><i class="dot ok"></i>فعال</span>` : html`<span class="state"><i class="dot warn"></i>کامل نیست</span>`}</span></header><div class="in stack">
+      <p class="help" style="margin:0">BBR و صف fq، بافرهای بزرگ‌تر و یافتن MTU در TCP؛ برای سرعت بیشتر روی مسیرهای دور و پرنوسان. تنظیم دائمی است و بعد از ریبوت می‌ماند.</p>
+      <table class="t"><thead><tr><th>تنظیم</th><th>پیشنهادی</th><th>فعلی</th></tr></thead><tbody>${si.sysctl.map((s) => html`<tr><td class="ltr small" style="text-align:start">${s.key}</td><td class="ltr small">${s.want}</td><td class="ltr small">${s.have === s.want ? html`<span class="state"><i class="dot ok"></i>${s.have}</span>` : html`<span class="state"><i class="dot warn"></i>${s.have || "-"}</span>`}</td></tr>`)}</tbody></table>
+      <div class="form-foot"><button class="btn primary" data-act="boost" ${si.boosted ? "disabled" : ""}>${si.boosted ? "اعمال شده" : "اعمال بهینه‌سازی"}</button></div>
+    </div></div>
+    <div class="panel"><header><h2>وضعیت سیستم</h2></header><div class="in"><dl class="kv">
+      <dt>کرنل</dt><dd class="ltr">${si.kernel || "-"}</dd>
+      <dt>nftables (فوروارد و IPsec)</dt><dd>${si.nft ? "نصب است" : html`<span class="state"><i class="dot bad"></i>نصب نیست: apt install nftables</span>`}</dd>
+      <dt>فایروال ufw</dt><dd>${si.ufw ? "فعال؛ پورت‌های لازم خودکار باز می‌شوند" : "غیرفعال"}</dd></dl></div></div>`;
+  }
+
+  function setTraffic() {
+    const ts = visible();
+    return html`<div class="panel"><header><h2>آمار ترافیک</h2></header><div class="in stack">
+      <p class="help" style="margin:0">سرویس هر ۱۰ ثانیه شمارنده‌ی هر تانل را می‌خواند و مجموع روزانه، ماهانه و کل را نگه می‌دارد؛ ساخت دوباره‌ی تانل یا ریبوت آن را صفر نمی‌کند. سابقه‌ی روزانه تا ۶۲ روز می‌ماند.</p>
+      ${ts.length ? html`<table class="t"><thead><tr><th>تانل</th><th class="num">امروز</th><th class="num">این ماه</th><th class="num">از ابتدا</th><th></th></tr></thead><tbody>${ts.map((t) => html`<tr><td>${t.name}</td><td class="num">${fmtBytes(t.today.rx + t.today.tx)}</td><td class="num">${fmtBytes(t.month.rx + t.month.tx)}</td><td class="num">${fmtBytes(t.total.rx + t.total.tx)}</td>
+        <td style="text-align:end"><button class="btn sm ghost" data-act="reset-traffic" data-name="${t.name}">صفر کردن</button></td></tr>`)}</tbody></table>` : html`<div class="muted">تانلی نیست.</div>`}
+      <div class="form-foot"><button class="btn danger" data-act="reset-traffic" data-name="">صفر کردن آمار همه‌ی تانل‌ها</button></div>
+    </div></div>`;
+  }
+
+  function setMaint() {
+    return html`<div class="panel"><header><h2>پشتیبان</h2></header><div class="in stack">
+        <p class="help" style="margin:0">همه‌ی تنظیمات، سرورها، کلیدها و رمزهای تانل‌ها در یک فایل JSON. آن را جای امن نگه دارید.</p>
+        <div><a class="btn" href="api/backup" download>${I.download(16)} دانلود پشتیبان</a></div></div></div>
+      <div class="panel"><header><h2>سرویس</h2></header><div class="in stack">
+        <p class="help" style="margin:0">ری‌استارت سرویس، تانل‌های کرنلی را قطع نمی‌کند؛ لایه‌ی NeoObfs و رله‌ها چند ثانیه قطع می‌شوند.</p>
+        <div class="row"><button class="btn" data-act="restart">${I.sync(16)} ری‌استارت سرویس</button><button class="btn" data-act="sync-all">همگام‌سازی همه‌ی سرورها</button></div></div></div>
+      <div class="panel"><header><h2>حذف NeoTunnel</h2></header><div class="in stack">
+        <p class="help" style="margin:0">این دستور سرویس، تانل‌ها، IPsec، قوانین فوروارد و مسیریابی، تنظیمات، کلیدها و خود برنامه را از سرور پاک می‌کند. با <span class="ltr">--keep-config</span> تنظیمات برای نصب دوباره می‌ماند.</p>
+        ${codeBlock("حذف کامل (روی همین سرور اجرا کنید)", "sudo neotunnel uninstall", "")}
+        ${codeBlock("حذف و نگه‌داشتن تنظیمات", "sudo neotunnel uninstall --keep-config", "")}</div></div>`;
+  }
+
+  function setAbout() {
+    const ov = S.ov;
+    return html`<div class="panel"><header><h2>درباره</h2></header><div class="in"><dl class="kv">
+      <dt>نسخه</dt><dd class="ltr">${ov.node.version} ${ov.node.arch}</dd><dt>اثر انگشت کلید سرور</dt><dd class="ltr">${ov.node.key}</dd>
+      <dt>روشن بودن سرور</dt><dd>${fmtUptime(ov.node.uptime_s)}</dd><dt>کد منبع</dt><dd><a href="${ov.repo}" target="_blank" rel="noopener" class="ltr">${ov.repo.replace("https://", "")}</a></dd></dl></div></div>`;
+  }
+
+  async function loadSystem() {
+    try { S.system = await api("GET", "system"); if (S.route === "settings" && S.sec === "net") draw(); } catch (e) { toast(e.message, "bad"); }
   }
 
   // ---------- modals ----------
   function drawModal() {
     const root = $("#modal-root");
     if (!S.modal) { root.innerHTML = ""; return; }
+    const focused = document.activeElement && document.activeElement.closest(".modal") ? document.activeElement.dataset.bind : null;
     root.innerHTML = part(html`<div class="overlay" data-act="close-overlay"><div class="modal" role="dialog" aria-modal="true">${S.modal.view()}</div></div>`);
+    const f = (focused && $(`.modal [data-bind="${focused}"]`)) || $(".modal input, .modal select, .modal button.primary");
+    if (f) f.focus();
   }
   const openModal = (view, opts = {}) => { S.modal = Object.assign({ view }, opts); drawModal(); };
   const closeModal = () => { S.modal = null; S.wiz = null; drawModal(); draw(); };
-  const modalHead = (title, extra = "") => html`<header><h3>${title}</h3>${extra}<button class="btn sm ghost icon" data-act="close" style="margin-inline-start:${extra ? "0" : "auto"}">${I.x(16)}</button></header>`;
+  const modalHead = (title, extra = "") => html`<header><h3>${title}</h3>${extra}<button class="btn sm ghost icon" data-act="close" style="margin-inline-start:${extra ? "0" : "auto"}" aria-label="بستن">${I.x(16)}</button></header>`;
 
   function setupView(s, intro) {
     const where = `${s.peer} (${s.address})`;
     return html`${modalHead("دستور اتصال " + s.peer)}
       <div class="body">
-        ${intro || (s.paired
-          ? html`<div class="callout ok">این سرور متصل است و تغییرات خودکار روی آن اعمال می‌شود. اگر روزی در دسترس نبود، دستور زیر را روی <b>${where}</b> اجرا کنید تا همه‌ی تنظیمات یک‌جا اعمال شود.</div>`
-          : html`<div class="callout warn">این سرور هنوز وصل نشده. یکی از دستورهای زیر را روی سرور <b>${where}</b> با دسترسی root اجرا کنید. بعد از آن، هر تغییری که اینجا بدهید خودکار روی آن هم اعمال می‌شود.</div>`)}
+        ${intro || (s.paired ? html`<div class="note ok">این سرور متصل است و تغییرات خودکار روی آن اعمال می‌شود. اگر روزی در دسترس نبود، دستور زیر را روی <b>${where}</b> اجرا کنید تا همه‌چیز یکجا اعمال شود.</div>`
+          : html`<div class="note warn">این سرور هنوز وصل نشده. یکی از دستورهای زیر را روی <b>${where}</b> با دسترسی root اجرا کنید؛ بعد از آن هر تغییری خودکار روی آن هم اعمال می‌شود.</div>`)}
         ${s.install ? codeBlock("۱. نصب از همین سرور و اعمال تنظیمات (پیشنهادی)", s.install, s.peer) : ""}
-        ${s.github ? codeBlock("۲. یا: نصب از گیت‌هاب و اعمال تنظیمات", s.github, s.peer) : ""}
-        ${codeBlock(s.install ? "۳. اگر NeoTunnel از قبل روی آن نصب است" : "اعمال همه‌ی تنظیمات (همگام‌سازی دستی)", s.apply, s.peer)}
-        <div class="muted small">لینک با کلید این سرور امضا شده است؛ سرور مقصد فقط لینک سرور اصلی خودش را قبول می‌کند.</div>
+        ${s.github ? codeBlock("۲. یا نصب از گیت‌هاب و اعمال تنظیمات", s.github, s.peer) : ""}
+        ${codeBlock(s.install ? "۳. اگر NeoTunnel از قبل نصب است" : "اعمال همه‌ی تنظیمات (همگام‌سازی دستی)", s.apply, s.peer)}
+        <div class="help">کلید اتصال (NT1.…) با کلید این سرور امضا شده و رمزهای تانل‌ها را هم دارد؛ آن را فقط روی همان سرور اجرا کنید.</div>
       </div>
-      <footer><button class="btn primary" data-act="close">متوجه شدم</button></footer>`;
+      <footer><span class="grow"></span><button class="btn primary" data-act="close">بستن</button></footer>`;
   }
 
   async function showSetup(name) {
@@ -596,63 +919,75 @@
     catch (e) { toast(e.message, "bad"); }
   }
 
-  // Report a change: problems here, then each peer (with its setup if unreachable).
   function reportChange(ch, okMsg) {
     const failed = (ch.peers || []).filter((p) => !p.ok);
     (ch.errors || []).forEach((e) => toast(e, "bad"));
     (ch.peers || []).filter((p) => p.ok).forEach((p) => toast(`${p.peer} به‌روز شد`));
     if (failed.length && failed[0].setup) {
-      const p = failed[0];
-      const notPaired = /not paired/.test(p.error || "");
-      openModal(() => setupView(p.setup, html`<div class="callout ${notPaired ? "warn" : "bad"}">${okMsg ? html`<b>${okMsg}</b><br>` : ""}${notPaired
-        ? html`سرور <b>${p.peer}</b> هنوز وصل نشده. دستور زیر را روی آن اجرا کنید تا تانل آن طرف هم ساخته شود.`
-        : html`سرور <b>${p.peer}</b> در دسترس نبود (<span class="ltr small">${p.error}</span>). با اجرای دستور زیر روی آن، همه‌ی تغییرات یک‌جا اعمال می‌شود.`}</div>`));
+      const p = failed[0], notPaired = /not paired/.test(p.error || "");
+      openModal(() => setupView(p.setup, html`<div class="note ${notPaired ? "warn" : "bad"}">${okMsg ? html`<b>${okMsg}.</b> ` : ""}${notPaired
+        ? html`سرور <b>${p.peer}</b> هنوز وصل نشده. دستور زیر را روی آن اجرا کنید تا آن طرف تانل هم ساخته شود.`
+        : html`سرور <b>${p.peer}</b> در دسترس نبود (<span class="ltr small">${p.error}</span>). با اجرای دستور زیر روی آن، همه‌ی تغییرات یکجا اعمال می‌شود.`}</div>`));
       return;
     }
     if (okMsg) toast(okMsg);
   }
 
-  // Tunnel wizard: destination → kind → port & forwarding.
+  // Tunnel wizard: destination → protocol → protection, ports and forwarding.
   function wizardView() {
     const w = S.wiz, ov = S.ov;
-    const steps = html`<div class="steps">${[1, 2, 3].map((i) => html`<i class="${w.step >= i ? "on" : ""}"></i>`)}</div>`;
+    const steps = html`<div class="steps" aria-label="مرحله ${w.step} از ۳">${[1, 2, 3].map((i) => html`<i class="${w.step >= i ? "on" : ""}"></i>`)}</div>`;
     let body;
     if (w.step === 1) {
-      body = html`<div class="field"><label>تانل به کجا برود؟</label>
-        <div class="choices">
+      body = html`<div class="field"><span class="lbl">تانل به کجا برود؟</span><div class="choices">
           ${ov.peers.map((p) => html`<button type="button" class="choice ${w.dest === "peer" && w.peer === p.name ? "on" : ""}" data-act="wiz-dest" data-dest="peer" data-name="${p.name}">
             <b>${I.server(16)} ${p.name}</b><span class="ltr">${p.address}</span><span>${p.paired ? "متصل" : "منتظر اتصال"}</span></button>`)}
           <button type="button" class="choice ${w.dest === "new" ? "on" : ""}" data-act="wiz-dest" data-dest="new"><b>${I.plus(16)} سرور جدید</b><span>سرور خارج که NeoTunnel روی آن نصب می‌شود</span></button>
           <button type="button" class="choice ${w.dest === "remote" ? "on" : ""}" data-act="wiz-dest" data-dest="remote"><b>${I.globe(16)} دستگاه دیگر</b><span>مثلاً میکروتیک؛ فقط این طرف ساخته می‌شود</span></button>
         </div></div>
-        ${w.dest === "new" ? html`<div class="form-grid"><div class="field"><label>نام سرور</label><input class="input ltr" data-bind="wiz.newName" value="${w.newName}" placeholder="germany"><span class="help">حروف کوچک انگلیسی، عدد و خط تیره</span></div>
-          <div class="field"><label>IP عمومی سرور</label><input class="input ltr" data-bind="wiz.newIP" value="${w.newIP}" placeholder="203.0.113.10"></div></div>` : ""}
-        ${w.dest === "remote" ? html`<div class="field"><label>IP دستگاه مقابل</label><input class="input ltr" data-bind="wiz.remote" value="${w.remote}" placeholder="203.0.113.10"><span class="help">آن طرف را خودتان (مثلاً روی میکروتیک) با همان نوع تانل تنظیم کنید.</span></div>` : ""}`;
+        ${w.dest === "new" ? html`<div class="grid2"><div class="field"><label for="w-nn">نام سرور</label><input id="w-nn" class="input ltr" data-bind="wiz.newName" value="${w.newName}" placeholder="germany"><span class="help">حروف کوچک انگلیسی، عدد و خط تیره</span></div>
+          <div class="field"><label for="w-ip">IP عمومی سرور</label><input id="w-ip" class="input ltr" data-bind="wiz.newIP" value="${w.newIP}" placeholder="203.0.113.10"></div></div>` : ""}
+        ${w.dest === "remote" ? html`<div class="field"><label for="w-rm">IP دستگاه مقابل</label><input id="w-rm" class="input ltr" data-bind="wiz.remote" value="${w.remote}" placeholder="203.0.113.10"><span class="help">آن طرف را خودتان (مثلاً روی میکروتیک) با همان نوع تانل تنظیم کنید.</span></div>` : ""}`;
     } else if (w.step === 2) {
-      body = html`<div class="field"><label>نوع تانل</label><div class="choices">
-        ${ov.modes.map((m) => html`<button type="button" class="choice ${w.mode === m.name ? "on" : ""}" data-act="wiz-mode" data-mode="${m.name}">
-          <b>${m.title} ${MODE_INFO[m.name] && MODE_INFO[m.name][1] ? html`<span class="chip ok">پیشنهادی</span>` : ""}</b>
-          <span>${MODE_INFO[m.name] ? MODE_INFO[m.name][0] : ""}</span><span class="faint">لایه ${m.layer}</span></button>`)}
-      </div></div>
-      <div class="form-grid"><div class="field"><label>نام تانل (اختیاری)</label><input class="input ltr" data-bind="wiz.name" value="${w.name}" placeholder="t1" maxlength="8"><span class="help">خالی بگذارید تا خودکار انتخاب شود</span></div></div>`;
+      const p = PROTO[w.mode] || {};
+      const remoteOK = (m) => !(w.dest === "remote" && m.peer);
+      body = html`<div class="field"><span class="lbl">پروتکل</span><div class="choices">
+          ${ov.modes.filter(remoteOK).map((m) => { const pi = PROTO[m.name] || {}; return html`<button type="button" class="choice ${w.mode === m.name ? "on" : ""}" data-act="wiz-mode" data-mode="${m.name}">
+            <b>${pi.t || m.title}${pi.rec ? html` <span class="tag lock">پیشنهادی</span>` : ""}${m.crypt ? html` <span class="tag lock">${I.lock(11)}</span>` : ""}</b>
+            <span>${pi.best || ""}</span><span class="facts"><span class="tag">لایه ${m.layer}</span><span class="tag">سربار ${pi.over || "?"} بایت</span>${m.udp ? html`<span class="tag">UDP</span>` : ""}</span></button>`; })}
+        </div></div>
+        ${p.t ? html`<div class="stack" style="gap:10px"><p style="margin:0">${p.d}</p><div class="proto-info">
+          <div><span class="k">لایه و محتوا</span>لایه ${p.layer}، ${p.carry}</div><div><span class="k">سربار (روی IPv4)</span>${p.over} بایت</div>
+          <div><span class="k">رمزنگاری</span>${p.crypt}</div><div><span class="k">میکروتیک</span>${p.mt}</div></div></div>` : ""}
+        <div class="field"><label for="w-name">نام تانل (اختیاری)</label><input id="w-name" class="input ltr" data-bind="wiz.name" value="${w.name}" placeholder="t1" maxlength="8" style="max-width:220px"><span class="help">خالی بگذارید تا خودکار انتخاب شود.</span></div>`;
     } else {
-      body = html`<div class="field"><label>پورت UDP تانل (اختیاری)</label><input class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="مثلاً 3000">
-          <span class="help">تانل داخل UDP روی این پورت اجرا می‌شود (FOU). وقتی مسیر پروتکل‌های 41/47 را می‌بندد مفید است، و هر تانل به هر سرور می‌تواند پورت خودش را داشته باشد. خالی = پروتکل خام (سریع‌ترین).</span></div>
-        <div class="form-grid">
-          <div class="field"><label>فوروارد پورت‌های این سرور (اختیاری)</label><input class="input ltr" data-bind="wiz.fwd" value="${w.fwd}" placeholder="443, 8443, 2053-2096"><span class="help">ترافیک این پورت‌ها از داخل تانل به مقصد می‌رود</span></div>
-          <div class="field"><label>پورت مقصد (اختیاری)</label><input class="input ltr" type="number" data-bind="wiz.fwdTo" value="${w.fwdTo}" placeholder="همان پورت"><span class="help">مثلاً 2053 اینجا ← 443 آن طرف</span></div>
-          <div class="field full"><label>پروتکل</label><div class="seg">${["both", "tcp", "udp"].map((p) => html`<button type="button" class="${w.proto === p ? "on" : ""}" data-act="wiz-proto" data-proto="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
-        </div>`;
+      const mode = ov.modes.find((m) => m.name === w.mode) || {};
+      const canProtect = !mode.crypt && w.dest !== "remote";
+      body = html`${canProtect ? html`<div class="field"><span class="lbl">محافظت</span><div class="choices">
+            <button type="button" class="choice ${w.protect === "none" ? "on" : ""}" data-act="set" data-path="wiz.protect" data-value="none"><b>بدون رمزنگاری</b><span>سریع‌ترین؛ برای ترافیکی که خودش رمز شده (TLS، Xray).</span></button>
+            <button type="button" class="choice ${w.protect === "ipsec" ? "on" : ""}" data-act="set" data-path="wiz.protect" data-value="ipsec"><b>${I.lock(15)} IPsec در کرنل</b><span>رمزنگاری AES-GCM با سرعت کرنل؛ ۳۸ بایت سربار.</span></button>
+            <button type="button" class="choice ${w.protect === "obfs" ? "on" : ""}" data-act="set" data-path="wiz.protect" data-value="obfs"><b>${I.mask(15)} NeoObfs</b><span>رمز و مبهم: بسته‌ها شبیه نویز تصادفی UDP؛ کندتر از کرنل.</span></button>
+          </div>
+          ${w.protect === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>` : ""}</div>` : ""}
+        <div class="grid2">
+          <div class="field"><label for="w-fwd">فوروارد پورت‌های این سرور (اختیاری)</label><input id="w-fwd" class="input ltr" data-bind="wiz.fwd" value="${w.fwd}" placeholder="443, 8443, 2053-2096"><span class="help">ترافیک این پورت‌ها از داخل تانل به مقصد می‌رود.</span></div>
+          <div class="field"><label for="w-to">پورت مقصد (اختیاری)</label><input id="w-to" class="input ltr" type="number" data-bind="wiz.fwdTo" value="${w.fwdTo}" placeholder="همان پورت"><span class="help">مثلاً 2053 اینجا به 443 آن طرف.</span></div>
+          <div class="field"><span class="lbl">پروتکل فوروارد</span><div class="seg">${["both", "tcp", "udp"].map((p) => html`<button type="button" class="${w.proto === p ? "on" : ""}" data-act="set" data-path="wiz.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
+          <div class="field"><span class="lbl">IP کاربر</span><div class="seg">${Object.entries(MODES_FWD).filter(([v]) => w.dest !== "remote" || v !== "transparent").map(([v, [l]]) => html`<button type="button" class="${w.fmode === v ? "on" : ""}" data-act="set" data-path="wiz.fmode" data-value="${v}">${l}</button>`)}</div></div>
+          <div class="full help">${MODES_FWD[w.fmode][1]}</div>
+          ${w.fmode === "proxy" ? html`<div class="field"><span class="lbl">نسخه‌ی PROXY protocol</span><div class="seg">${["2", "1"].map((v) => html`<button type="button" class="${String(w.pver) === v ? "on" : ""}" data-act="set" data-path="wiz.pver" data-value="${v}">v${v}</button>`)}</div></div>` : ""}
+        </div>
+        <details class="adv" ${w.adv ? "open" : ""} data-act="adv-toggle" data-name="">
+          <summary>تنظیمات پیشرفته <span class="faint">MTU، پورت UDP، TTL${w.protect === "obfs" || w.mode === "obfs" ? "، padding" : ""}</span>${I.chev(16)}</summary>
+          <div class="in">${advancedFields("wiz", w, w.protect === "obfs" ? "obfs" : w.mode, false)}</div>
+        </details>`;
     }
     const canNext = wizCanNext(w);
     return html`${modalHead("تانل جدید", steps)}
       <div class="body">${body}</div>
-      <footer>
-        ${w.step > 1 ? html`<button class="btn ghost" data-act="wiz-back">قبلی</button>` : ""}
-        <span class="spacer"></span>
+      <footer>${w.step > 1 ? html`<button class="btn ghost" data-act="wiz-back">قبلی</button>` : ""}<span class="grow"></span>
         ${w.step < 3 ? html`<button class="btn primary" data-act="wiz-next" ${canNext ? "" : "disabled"}>بعدی</button>`
-          : html`<button class="btn primary" data-act="wiz-create" ${w.busy ? "disabled" : ""}>${w.busy ? "در حال ساخت…" : html`${I.check(16)} ساخت تانل`}</button>`}
-      </footer>`;
+          : html`<button class="btn primary" data-act="wiz-create" ${w.busy ? "disabled" : ""}>${w.busy ? "در حال ساخت…" : html`${I.check(16)} ساخت تانل`}</button>`}</footer>`;
   }
 
   function wizCanNext(w) {
@@ -661,8 +996,13 @@
   }
 
   function openWizard(preset = {}) {
-    const ov = S.ov;
-    S.wiz = Object.assign({ step: 1, dest: ov.peers.length ? "peer" : "new", peer: ov.peers.length ? ov.peers[0].name : "", newName: "", newIP: "", remote: "", mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false }, preset);
+    const ov = S.ov, d = ov.defaults || {};
+    S.wiz = Object.assign({
+      step: 1, dest: ov.peers.length ? "peer" : "new", peer: ov.peers.length ? ov.peers[0].name : "", newName: "", newIP: "", remote: "",
+      mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false,
+      protect: d.obfs ? "obfs" : d.encrypt ? "ipsec" : "none", encrypt: d.encrypt || "aes-gcm-128",
+      fmode: d.forward_mode || "nat", pver: 2, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
+    }, preset);
     if (preset.peer) { S.wiz.dest = "peer"; S.wiz.step = preset.mode ? 3 : 2; }
     openModal(wizardView);
   }
@@ -676,7 +1016,12 @@
         await api("POST", "peers", { name: w.newName.trim(), address: w.newIP.trim() });
         peerName = w.newName.trim();
       }
-      const req = { mode: w.mode, name: w.name.trim(), port: +w.port || 0, forward: w.fwd.trim(), forward_to: +w.fwdTo || 0, proto: w.proto };
+      const set = settingsBody(w);
+      const req = Object.assign(set, {
+        mode: w.mode, name: w.name.trim(), port: +w.port || 0, forward: w.fwd.trim(), forward_to: +w.fwdTo || 0, proto: w.proto,
+        forward_mode: w.fmode, proxy_version: w.fmode === "proxy" ? +w.pver : 0,
+        obfs: w.protect === "obfs", encrypt: w.protect === "ipsec" ? w.encrypt : "",
+      });
       if (w.dest === "remote") req.remote = w.remote.trim(); else req.peer = peerName;
       const ch = await api("POST", "tunnels", req);
       S.modal = null; S.wiz = null;
@@ -691,58 +1036,68 @@
   function addServerView() {
     const f = S.form;
     return html`${modalHead("افزودن سرور مقصد")}
-      <div class="body">
-        <div class="muted">سرور خارج را اضافه کنید؛ پنل یک دستور یک‌خطی می‌سازد که NeoTunnel را روی آن نصب و به این سرور وصل می‌کند.</div>
-        <div class="form-grid">
-          <div class="field"><label>نام</label><input class="input ltr" data-bind="form.name" value="${f.name || ""}" placeholder="germany"></div>
-          <div class="field"><label>IP عمومی</label><input class="input ltr" data-bind="form.address" value="${f.address || ""}" placeholder="203.0.113.10"></div>
-        </div>
-      </div>
-      <footer><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-server-go">${I.plus(16)} افزودن</button></footer>`;
+      <div class="body"><p class="muted" style="margin:0">پنل یک دستور یک‌خطی می‌سازد که NeoTunnel را روی آن سرور نصب و به این سرور وصل می‌کند.</p>
+        <div class="grid2"><div class="field"><label for="a-n">نام</label><input id="a-n" class="input ltr" data-bind="form.name" value="${f.name || ""}" placeholder="germany"></div>
+          <div class="field"><label for="a-ip">IP عمومی</label><input id="a-ip" class="input ltr" data-bind="form.address" value="${f.address || ""}" placeholder="203.0.113.10"></div></div></div>
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-server-go">${I.plus(16)} افزودن سرور</button></footer>`;
   }
 
   function addForwardView() {
-    const f = S.form, ts = visibleTunnels().filter((t) => !t.managed);
+    const f = S.form, ts = visible().filter((t) => !t.managed);
     if (!f.tunnel && ts.length) f.tunnel = ts[0].name;
+    const t = tunnel(f.tunnel), remote = t && !t.peer;
     return html`${modalHead("فوروارد پورت جدید")}
-      <div class="body">
-        ${ts.length ? html`<div class="form-grid">
-          <div class="field full"><label>از طریق تانل</label><select class="input" data-bind="form.tunnel">${ts.map((t) => html`<option value="${t.name}" ${f.tunnel === t.name ? "selected" : ""}>${t.name} → ${t.peer || t.far_ip} (${t.there4 || t.there6})</option>`)}</select></div>
-          <div class="field"><label>پورت(های) این سرور</label><input class="input ltr" data-bind="form.ports" value="${f.ports || ""}" placeholder="443, 2053-2096"></div>
-          <div class="field"><label>پورت مقصد (اختیاری)</label><input class="input ltr" type="number" data-bind="form.to" value="${f.to || ""}" placeholder="همان پورت"></div>
-          <div class="field full"><label>پروتکل</label><div class="seg">${["both", "tcp", "udp"].map((p) => html`<button type="button" class="${(f.proto || "both") === p ? "on" : ""}" data-act="form-proto" data-proto="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
-        </div>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
-      </div>
-      <footer><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-forward-go" ${ts.length ? "" : "disabled"}>${I.plus(16)} افزودن</button></footer>`;
+      <div class="body">${ts.length ? html`<div class="grid2">
+          <div class="field full"><label for="f-t">از طریق تانل</label><select id="f-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${x.name} به ${x.peer || x.far_ip} (${x.there4 || x.there6})</option>`)}</select></div>
+          <div class="field"><label for="f-p">پورت(های) این سرور</label><input id="f-p" class="input ltr" data-bind="form.ports" value="${f.ports || ""}" placeholder="443, 2053-2096"></div>
+          <div class="field"><label for="f-to">پورت مقصد (اختیاری)</label><input id="f-to" class="input ltr" type="number" data-bind="form.to" value="${f.to || ""}" placeholder="همان پورت"></div>
+          <div class="field"><span class="lbl">پروتکل</span><div class="seg">${["both", "tcp", "udp"].map((p) => html`<button type="button" class="${(f.proto || "both") === p ? "on" : ""}" data-act="set" data-path="form.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
+          <div class="field"><span class="lbl">IP کاربر</span><div class="seg">${Object.entries(MODES_FWD).filter(([v]) => !remote || v !== "transparent").map(([v, [l]]) => html`<button type="button" class="${f.mode === v ? "on" : ""}" data-act="set" data-path="form.mode" data-value="${v}">${l}</button>`)}</div></div>
+          <div class="full help">${MODES_FWD[f.mode][1]}</div>
+          ${f.mode === "proxy" ? html`<div class="field"><span class="lbl">نسخه</span><div class="seg">${["2", "1"].map((v) => html`<button type="button" class="${String(f.pver) === v ? "on" : ""}" data-act="set" data-path="form.pver" data-value="${v}">v${v}</button>`)}</div></div>` : ""}
+        </div>` : html`<div class="muted">اول یک تانل بسازید.</div>`}</div>
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-forward-go" ${ts.length ? "" : "disabled"}>${I.plus(16)} افزودن فوروارد</button></footer>`;
   }
 
-  function confirmView(title, text, act, data) {
+  function confirmView(title, text, act, data, label) {
     return html`${modalHead(title)}<div class="body"><div>${text}</div></div>
-      <footer><button class="btn ghost" data-act="close">انصراف</button><button class="btn danger" data-act="${act}" ${raw(Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" "))}>${I.trash(16)} حذف</button></footer>`;
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn danger" data-act="${act}" ${raw(Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" "))}>${I.trash(16)} ${label}</button></footer>`;
   }
 
   // ---------- events ----------
-  const setPath = (path, value) => {
-    const [root, key] = path.split(".");
-    const obj = { wiz: S.wiz, form: S.form, speed: S.speed }[root];
-    if (obj) obj[key] = value;
-  };
+  // data-bind paths: "wiz.port", "form.ports", "tset.<name>.mtu", "fwdEdit.<k>.mode", "defs.padding".
+  function setPath(path, value) {
+    const parts = path.split(".");
+    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs };
+    let obj = roots[parts[0]];
+    if (!obj) return;
+    if (parts[0] === "fwdEdit") { obj = obj[parts.slice(1, -1).join(".")]; if (!obj) return; obj[parts[parts.length - 1]] = value; return; }
+    for (const p of parts.slice(1, -1)) { if (!obj[p]) obj[p] = {}; obj = obj[p]; }
+    obj[parts[parts.length - 1]] = value;
+  }
 
   document.addEventListener("input", (e) => {
     const b = e.target.dataset.bind;
-    if (!b) return;
+    if (!b) { if (e.target.closest("#app form")) S.edit = true; return; }
     setPath(b, e.target.value);
-    // Re-evaluate the Next button without redrawing the inputs.
+    if (!e.target.closest(".modal")) S.edit = true;
     const next = $('[data-act="wiz-next"]');
     if (next && S.wiz) next.disabled = !wizCanNext(S.wiz);
   });
   document.addEventListener("change", (e) => {
-    if (e.target.dataset.bind) setPath(e.target.dataset.bind, e.target.value);
-    if (e.target.dataset.act === "bench-only") {
-      const v = e.target.value, on = e.target.checked, only = S.speed.only.filter((x) => x !== v);
-      S.speed.only = on ? only.concat(v) : only;
+    const t = e.target;
+    if (t.dataset.bind) { setPath(t.dataset.bind, t.value); if (t.closest(".modal")) drawModal(); else if (!t.closest("form")) draw(); }
+    if (t.dataset.act === "bench-only") {
+      const only = S.speed.only.filter((x) => x !== t.value);
+      S.speed.only = t.checked ? only.concat(t.value) : only;
     }
+    if (t.dataset.act === "def-check") { S.defs[t.dataset.key] = t.checked; S.edit = true; }
   });
+  document.addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (!(d instanceof HTMLDetailsElement) || d.dataset.act !== "adv-toggle") return;
+    if (d.dataset.name) { if (S.tset[d.dataset.name]) S.tset[d.dataset.name].adv = d.open; } else if (S.wiz) S.wiz.adv = d.open;
+  }, true);
 
   document.addEventListener("submit", async (e) => {
     const form = e.target.dataset.form;
@@ -750,11 +1105,9 @@
     e.preventDefault();
     const d = Object.fromEntries(new FormData(e.target));
     try {
-      if (form === "login") {
-        await api("POST", "login", { user: d.user, password: d.password });
-        S.authed = true; await refresh(); return;
-      }
+      if (form === "login") { await api("POST", "login", { user: d.user, password: d.password }); S.authed = true; await refresh(); refreshTraffic().then(draw); return; }
       if (form === "node") { await api("POST", "settings/node", { name: d.name.trim(), address: d.address.trim() }); toast("ذخیره شد"); }
+      if (form === "user") { await api("POST", "settings/user", { user: d.user.trim() }); toast("نام کاربری عوض شد"); }
       if (form === "password") {
         if (d.next !== d.again) throw new Error("تکرار رمز با رمز جدید یکی نیست");
         await api("POST", "settings/password", { current: d.current, next: d.next });
@@ -766,7 +1119,13 @@
         setTimeout(() => { location.href = r.url; }, 3500);
         return;
       }
-      S.settingsDrawn = false; await refresh();
+      if (form === "tunnel-settings") {
+        const name = e.target.dataset.name, st = S.tset[name];
+        const ch = await api("PATCH", "tunnels/" + encodeURIComponent(name), Object.assign(settingsBody(st), { port: +st.port || 0 }));
+        delete S.tset[name];
+        reportChange(ch, "تنظیمات تانل ذخیره شد");
+      }
+      S.edit = false; await refresh();
     } catch (err) { toast(err.message, "bad"); }
   });
 
@@ -776,10 +1135,29 @@
     copy(el) { copy(el.dataset.text); },
     close() { closeModal(); },
     "close-overlay"(el, e) { if (e.target === el) closeModal(); },
-    wizard(el) { openWizard(el.dataset.peer ? { peer: el.dataset.peer, mode: el.dataset.mode || "6to4", port: el.dataset.port || "" } : {}); },
+    set(el) {
+      setPath(el.dataset.path, el.dataset.value);
+      if (el.closest(".modal")) drawModal(); else { S.edit = el.dataset.path.startsWith("tset") || el.dataset.path.startsWith("defs") ? true : S.edit; draw(); }
+    },
+    drawer(el) {
+      S.drawerEnter = !S.drawer;
+      S.drawer = el.dataset.type === "dest" ? { type: "dest", key: el.dataset.key } : { type: "tunnel", name: el.dataset.name };
+      draw(); const c = $(".drawer .btn"); if (c) c.focus();
+      if (el.dataset.type === "tunnel") refreshTraffic().then(() => { if (S.drawer) draw(); });
+    },
+    "drawer-close"() { S.drawer = null; draw(); },
+    "open-tunnel"(el) { S.drawer = null; S.open = el.dataset.name; location.hash = "#/tunnels"; draw(); },
+    "toggle-tunnel"(el) { const n = el.dataset.name; S.open = S.open === n ? null : n; if (S.open !== n) delete S.tset[n]; S.edit = false; draw(); },
+    "reset-tset"(el) { delete S.tset[el.dataset.name]; S.edit = false; draw(); },
+    async mtu(el) {
+      const n = el.dataset.name;
+      toast("در حال اندازه‌گیری مسیر؛ تا یک دقیقه طول می‌کشد…");
+      try { S.mtu[n] = await api("POST", `tunnels/${encodeURIComponent(n)}/mtu`); S.open = n; S.drawer = null; location.hash = "#/tunnels"; await refresh(); draw(); }
+      catch (e) { toast(e.message, "bad"); }
+    },
+    wizard(el) { openWizard(el.dataset.peer ? { peer: el.dataset.peer, mode: el.dataset.mode || "", port: el.dataset.port || "" } : {}); if (el.dataset.peer && !el.dataset.mode) S.wiz.mode = "6to4"; S.drawer = null; drawModal(); },
     "wiz-dest"(el) { Object.assign(S.wiz, { dest: el.dataset.dest, peer: el.dataset.name || S.wiz.peer }); drawModal(); },
     "wiz-mode"(el) { S.wiz.mode = el.dataset.mode; drawModal(); },
-    "wiz-proto"(el) { S.wiz.proto = el.dataset.proto; drawModal(); },
     "wiz-next"() { S.wiz.step++; drawModal(); },
     "wiz-back"() { S.wiz.step--; drawModal(); },
     "wiz-create"() { createTunnel(); },
@@ -791,26 +1169,37 @@
         await refresh(); openModal(() => setupView(s)); location.hash = "#/servers";
       } catch (e) { toast(e.message, "bad"); }
     },
-    "add-forward"() { S.form = { proto: "both" }; openModal(addForwardView); },
-    "form-proto"(el) { S.form.proto = el.dataset.proto; drawModal(); },
+    "add-forward"() { S.form = { proto: "both", mode: (S.ov.defaults && S.ov.defaults.forward_mode) || "nat", pver: 2 }; openModal(addForwardView); },
     async "add-forward-go"() {
       const f = S.form;
       try {
-        const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: (f.ports || "").trim(), proto: f.proto || "both", to: +f.to || 0 });
+        const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: (f.ports || "").trim(), proto: f.proto || "both", to: +f.to || 0, mode: f.mode, proxy_version: f.mode === "proxy" ? +f.pver : 0 });
         closeModal(); await refresh(); reportChange(ch, "فوروارد اضافه شد");
       } catch (e) { toast(e.message, "bad"); }
     },
-    "del-forward"(el) { openModal(() => confirmView("حذف فوروارد", html`فوروارد پورت <b class="ltr">${el.dataset.ports}</b> روی تانل <b>${el.dataset.tunnel}</b> حذف شود؟`, "del-forward-go", { tunnel: el.dataset.tunnel, ports: el.dataset.ports })); },
+    "edit-fwd"(el) {
+      const f = S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === el.dataset.key);
+      if (f) { S.fwdEdit[el.dataset.key] = { mode: f.mode, proxy_version: f.proxy_version || 2 }; S.edit = true; draw(); }
+    },
+    "cancel-fwd"(el) { delete S.fwdEdit[el.dataset.key]; S.edit = false; draw(); },
+    async "save-fwd"(el) {
+      const k = el.dataset.key, ed = S.fwdEdit[k], f = S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === k);
+      try {
+        const ch = await api("POST", "forwards/update", { tunnel: f.tunnel, ports: f.ports, proto: f.proto, to: f.to || 0, mode: ed.mode, proxy_version: ed.mode === "proxy" ? +ed.proxy_version : 0 });
+        delete S.fwdEdit[k]; S.edit = false; await refresh(); reportChange(ch, "حالت فوروارد عوض شد");
+      } catch (e) { toast(e.message, "bad"); }
+    },
+    "del-forward"(el) { openModal(() => confirmView("حذف فوروارد", html`فوروارد پورت <b class="ltr">${el.dataset.ports}</b> روی تانل <b>${el.dataset.tunnel}</b> حذف شود؟`, "del-forward-go", { tunnel: el.dataset.tunnel, ports: el.dataset.ports }, "حذف فوروارد")); },
     async "del-forward-go"(el) {
-      try { const ch = await api("POST", "forwards/remove", { tunnel: el.dataset.tunnel, ports: el.dataset.ports }); closeModal(); await refresh(); reportChange(ch, "حذف شد"); }
+      try { const ch = await api("POST", "forwards/remove", { tunnel: el.dataset.tunnel, ports: el.dataset.ports }); closeModal(); await refresh(); reportChange(ch, "فوروارد حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
     },
-    "del-tunnel"(el) { openModal(() => confirmView("حذف تانل", html`تانل <b>${el.dataset.name}</b> (و تانل زیرساخت و فورواردهای آن) در هر دو سرور حذف شود؟`, "del-tunnel-go", { name: el.dataset.name })); },
+    "del-tunnel"(el) { openModal(() => confirmView("حذف تانل", html`تانل <b>${el.dataset.name}</b> با لایه‌های زیرین و فورواردهایش، روی هر دو سرور حذف شود؟`, "del-tunnel-go", { name: el.dataset.name }, "حذف تانل")); },
     async "del-tunnel-go"(el) {
-      try { const ch = await api("DELETE", "tunnels/" + encodeURIComponent(el.dataset.name)); closeModal(); await refresh(); reportChange(ch, "تانل حذف شد"); }
+      try { const ch = await api("DELETE", "tunnels/" + encodeURIComponent(el.dataset.name)); closeModal(); S.open = null; S.drawer = null; await refresh(); reportChange(ch, "تانل حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
     },
-    "del-server"(el) { openModal(() => confirmView("حذف سرور", html`سرور <b>${el.dataset.name}</b> و تانل‌های این سرور به آن حذف شوند؟ (روی خود آن سرور دست نمی‌خورد)`, "del-server-go", { name: el.dataset.name })); },
+    "del-server"(el) { openModal(() => confirmView("حذف سرور", html`سرور <b>${el.dataset.name}</b> و تانل‌های این سرور به آن حذف شوند؟ روی خود آن سرور چیزی پاک نمی‌شود.`, "del-server-go", { name: el.dataset.name }, "حذف سرور")); },
     async "del-server-go"(el) {
       try { const ch = await api("DELETE", "peers/" + encodeURIComponent(el.dataset.name)); closeModal(); await refresh(); reportChange(ch, "سرور حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
@@ -833,19 +1222,48 @@
     "run-test"() { startJob("test", S.speed.tunnel); },
     "run-bench"() { startJob("bench", S.speed.peer, S.speed.only); },
     async "cancel-job"() { if (S.job) await api("POST", `jobs/${S.job.id}/cancel`).catch(() => {}); },
+    sec(el) { S.sec = el.dataset.sec; store("nt-settings", S.sec); S.edit = false; S.defs = null; draw(); },
+    "goto-sec"(el, e) { e.preventDefault(); S.sec = el.dataset.sec; location.hash = "#/settings"; },
+    async "save-defaults"() {
+      const d = S.defs;
+      try { await api("POST", "settings/defaults", { encrypt: d.encrypt, mtu_probe: !!d.mtu_probe, obfs: !!d.obfs, padding: +d.padding || 0, forward_mode: d.forward_mode === "nat" ? "" : d.forward_mode }); S.edit = false; S.defs = null; await refresh(); toast("پیش‌فرض‌ها ذخیره شد"); }
+      catch (e) { toast(e.message, "bad"); }
+    },
+    async boost() {
+      try { await api("POST", "system/boost"); S.system = null; toast("بهینه‌سازی اعمال شد"); loadSystem(); }
+      catch (e) { toast(e.message, "bad"); }
+    },
+    restart() { openModal(() => confirmView("ری‌استارت سرویس", "سرویس NeoTunnel چند ثانیه دیگر دوباره بالا می‌آید و پنل خودکار وصل می‌شود.", "restart-go", {}, "ری‌استارت")); },
+    async "restart-go"() {
+      try { await api("POST", "system/restart"); closeModal(); toast("سرویس در حال ری‌استارت است…"); }
+      catch (e) { toast(e.message, "bad"); }
+    },
+    "reset-traffic"(el) {
+      const n = el.dataset.name;
+      openModal(() => confirmView("صفر کردن آمار", n ? html`آمار ترافیک تانل <b>${n}</b> صفر شود؟` : "آمار ترافیک همه‌ی تانل‌ها صفر شود؟", "reset-traffic-go", { name: n }, "صفر کردن"));
+    },
+    async "reset-traffic-go"(el) {
+      try { await api("POST", "traffic/reset", { tunnel: el.dataset.name }); closeModal(); await refreshTraffic(); await refresh(); toast("آمار صفر شد"); }
+      catch (e) { toast(e.message, "bad"); }
+    },
   };
 
   document.addEventListener("click", (e) => {
     const el = e.target.closest("[data-act]");
-    if (!el || el.type === "checkbox") return;
+    if (!el || el.type === "checkbox" || el.tagName === "DETAILS") return;
     const fn = actions[el.dataset.act];
-    if (fn) { if (el.tagName === "A") e.preventDefault(); fn(el, e); }
+    if (fn) { if (el.tagName === "A" && el.dataset.act !== "goto-sec") e.preventDefault(); fn(el, e); }
   });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.modal) closeModal(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { if (S.modal) closeModal(); else if (S.drawer) { S.drawer = null; draw(); } return; }
+    // SVG nodes act as buttons.
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('g[role="button"]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
+  });
 
   window.addEventListener("hashchange", () => {
     S.route = location.hash.slice(2) || "dashboard";
-    S.settingsDrawn = false;
+    S.edit = false; S.drawer = null; S.defs = null;
+    if (S.route === "settings") S.system = null;
     draw(); window.scrollTo(0, 0);
   });
 
@@ -853,13 +1271,12 @@
   async function boot() {
     await refresh();
     if (S.authed) {
-      try {
-        const jobs = await api("GET", "jobs");
-        if (jobs.length) { S.job = jobs[0]; pollJob(); }
-      } catch { /* none */ }
+      await refreshTraffic();
+      try { const jobs = await api("GET", "jobs"); if (jobs.length) { S.job = jobs[0]; pollJob(); } } catch { /* none */ }
       draw();
     }
     setInterval(() => { if (S.authed && !document.hidden) refresh(); }, 3000);
+    setInterval(() => { if (S.authed && !document.hidden) refreshTraffic(); }, 30000);
   }
   boot();
 })();

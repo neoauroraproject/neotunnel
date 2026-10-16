@@ -19,6 +19,7 @@ import (
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/identity"
+	"neotunnel/internal/service"
 )
 
 // PeerSync is the outcome of pushing a change to one peer.
@@ -53,6 +54,10 @@ func Commit(peers []string, fn func(*config.State) error) (*config.State, Change
 	var ch Change
 	for _, e := range engine.Apply(st).Errors {
 		ch.Errors = append(ch.Errors, e.Error())
+	}
+	if !engine.InDaemon() {
+		// NeoObfs tunnels and PROXY protocol relays live in the daemon.
+		service.Reload()
 	}
 	ch.Peers = Sync(st, peers)
 	return st, ch, nil
@@ -223,34 +228,117 @@ func Setup(peer string) (fleet.Setup, error) {
 	return fleet.MakeSetup(id, peer)
 }
 
-// AddForward forwards ports on this node through a tunnel.
-func AddForward(tunnel, ports, proto string, to uint16) (Change, error) {
-	if _, err := forward.ParsePorts(ports); err != nil {
+// ForwardRequest forwards ports on this node through a tunnel.
+type ForwardRequest struct {
+	Tunnel       string `json:"tunnel"`
+	Ports        string `json:"ports"`
+	Proto        string `json:"proto,omitempty"` // tcp, udp, both (default)
+	To           uint16 `json:"to,omitempty"`
+	Mode         string `json:"mode,omitempty"` // nat (default), transparent, proxy
+	ProxyVersion int    `json:"proxy_version,omitempty"`
+}
+
+func (r *ForwardRequest) check(st *config.State) error {
+	if _, err := forward.ParsePorts(r.Ports); err != nil {
+		return err
+	}
+	if r.Proto == "" {
+		r.Proto = "both"
+	}
+	if r.Mode == "" {
+		r.Mode = st.D().ForwardMode
+	}
+	if err := config.ValidForwardMode(r.Mode, r.ProxyVersion, r.Proto); err != nil {
+		return err
+	}
+	t, ok := st.Tunnel(r.Tunnel)
+	if !ok {
+		return fmt.Errorf("unknown tunnel %q", r.Tunnel)
+	}
+	if r.Mode == config.ForwardTransparent && t.Sides[1].Node == "" {
+		return fmt.Errorf("transparent forwarding needs NeoTunnel on the far end to route replies back")
+	}
+	if r.Mode == config.ForwardProxy && len(forward.Expand(r.Ports)) > forward.MaxRelayPorts {
+		return fmt.Errorf("proxy mode supports up to %d ports per forward", forward.MaxRelayPorts)
+	}
+	return nil
+}
+
+// AddForward forwards ports on this node through a tunnel. The tunnel's far
+// end is updated too: a transparent forward needs its return path there.
+func AddForward(r ForwardRequest) (Change, error) {
+	st, err := Node()
+	if err != nil {
 		return Change{}, err
 	}
-	if proto == "" {
-		proto = "both"
+	if err := r.check(st); err != nil {
+		return Change{}, err
 	}
-	_, ch, err := Commit(nil, func(s *config.State) error {
-		if _, ok := s.Tunnel(tunnel); !ok {
-			return fmt.Errorf("unknown tunnel %q", tunnel)
+	t, _ := st.Tunnel(r.Tunnel)
+	_, ch, err := Commit(st.PeersOf(*t), func(s *config.State) error {
+		if _, ok := s.Tunnel(r.Tunnel); !ok {
+			return fmt.Errorf("unknown tunnel %q", r.Tunnel)
 		}
-		if err := portsFree(s, ports, proto, ""); err != nil {
+		if err := portsFree(s, r.Ports, r.Proto, ""); err != nil {
 			return err
 		}
-		s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: tunnel, Proto: proto, Ports: ports, To: to})
+		s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: r.Tunnel, Proto: r.Proto, Ports: r.Ports,
+			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion})
 		return nil
 	})
 	return ch, err
 }
 
+// UpdateForward changes how the forward of ports on tunnel reaches the far
+// end (mode, PROXY protocol version, target port, protocol).
+func UpdateForward(r ForwardRequest) (Change, error) {
+	st, err := Node()
+	if err != nil {
+		return Change{}, err
+	}
+	if err := r.check(st); err != nil {
+		return Change{}, err
+	}
+	t, _ := st.Tunnel(r.Tunnel)
+	_, ch, err := Commit(st.PeersOf(*t), func(s *config.State) error {
+		for i, f := range s.Forwards {
+			if f.Node == s.Self && f.Tunnel == r.Tunnel && f.Ports == r.Ports {
+				f.Proto, f.To, f.Mode, f.ProxyVersion = r.Proto, r.To, r.Mode, r.ProxyVersion
+				s.Forwards[i] = f
+				return portsFreeExcept(s, i)
+			}
+		}
+		return fmt.Errorf("no forward of %s on %s", r.Ports, r.Tunnel)
+	})
+	return ch, err
+}
+
+// portsFreeExcept checks forward i against the others on this node.
+func portsFreeExcept(s *config.State, i int) error {
+	f := s.Forwards[i]
+	others := append(append([]config.Forward(nil), s.Forwards[:i]...), s.Forwards[i+1:]...)
+	saved := s.Forwards
+	s.Forwards = others
+	err := portsFree(s, f.Ports, f.Proto, "")
+	s.Forwards = saved
+	return err
+}
+
 // RemoveForward deletes the forward of ports on tunnel.
 func RemoveForward(tunnel, ports string) (Change, error) {
-	_, ch, err := Commit(nil, func(s *config.State) error {
+	st, err := Node()
+	if err != nil {
+		return Change{}, err
+	}
+	var peers []string
+	if t, ok := st.Tunnel(tunnel); ok {
+		peers = st.PeersOf(*t)
+	}
+	_, ch, err := Commit(peers, func(s *config.State) error {
 		var fs []config.Forward
 		found := false
 		for _, f := range s.Forwards {
-			if f.Tunnel == tunnel && f.Ports == ports {
+			if f.Node == s.Self && f.Tunnel == tunnel && f.Ports == ports {
 				found = true
 				continue
 			}
@@ -263,6 +351,26 @@ func RemoveForward(tunnel, ports string) (Change, error) {
 		return nil
 	})
 	return ch, err
+}
+
+// SetDefaults saves the options new tunnels and forwards start with.
+func SetDefaults(d config.Defaults) error {
+	if d.Encrypt != "" {
+		if _, err := config.LookupCipher(d.Encrypt); err != nil {
+			return err
+		}
+	}
+	if d.Padding < 0 || d.Padding > 255 {
+		return fmt.Errorf("padding must be 0-255 bytes")
+	}
+	if err := config.ValidForwardMode(d.ForwardMode, 0, "both"); err != nil {
+		return err
+	}
+	_, err := config.Update(func(s *config.State) error {
+		s.Defaults = &d
+		return nil
+	})
+	return err
 }
 
 // portsFree rejects forwarding a port twice on this node.

@@ -1,6 +1,7 @@
-// Package setuplink encodes the signed neotunnel:// links a master hands to
-// its peers. One link both pairs a peer and carries its full configuration,
-// so applying it again later is how an unreachable peer catches up.
+// Package setuplink encodes the signed setup keys a master hands to its
+// peers ("NT1.<gzip json>.<ed25519 signature>"). One key both pairs a peer and
+// carries its full configuration, so applying it again later is how an
+// unreachable peer catches up.
 package setuplink
 
 import (
@@ -18,7 +19,8 @@ import (
 	"neotunnel/internal/identity"
 )
 
-const Scheme = "neotunnel://"
+// Prefix marks a setup key and its format version.
+const Prefix = "NT1."
 
 type Payload struct {
 	V           int              `json:"v"`
@@ -45,62 +47,62 @@ func Encode(id *identity.Identity, p Payload) (string, error) {
 	w.Close()
 	sig := ed25519.Sign(id.Key, z.Bytes())
 	enc := base64.RawURLEncoding
-	return Scheme + enc.EncodeToString(z.Bytes()) + "." + enc.EncodeToString(sig), nil
+	return Prefix + enc.EncodeToString(z.Bytes()) + "." + enc.EncodeToString(sig), nil
 }
 
-// Decode verifies the signature against the key embedded in the link. The
-// caller decides whether that key is one it trusts.
-func Decode(link string) (*Payload, error) {
-	link = strings.TrimSpace(link)
-	body, ok := strings.CutPrefix(link, Scheme)
+// Decode verifies the signature against the master key embedded in the
+// setup key. The caller decides whether that master is one it trusts.
+func Decode(setupKey string) (*Payload, error) {
+	setupKey = strings.Trim(strings.TrimSpace(setupKey), `'"`)
+	body, ok := strings.CutPrefix(setupKey, Prefix)
 	if !ok {
-		return nil, fmt.Errorf("not a %s link", Scheme)
+		return nil, fmt.Errorf("not a setup key (it starts with %s)", Prefix)
 	}
 	zb64, sb64, ok := strings.Cut(body, ".")
 	if !ok {
-		return nil, fmt.Errorf("malformed link")
+		return nil, fmt.Errorf("malformed setup key")
 	}
 	enc := base64.RawURLEncoding
 	z, err1 := enc.DecodeString(zb64)
 	sig, err2 := enc.DecodeString(sb64)
 	if err1 != nil || err2 != nil {
-		return nil, fmt.Errorf("malformed link (truncated when copying?)")
+		return nil, fmt.Errorf("malformed setup key (cut off when copying?)")
 	}
 	r, err := gzip.NewReader(bytes.NewReader(z))
 	if err != nil {
-		return nil, fmt.Errorf("malformed link: %w", err)
+		return nil, fmt.Errorf("malformed setup key: %w", err)
 	}
 	raw, err := io.ReadAll(io.LimitReader(r, 4<<20))
 	if err != nil {
-		return nil, fmt.Errorf("malformed link: %w", err)
+		return nil, fmt.Errorf("malformed setup key: %w", err)
 	}
 	var p Payload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, fmt.Errorf("malformed link: %w", err)
+		return nil, fmt.Errorf("malformed setup key: %w", err)
 	}
 	if p.V != 1 {
-		return nil, fmt.Errorf("link version %d not supported; upgrade neotunnel", p.V)
+		return nil, fmt.Errorf("setup key version %d not supported; upgrade neotunnel", p.V)
 	}
 	key, err := identity.DecodeKey(p.Master.PublicKey)
 	if err != nil {
 		return nil, err
 	}
 	if !ed25519.Verify(key, z, sig) {
-		return nil, fmt.Errorf("link signature is invalid")
+		return nil, fmt.Errorf("setup key signature is invalid")
 	}
 	return &p, nil
 }
 
-// Accept merges a verified payload into the peer's state. It refuses links
-// from a different master (unless force) and links older than what's applied.
+// Accept merges a verified payload into the peer's state. It refuses keys
+// from a different master (unless force) and keys older than what's applied.
 func Accept(st *config.State, p *Payload, force bool) error {
 	if m := st.Managed; m != nil && !force {
 		if m.Master.PublicKey != p.Master.PublicKey {
-			return fmt.Errorf("this node is managed by master %q (%s); link is from %q (%s). Use --force to switch masters",
+			return fmt.Errorf("this server is managed by %q (%s); the setup key is from %q (%s). Use --force to switch",
 				m.Master.Name, identity.Fingerprint(m.Master.PublicKey), p.Master.Name, identity.Fingerprint(p.Master.PublicKey))
 		}
 		if p.Revision < m.Revision {
-			return fmt.Errorf("link is older (revision %d) than the applied configuration (revision %d)", p.Revision, m.Revision)
+			return fmt.Errorf("setup key is older (revision %d) than the applied configuration (revision %d)", p.Revision, m.Revision)
 		}
 	}
 	token := p.EnrollToken

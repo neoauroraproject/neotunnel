@@ -26,6 +26,9 @@ type Options struct {
 	Interval time.Duration
 	Duration time.Duration // per direction
 	Streams  int
+	// Live, if set, receives measurements as they happen: phase "ping"
+	// (milliseconds), "upload" or "download" (bits/s), "done".
+	Live func(phase string, value float64)
 }
 
 func DefaultOptions() Options {
@@ -137,6 +140,12 @@ func (r *Runner) say(f string, a ...any) {
 	}
 }
 
+func (r *Runner) live(phase string, v float64) {
+	if r.Opts.Live != nil {
+		r.Opts.Live(phase, v)
+	}
+}
+
 func (r *Runner) open(ctx context.Context) error {
 	if r.client != nil {
 		return nil
@@ -159,17 +168,19 @@ func (r *Runner) Measure(ctx context.Context, addr netip.Addr) (probe.LatencyRes
 		return probe.LatencyResult{}, 0, 0, err
 	}
 	hp := net.JoinHostPort(addr.String(), strconv.Itoa(probe.DefaultPort))
+	r.live("ping", 0)
 	lat, err := probe.Latency(ctx, hp, r.token, r.Opts.Pings, r.Opts.Interval, 64)
 	if err != nil {
 		return lat, 0, 0, err
 	}
 	r.say("  latency %.1f ms, jitter %.1f ms, loss %.0f%%", ms(lat.Avg), ms(lat.Jitter), lat.Loss())
-	up, err := probe.Bandwidth(ctx, hp, r.token, probe.Upload, r.Opts.Duration, r.Opts.Streams)
+	r.live("ping", ms(lat.Avg))
+	up, err := probe.BandwidthLive(ctx, hp, r.token, probe.Upload, r.Opts.Duration, r.Opts.Streams, func(bps float64) { r.live("upload", bps) })
 	if err != nil {
 		return lat, 0, 0, fmt.Errorf("upload: %w", err)
 	}
 	r.say("  upload %s", Rate(up))
-	down, err := probe.Bandwidth(ctx, hp, r.token, probe.Download, r.Opts.Duration, r.Opts.Streams)
+	down, err := probe.BandwidthLive(ctx, hp, r.token, probe.Download, r.Opts.Duration, r.Opts.Streams, func(bps float64) { r.live("download", bps) })
 	if err != nil {
 		return lat, up, 0, fmt.Errorf("download: %w", err)
 	}

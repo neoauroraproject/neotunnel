@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"neotunnel/internal/service"
 	"neotunnel/internal/setuplink"
 	"neotunnel/internal/sysctl"
+	"neotunnel/internal/traffic"
 )
 
 func daemonCmd() *cobra.Command {
@@ -57,40 +59,74 @@ func installCmd() *cobra.Command {
 }
 
 func uninstallCmd() *cobra.Command {
-	var purge bool
+	var keep, yes bool
 	cmd := &cobra.Command{
-		Use:   "uninstall",
-		Short: "Stop the service and remove all tunnels",
+		Use:     "uninstall",
+		Aliases: []string{"remove-all"},
+		Short:   "Remove NeoTunnel completely: tunnels, service, rules, settings and the program",
+		Long: "Stops the service, removes every tunnel, IPsec, forward and routing rule,\n" +
+			"the kernel tuning, the configuration and keys, and the neotunnel program.\n" +
+			"With --keep-config the configuration and keys stay for a later reinstall.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireRoot(); err != nil {
 				return err
 			}
-			service.Uninstall()
-			engine.Down()
-			if purge {
-				os.RemoveAll(config.Dir)
-				os.Remove("/etc/sysctl.d/90-neotunnel.conf")
+			if !yes {
+				what := "tunnels, service, settings, keys and the program"
+				if keep {
+					what = "tunnels, service and the program (settings kept)"
+				}
+				if !confirm(red("Remove NeoTunnel")+": "+what+"?", false) {
+					info("nothing removed")
+					return nil
+				}
 			}
-			success("uninstalled")
+			uninstall(keep)
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&purge, "purge", false, "also delete configuration and keys")
+	cmd.Flags().BoolVar(&keep, "keep-config", false, "keep /etc/neotunnel (keys, tunnels, panel) for a later reinstall")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "don't ask for confirmation")
+	// Older scripts call "uninstall --purge"; removing everything is now the default.
+	cmd.Flags().Bool("purge", false, "")
+	cmd.Flags().MarkHidden("purge")
 	return cmd
+}
+
+// uninstall removes the service, every tunnel and rule, and the program;
+// unless keep is set also the configuration, keys and kernel tuning.
+func uninstall(keep bool) {
+	service.Uninstall()
+	engine.Down()
+	success("service stopped; tunnels, IPsec and forwarding rules removed")
+	if !keep {
+		os.RemoveAll(config.Dir)
+		os.Remove("/etc/sysctl.d/90-neotunnel.conf")
+		os.Remove("/etc/modules-load.d/neotunnel.conf")
+		success("configuration, keys and kernel tuning deleted")
+	} else {
+		info("configuration kept in %s", config.Dir)
+	}
+	if exe, err := os.Executable(); err == nil {
+		if exe, err = filepath.EvalSymlinks(exe); err == nil && os.Remove(exe) == nil {
+			success("program removed (%s)", exe)
+		}
+	}
+	success("NeoTunnel is uninstalled")
 }
 
 func applyCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "apply ['neotunnel://...']",
-		Short: "Apply the configuration now, or join/catch up with a master's setup link",
+		Use:   "apply ['NT1....']",
+		Short: "Re-apply the configuration now, or join a main server with its setup key",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireRoot(); err != nil {
 				return err
 			}
 			if len(args) == 1 {
-				return applyLink(args[0], force)
+				return applyKey(args[0], force)
 			}
 			st, err := loadNode()
 			if err != nil {
@@ -99,7 +135,7 @@ func applyCmd() *cobra.Command {
 			return report(engine.Apply(st))
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "accept a link from a different master")
+	cmd.Flags().BoolVar(&force, "force", false, "accept a setup key from a different main server")
 	return cmd
 }
 
@@ -119,8 +155,8 @@ func report(res engine.Result) error {
 	return nil
 }
 
-func applyLink(link string, force bool) error {
-	p, err := setuplink.Decode(link)
+func applyKey(key string, force bool) error {
+	p, err := setuplink.Decode(key)
 	if err != nil {
 		return err
 	}
@@ -211,54 +247,71 @@ func printStatus(st *config.State) {
 }
 
 func trafficCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "traffic",
-		Short: "Live traffic per tunnel (Ctrl+C to stop)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := loadNode()
-			if err != nil {
-				return err
+		Short: "Live traffic and totals per tunnel (Ctrl+C to stop)",
+		RunE:  func(cmd *cobra.Command, args []string) error { return showTraffic() },
+	}
+	cmd.AddCommand(trafficResetCmd())
+	return cmd
+}
+
+// showTraffic redraws per-tunnel rates every second until Ctrl+C.
+func showTraffic() error {
+	st, err := loadNode()
+	if err != nil {
+		return err
+	}
+	ts, _ := st.Effective()
+	if len(ts) == 0 {
+		info("no tunnels yet")
+		return nil
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	fmt.Println(dim("  ctrl+c to stop"))
+	// Totals as of the daemon's last save (once a minute) plus what moved
+	// since this command started.
+	sums := traffic.Open().Summaries(time.Now())
+	base := map[string]engine.LinkState{}
+	prev := map[string]engine.LinkState{}
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for first := true; ; first = false {
+		var b strings.Builder
+		if !first && color {
+			fmt.Fprintf(&b, "\x1b[%dA", len(ts)+1)
+		}
+		fmt.Fprintf(&b, "  %-12s %-6s %14s %14s %12s %12s\n", "TUNNEL", "STATE", "IN", "OUT", "TOTAL IN", "TOTAL OUT")
+		for _, t := range ts {
+			n := engine.Ifname(t.Name)
+			cur := engine.State(n)
+			p, had := prev[n]
+			in, out := "-", "-"
+			if had && cur.Exists {
+				in = bench.Rate(float64(cur.RxBytes-p.RxBytes) * 8)
+				out = bench.Rate(float64(cur.TxBytes-p.TxBytes) * 8)
 			}
-			ts, _ := st.Effective()
-			if len(ts) == 0 {
-				info("no tunnels")
-				return nil
+			prev[n] = cur
+			b0, ok := base[n]
+			if !ok || cur.RxBytes < b0.RxBytes || cur.TxBytes < b0.TxBytes {
+				base[n], b0 = cur, cur
 			}
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-			defer stop()
-			prev := map[string]engine.LinkState{}
-			tick := time.NewTicker(time.Second)
-			defer tick.Stop()
-			for first := true; ; first = false {
-				var b strings.Builder
-				if !first && color {
-					fmt.Fprintf(&b, "\x1b[%dA", len(ts)+1)
-				}
-				fmt.Fprintf(&b, "%-12s %-8s %14s %14s %12s %12s\n", "TUNNEL", "STATE", "IN", "OUT", "TOTAL IN", "TOTAL OUT")
-				for _, t := range ts {
-					n := engine.Ifname(t.Name)
-					cur := engine.State(n)
-					p, had := prev[n]
-					in, out := "-", "-"
-					if had && cur.Exists {
-						in = bench.Rate(float64(cur.RxBytes-p.RxBytes) * 8)
-						out = bench.Rate(float64(cur.TxBytes-p.TxBytes) * 8)
-					}
-					prev[n] = cur
-					state := "up"
-					if !cur.Up {
-						state = "down"
-					}
-					fmt.Fprintf(&b, "%-12s %-8s %14s %14s %12s %12s\x1b[K\n", t.Name, state, in, out, bytesHuman(cur.RxBytes), bytesHuman(cur.TxBytes))
-				}
-				fmt.Print(b.String())
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-tick.C:
-				}
+			moved := (cur.RxBytes - b0.RxBytes) + (cur.TxBytes - b0.TxBytes)
+			s := sums[t.Name]
+			state := green("up  ")
+			if !cur.Up {
+				state = red("down")
 			}
-		},
+			fmt.Fprintf(&b, "  %-12s %s   %14s %14s %12s %12s %12s\x1b[K\n", t.Name, state, in, out,
+				bytesHuman(s.Today.Rx+s.Today.Tx+moved), bytesHuman(s.Month.Rx+s.Month.Tx+moved), bytesHuman(s.Total.Rx+s.Total.Tx+moved))
+		}
+		fmt.Print(b.String())
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+		}
 	}
 }
 
@@ -277,29 +330,31 @@ func testCmd() *cobra.Command {
 		Use:   "test <tunnel>",
 		Short: "Measure ping, jitter, loss and bandwidth through a tunnel",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := loadNode()
-			if err != nil {
-				return err
-			}
-			id, err := identity.LoadOrCreate()
-			if err != nil {
-				return err
-			}
-			title("Testing " + args[0])
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-			defer stop()
-			res, err := bench.TestTunnel(ctx, id, st, args[0], *o, func(s string) { info("%s", s) })
-			if err != nil {
-				return err
-			}
-			fmt.Println()
-			fmt.Print(bench.Table([]bench.Result{res}))
-			return nil
-		},
+		RunE:  func(cmd *cobra.Command, args []string) error { return runTest(args[0], *o) },
 	}
 	o = benchOptions(cmd)
 	return cmd
+}
+
+// runTest measures one tunnel and prints the result.
+func runTest(name string, o bench.Options) error {
+	st, err := loadNode()
+	if err != nil {
+		return err
+	}
+	id, err := identity.LoadOrCreate()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	res, err := bench.TestTunnel(ctx, id, st, name, o, func(s string) { info("%s", s) })
+	if err != nil {
+		return err
+	}
+	fmt.Println()
+	fmt.Print(bench.Table([]bench.Result{res}))
+	return nil
 }
 
 func benchCmd() *cobra.Command {
@@ -315,60 +370,13 @@ func benchCmd() *cobra.Command {
 			if err := requireRoot(); err != nil {
 				return err
 			}
-			st, err := loadNode()
-			if err != nil {
-				return err
-			}
-			p, ok := st.Peer(args[0])
-			if !ok {
-				return fmt.Errorf("unknown peer %q", args[0])
-			}
-			if _, err := netip.ParseAddr(st.Address); err != nil {
-				return fmt.Errorf("this node's address is unknown: neotunnel node --address <ip>")
-			}
-			id, err := identity.LoadOrCreate()
-			if err != nil {
-				return err
-			}
 			want := map[string]bool{}
 			for _, s := range strings.Split(only, ",") {
 				if s = strings.TrimSpace(s); s != "" {
 					want[s] = true
 				}
 			}
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-			defer stop()
-			r := &bench.Runner{ID: id, State: st, Peer: *p, Opts: *o, Progress: func(s string) { info("%s", s) }}
-			title(fmt.Sprintf("Benchmark %s → %s", st.Self, p.Name))
-			var results []bench.Result
-			if len(want) == 0 || want["direct"] {
-				results = append(results, r.Baseline(ctx))
-			}
-			for _, c := range bench.Candidates(st.Self, p.Name, st.Address, p.Address) {
-				if len(want) > 0 && !want[c.Name] {
-					continue
-				}
-				if ctx.Err() != nil {
-					break
-				}
-				res := r.Run(ctx, c)
-				if res.Err != "" {
-					warn("%s: %s", c.Title, res.Err)
-				}
-				results = append(results, res)
-			}
-			bench.Rank(results)
-			title("Results (best first)")
-			fmt.Print(bench.Table(results))
-			for _, res := range results {
-				if res.Err == "" && res.Name != "direct" {
-					fmt.Println()
-					success("fastest tunnel: %s", bold(res.Title))
-					info("set it up: neotunnel quick %s --mode %s", p.Name, res.Name)
-					break
-				}
-			}
-			return nil
+			return runBench(args[0], *o, want)
 		},
 	}
 	o = benchOptions(cmd)
@@ -376,15 +384,75 @@ func benchCmd() *cobra.Command {
 	return cmd
 }
 
-func optimizeCmd() *cobra.Command {
+// runBench compares tunnel kinds to a peer (all, or those in only) and
+// prints the ranking with the command that builds the fastest.
+func runBench(peer string, o bench.Options, only map[string]bool) error {
+	st, err := loadNode()
+	if err != nil {
+		return err
+	}
+	p, ok := st.Peer(peer)
+	if !ok {
+		return fmt.Errorf("unknown server %q", peer)
+	}
+	if !p.Paired() {
+		return fmt.Errorf("%s is not connected yet: run its connect command on it first", peer)
+	}
+	if _, err := netip.ParseAddr(st.Address); err != nil {
+		return fmt.Errorf("this server's public IP is unknown: neotunnel node --address <ip>")
+	}
+	id, err := identity.LoadOrCreate()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	r := &bench.Runner{ID: id, State: st, Peer: *p, Opts: o, Progress: func(s string) { info("%s", s) }}
+	title(fmt.Sprintf("Comparing tunnel kinds %s → %s", st.Self, p.Name))
+	var results []bench.Result
+	if len(only) == 0 || only["direct"] {
+		results = append(results, r.Baseline(ctx))
+	}
+	for _, c := range bench.Candidates(st.Self, p.Name, st.Address, p.Address) {
+		if len(only) > 0 && !only[c.Name] {
+			continue
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		res := r.Run(ctx, c)
+		if res.Err != "" {
+			warn("%s: %s", c.Title, res.Err)
+		}
+		results = append(results, res)
+	}
+	bench.Rank(results)
+	title("Results (best first)")
+	fmt.Print(bench.Table(results))
+	for _, res := range results {
+		if res.Err == "" && res.Mode != "" {
+			fmt.Println()
+			success("fastest tunnel: %s", bold(res.Title))
+			cmd := fmt.Sprintf("neotunnel quick %s --mode %s", p.Name, res.Mode)
+			if res.Port != 0 {
+				cmd += fmt.Sprintf(" --port %d", res.Port)
+			}
+			info("set it up: %s", cmd)
+			break
+		}
+	}
+	return nil
+}
+
+func boostCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "optimize",
+		Use:   "boost",
 		Short: "Apply the network tuning profile (BBR, fq, buffers) persistently",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireRoot(); err != nil {
 				return err
 			}
-			if err := sysctl.ApplyOptimize(); err != nil {
+			if err := sysctl.ApplyBoost(); err != nil {
 				return err
 			}
 			success("tuning applied and saved to /etc/sysctl.d/90-neotunnel.conf")

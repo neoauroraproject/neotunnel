@@ -1,18 +1,62 @@
 package web_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"neotunnel/internal/bench"
+	"neotunnel/internal/config"
+	"neotunnel/internal/fleet"
+	"neotunnel/internal/manage"
+	"neotunnel/internal/traffic"
 	"neotunnel/internal/web"
-	"neotunnel/internal/web/demo"
 )
+
+// stub is a Backend that only knows one login; the tests exercise the HTTP
+// layer (paths, sessions, CSRF, lockout), not the operations.
+type stub struct{}
+
+func (stub) Overview() (web.Overview, error)                            { return web.Overview{}, nil }
+func (stub) AddPeer(string, string) (fleet.Setup, error)                { return fleet.Setup{}, nil }
+func (stub) RemovePeer(string) (manage.Change, error)                   { return manage.Change{}, nil }
+func (stub) PeerSetup(string) (fleet.Setup, error)                      { return fleet.Setup{}, nil }
+func (stub) SyncPeers([]string) []manage.PeerSync                       { return nil }
+func (stub) UpgradePeer(context.Context, string) (string, error)        { return "", nil }
+func (stub) CreateTunnel(manage.TunnelRequest) (manage.Change, error)   { return manage.Change{}, nil }
+func (stub) RemoveTunnel(string) (manage.Change, error)                 { return manage.Change{}, nil }
+func (stub) AddForward(manage.ForwardRequest) (manage.Change, error)    { return manage.Change{}, nil }
+func (stub) UpdateForward(manage.ForwardRequest) (manage.Change, error) { return manage.Change{}, nil }
+func (stub) UpdateTunnel(string, manage.Settings, uint16) (manage.Change, error) {
+	return manage.Change{}, nil
+}
+func (stub) SetDefaults(config.Defaults) error { return nil }
+func (stub) ProbeMTU(context.Context, string) (web.MTUReport, error) {
+	return web.MTUReport{}, nil
+}
+func (stub) Traffic() map[string]traffic.Summary                 { return nil }
+func (stub) ResetTraffic(string) error                           { return nil }
+func (stub) System() (web.SystemInfo, error)                     { return web.SystemInfo{}, nil }
+func (stub) Boost() error                                        { return nil }
+func (stub) Backup() ([]byte, error)                             { return nil, nil }
+func (stub) SetUser(string) error                                { return nil }
+func (stub) RemoveForward(string, string) (manage.Change, error) { return manage.Change{}, nil }
+func (stub) SetNode(string, string) error                        { return nil }
+func (stub) TestTunnel(context.Context, string, func(string), func(string, float64)) ([]bench.Result, error) {
+	return nil, nil
+}
+func (stub) Bench(context.Context, string, []string, func(string), func(string, float64)) ([]bench.Result, error) {
+	return nil, nil
+}
+func (stub) Login(user, pass string) bool        { return user == "admin" && pass == "right-password" }
+func (stub) ChangePassword(string, string) error { return nil }
+func (stub) SetPanelPort(int) (string, error)    { return "", nil }
 
 func newPanel(t *testing.T) http.Handler {
 	t.Helper()
-	return (&web.Server{Backend: demo.New(), Path: "/secret"}).Handler()
+	return (&web.Server{Backend: stub{}, Path: "/secret"}).Handler()
 }
 
 func do(h http.Handler, method, path, body string, cookies []*http.Cookie, hdr map[string]string) *httptest.ResponseRecorder {
@@ -31,7 +75,7 @@ func do(h http.Handler, method, path, body string, cookies []*http.Cookie, hdr m
 
 func login(t *testing.T, h http.Handler) []*http.Cookie {
 	t.Helper()
-	rec := do(h, "POST", "/secret/api/login", `{"user":"admin","password":"demo"}`, nil, nil)
+	rec := do(h, "POST", "/secret/api/login", `{"user":"admin","password":"right-password"}`, nil, nil)
 	if rec.Code != 200 {
 		t.Fatalf("login: %d %s", rec.Code, rec.Body)
 	}
@@ -61,7 +105,7 @@ func TestAPIRequiresLogin(t *testing.T) {
 		t.Fatalf("overview with session: %d", rec.Code)
 	}
 	// State-changing calls need the X-NeoTunnel header (CSRF guard).
-	body := `{"peer":"germany","mode":"6to4"}`
+	body := `{"peer":"edge","mode":"6to4"}`
 	if rec := do(h, "POST", "/secret/api/tunnels", body, c, nil); rec.Code != 403 {
 		t.Errorf("POST without header: %d, want 403", rec.Code)
 	}
@@ -81,7 +125,7 @@ func TestLoginLockout(t *testing.T) {
 			t.Fatalf("attempt %d: %d", i, rec.Code)
 		}
 	}
-	if rec := do(h, "POST", "/secret/api/login", `{"user":"admin","password":"demo"}`, nil, nil); rec.Code != 429 {
+	if rec := do(h, "POST", "/secret/api/login", `{"user":"admin","password":"right-password"}`, nil, nil); rec.Code != 429 {
 		t.Errorf("correct password during lockout: %d, want 429", rec.Code)
 	}
 }

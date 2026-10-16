@@ -124,7 +124,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			return errors.New("unknown peer")
 		}
 		if !validEnroll(*p, req.Token) {
-			return errors.New("invalid or expired enrollment token; print a new link on the master: neotunnel peer link " + req.Name)
+			return errors.New("invalid or expired enrollment token; show a new connect command on the main server: neotunnel peer connect " + req.Name)
 		}
 		p.PublicKey = key
 		p.EnrollToken, p.EnrollExpires = "", time.Time{}

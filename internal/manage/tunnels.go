@@ -1,12 +1,14 @@
 package manage
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/netip"
 	"strings"
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/forward"
+	"neotunnel/internal/pmtu"
 )
 
 // Mode is a ready-made tunnel stack. The last kind carries the traffic.
@@ -15,18 +17,24 @@ type Mode struct {
 	Title string        `json:"title"`
 	Kinds []config.Kind `json:"kinds"`
 	Layer int           `json:"layer"`
-	Port  bool          `json:"port"` // can run on a chosen UDP port
+	Port  bool          `json:"port"`  // can run on a chosen UDP port
+	UDP   bool          `json:"udp"`   // always runs on a UDP port
+	Crypt bool          `json:"crypt"` // encrypted by itself
+	Peer  bool          `json:"peer"`  // needs NeoTunnel on the far end
 }
 
 var modes = []Mode{
-	{"6to4", "6to4 (SIT + IPIP6)", []config.Kind{config.KindSIT, config.KindIPIP6}, 3, true},
-	{"6to4-gre", "6to4 (SIT + GRE6)", []config.Kind{config.KindSIT, config.KindIP6GRE}, 3, true},
-	{"ipip", "IPIP", []config.Kind{config.KindIPIP}, 3, true},
-	{"gre", "GRE", []config.Kind{config.KindGRE}, 3, true},
-	{"sit", "SIT (IPv6 only)", []config.Kind{config.KindSIT}, 3, true},
-	{"gretap", "GRETAP (L2)", []config.Kind{config.KindGRETAP}, 2, true},
-	{"vxlan", "VXLAN (L2)", []config.Kind{config.KindVXLAN}, 2, true},
-	{"geneve", "GENEVE (L2)", []config.Kind{config.KindGENEVE}, 2, true},
+	{Name: "6to4", Title: "6to4 (SIT + IPIP6)", Kinds: []config.Kind{config.KindSIT, config.KindIPIP6}, Layer: 3, Port: true},
+	{Name: "6to4-gre", Title: "6to4 (SIT + GRE6)", Kinds: []config.Kind{config.KindSIT, config.KindIP6GRE}, Layer: 3, Port: true},
+	{Name: "ipip", Title: "IPIP", Kinds: []config.Kind{config.KindIPIP}, Layer: 3, Port: true},
+	{Name: "gre", Title: "GRE", Kinds: []config.Kind{config.KindGRE}, Layer: 3, Port: true},
+	{Name: "sit", Title: "SIT (IPv6 only)", Kinds: []config.Kind{config.KindSIT}, Layer: 3, Port: true},
+	{Name: "wireguard", Title: "WireGuard", Kinds: []config.Kind{config.KindWireGuard}, Layer: 3, Port: true, UDP: true, Crypt: true},
+	{Name: "obfs", Title: "NeoObfs", Kinds: []config.Kind{config.KindObfs}, Layer: 3, Port: true, UDP: true, Crypt: true, Peer: true},
+	{Name: "gretap", Title: "GRETAP (L2)", Kinds: []config.Kind{config.KindGRETAP}, Layer: 2, Port: true},
+	{Name: "vxlan", Title: "VXLAN (L2)", Kinds: []config.Kind{config.KindVXLAN}, Layer: 2, Port: true, UDP: true},
+	{Name: "geneve", Title: "GENEVE (L2)", Kinds: []config.Kind{config.KindGENEVE}, Layer: 2, Port: true, UDP: true},
+	{Name: "l2tpv3", Title: "L2TPv3 (L2)", Kinds: []config.Kind{config.KindL2TPv3}, Layer: 2, Port: true},
 }
 
 func Modes() []Mode { return modes }
@@ -48,19 +56,58 @@ func LookupMode(name string) (Mode, error) {
 	return Mode{}, fmt.Errorf("unknown mode %q (choose: %s)", name, strings.Join(ModeNames(), ", "))
 }
 
+// Settings are a tunnel's advanced options. Zero values mean automatic.
+type Settings struct {
+	MTU       int    `json:"mtu,omitempty"`       // the user-facing tunnel's MTU
+	MTUProbe  bool   `json:"mtu_probe,omitempty"` // size from the measured path MTU
+	TTL       uint8  `json:"ttl,omitempty"`
+	Encrypt   string `json:"encrypt,omitempty"`   // IPsec cipher on the bottom tunnel
+	Padding   int    `json:"padding,omitempty"`   // NeoObfs
+	Keepalive int    `json:"keepalive,omitempty"` // WireGuard / NeoObfs
+	PeerKey   string `json:"peer_key,omitempty"`  // WireGuard far end not run by NeoTunnel
+}
+
+func (s Settings) validate() error {
+	if s.MTU != 0 && (s.MTU < 576 || s.MTU > 9000) {
+		return fmt.Errorf("MTU must be between 576 and 9000")
+	}
+	if s.Encrypt != "" {
+		if _, err := config.LookupCipher(s.Encrypt); err != nil {
+			return err
+		}
+	}
+	if s.Padding < 0 || s.Padding > 255 {
+		return fmt.Errorf("padding must be 0-255 bytes")
+	}
+	if s.Keepalive < -1 || s.Keepalive > 3600 {
+		return fmt.Errorf("keepalive must be -1 (off), 0 (default) or up to 3600 seconds")
+	}
+	if s.PeerKey != "" {
+		if b, err := base64.StdEncoding.DecodeString(s.PeerKey); err != nil || len(b) != 32 {
+			return fmt.Errorf("peer key must be a WireGuard public key (base64, 32 bytes)")
+		}
+	}
+	return nil
+}
+
 // TunnelRequest creates a tunnel to a managed peer or an unmanaged endpoint.
 type TunnelRequest struct {
 	Peer   string `json:"peer,omitempty"`
 	Remote string `json:"remote,omitempty"` // unmanaged far end (e.g. a MikroTik)
 	Mode   string `json:"mode"`
 	Name   string `json:"name,omitempty"`
-	// Port is the UDP port the tunnel runs on (0 = native protocol; VXLAN and
-	// GENEVE then use their standard port).
+	// Port is the UDP port the tunnel runs on (0 = native protocol; UDP
+	// kinds then use their standard or a free port).
 	Port uint16 `json:"port,omitempty"`
+	// Obfs runs the tunnel over a NeoObfs layer (encrypted, obfuscated UDP).
+	Obfs bool `json:"obfs,omitempty"`
+	Settings
 	// Optional forward created together with the tunnel.
-	Forward   string `json:"forward,omitempty"`
-	ForwardTo uint16 `json:"forward_to,omitempty"`
-	Proto     string `json:"proto,omitempty"`
+	Forward      string `json:"forward,omitempty"`
+	ForwardTo    uint16 `json:"forward_to,omitempty"`
+	Proto        string `json:"proto,omitempty"`
+	ForwardMode  string `json:"forward_mode,omitempty"`
+	ProxyVersion int    `json:"proxy_version,omitempty"`
 }
 
 // CreateTunnel builds the mode's stack (carrier first) and its forward.
@@ -69,8 +116,14 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 	if err != nil {
 		return config.Tunnel{}, Change{}, err
 	}
+	if err := req.Settings.validate(); err != nil {
+		return config.Tunnel{}, Change{}, err
+	}
 	if req.Forward != "" {
 		if _, err := forward.ParsePorts(req.Forward); err != nil {
+			return config.Tunnel{}, Change{}, err
+		}
+		if err := config.ValidForwardMode(req.ForwardMode, req.ProxyVersion, req.Proto); err != nil {
 			return config.Tunnel{}, Change{}, err
 		}
 	}
@@ -78,24 +131,52 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 	if err != nil {
 		return config.Tunnel{}, Change{}, err
 	}
+	if req.Remote != "" {
+		switch {
+		case mode.Peer || req.Obfs:
+			return config.Tunnel{}, Change{}, fmt.Errorf("NeoObfs needs NeoTunnel on the far end; choose a managed server")
+		case req.Encrypt != "":
+			return config.Tunnel{}, Change{}, fmt.Errorf("IPsec keys come from NeoTunnel on both ends; for a router use WireGuard instead")
+		case mode.Name == "wireguard" && req.PeerKey == "":
+			return config.Tunnel{}, Change{}, fmt.Errorf("give the far end's WireGuard public key (peer key)")
+		case req.ForwardMode == config.ForwardTransparent:
+			return config.Tunnel{}, Change{}, fmt.Errorf("transparent forwarding needs NeoTunnel on the far end to route replies back")
+		}
+	}
+	if req.Obfs && mode.Crypt {
+		req.Obfs = false // already encrypted; a second layer only costs speed
+	}
 	name := req.Name
 	if name == "" {
-		name = freeName(st)
+		name = FreeName(st)
 	}
-	if len(mode.Kinds) > 1 && len(name) > 8 {
+	kinds := mode.Kinds
+	if req.Obfs {
+		kinds = append([]config.Kind{config.KindObfs}, kinds...)
+	}
+	if len(kinds) > 1 && len(name) > 8 {
 		return config.Tunnel{}, Change{}, fmt.Errorf("name %q is too long for a stacked tunnel (max 8 characters)", name)
+	}
+	bottomKind, _ := config.LookupKind(kinds[0])
+	port := req.Port
+	if port == 0 && bottomKind.UDP && bottomKind.Kind != config.KindVXLAN && bottomKind.Kind != config.KindGENEVE {
+		port = FreePort(st, bottomKind.Kind)
 	}
 
 	var defs []config.Tunnel
 	over := ""
-	for i, k := range mode.Kinds {
+	for i, k := range kinds {
 		n := name
-		if i < len(mode.Kinds)-1 {
+		switch {
+		case i == len(kinds)-1:
+		case k == config.KindObfs:
+			n = name + "-o"
+		default:
 			n = name + "-6" // carrier
 		}
 		opts := TunnelOpts{Kind: string(k), Peer: req.Peer, Remote: req.Remote}
 		if i == 0 {
-			opts.Port = req.Port // the port belongs to the outer tunnel
+			opts.Port = port // the port belongs to the outer tunnel
 		}
 		t, err := NewTunnel(st, n, opts)
 		if err != nil {
@@ -105,10 +186,18 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 			t.Over = over
 			t.Sides[0].Endpoint, t.Sides[1].Endpoint = "", ""
 		}
+		if i == 0 {
+			t.MTUProbe, t.TTL, t.Keepalive, t.Padding, t.PeerKey = req.MTUProbe, req.TTL, req.Keepalive, req.Padding, req.PeerKey
+			ki, _ := config.LookupKind(k)
+			if !ki.Encrypted {
+				t.Encrypt = req.Encrypt
+			}
+		}
 		over = n
 		defs = append(defs, t)
 	}
-	defs[len(defs)-1].Mode = mode.Name
+	top := &defs[len(defs)-1]
+	top.Mode, top.MTU = mode.Name, req.MTU
 
 	var peers []string
 	if req.Peer != "" {
@@ -132,7 +221,8 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 			if err := portsFree(s, req.Forward, proto, ""); err != nil {
 				return err
 			}
-			s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: name, Proto: proto, Ports: req.Forward, To: req.ForwardTo})
+			s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: name, Proto: proto, Ports: req.Forward,
+				To: req.ForwardTo, Mode: req.ForwardMode, ProxyVersion: req.ProxyVersion})
 		}
 		return nil
 	})
@@ -143,16 +233,107 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 	return *t, ch, nil
 }
 
+// UpdateTunnel changes a tunnel's advanced settings. They land on the right
+// layer of a stack: MTU on the tunnel itself, everything about the outer
+// packets on the bottom one. Port changes the bottom tunnel's UDP port
+// (0 keeps it).
+func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
+	if err := set.validate(); err != nil {
+		return Change{}, err
+	}
+	st, err := Node()
+	if err != nil {
+		return Change{}, err
+	}
+	t, ok := st.Tunnel(name)
+	if !ok {
+		return Change{}, fmt.Errorf("unknown tunnel %q", name)
+	}
+	stack := Stack(st, name)
+	bottom, _ := st.Tunnel(stack[0])
+	bk, _ := config.LookupKind(bottom.Kind)
+	if set.Encrypt != "" && bk.Encrypted {
+		set.Encrypt = ""
+	}
+	if set.Encrypt != "" && bottom.Sides[1].Node == "" {
+		return Change{}, fmt.Errorf("IPsec needs NeoTunnel on the far end")
+	}
+	if port != 0 && port != bottom.Port {
+		if !bk.CanUsePort() {
+			return Change{}, fmt.Errorf("%s cannot run on a UDP port", bottom.Kind)
+		}
+		if err := portAvailable(st, port, bottom.Name); err != nil {
+			return Change{}, err
+		}
+	}
+	remote, _ := netip.ParseAddr(bottom.Sides[1].Endpoint)
+	if !set.MTUProbe && bottom.MTUProbe && remote.IsValid() {
+		pmtu.Forget(remote)
+	}
+	_, ch, err := Commit(st.PeersOf(*t), func(s *config.State) error {
+		top, _ := s.Tunnel(name)
+		b, _ := s.Tunnel(stack[0])
+		if top == nil || b == nil {
+			return fmt.Errorf("tunnel %q changed meanwhile", name)
+		}
+		top.MTU = set.MTU
+		b.MTUProbe, b.TTL, b.Encrypt = set.MTUProbe, set.TTL, set.Encrypt
+		b.Keepalive, b.Padding = set.Keepalive, set.Padding
+		if b.Kind == config.KindWireGuard {
+			b.PeerKey = set.PeerKey
+		}
+		if port != 0 {
+			b.Port = port
+		}
+		if b.NeedsSecret() && b.Secret == "" {
+			b.Secret = config.NewSecret()
+		}
+		return nil
+	})
+	return ch, err
+}
+
+// SettingsOf returns a tunnel's current settings and bottom port.
+func SettingsOf(st *config.State, name string) (Settings, uint16) {
+	stack := Stack(st, name)
+	ts, _ := st.Effective()
+	find := func(n string) config.Tunnel {
+		for _, t := range ts {
+			if t.Name == n {
+				return t
+			}
+		}
+		return config.Tunnel{}
+	}
+	top, b := find(name), find(stack[0])
+	return Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, Encrypt: b.Encrypt,
+		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey}, b.Port
+}
+
 // TunnelOpts describes a single tunnel of any kind.
 type TunnelOpts struct {
 	Kind, Peer, Remote, Over string
 	MTU                      int
 	Port                     uint16
 	VNI                      uint32
+	Settings
 }
 
 // reservedPorts can't be used as tunnel ports.
 var reservedPorts = map[uint16]string{7710: "neotunnel agent", 7711: "neotunnel tests", 22: "SSH"}
+
+func portAvailable(st *config.State, port uint16, self string) error {
+	if what, bad := reservedPorts[port]; bad {
+		return fmt.Errorf("port %d is reserved for %s", port, what)
+	}
+	if st.Panel != nil && int(port) == st.Panel.Port {
+		return fmt.Errorf("port %d is the panel's port", port)
+	}
+	if other := portUser(st, port); other != "" && other != self {
+		return fmt.Errorf("port %d is already used by tunnel %s", port, other)
+	}
+	return nil
+}
 
 // NewTunnel validates and builds one tunnel definition from this node to a
 // peer or remote endpoint (not yet saved).
@@ -165,20 +346,26 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 	if err != nil {
 		return config.Tunnel{}, err
 	}
-	t := config.Tunnel{Name: name, Kind: kind, Over: o.Over, MTU: o.MTU, Port: o.Port, VNI: o.VNI}
+	if err := o.Settings.validate(); err != nil {
+		return config.Tunnel{}, err
+	}
+	t := config.Tunnel{Name: name, Kind: kind, Over: o.Over, MTU: o.MTU, Port: o.Port, VNI: o.VNI,
+		MTUProbe: o.MTUProbe, TTL: o.TTL, Encrypt: o.Encrypt, Padding: o.Padding, Keepalive: o.Keepalive, PeerKey: o.PeerKey}
+	if o.MTU == 0 {
+		t.MTU = o.Settings.MTU
+	}
+	if ki.Encrypted {
+		t.Encrypt = ""
+	}
 	if o.Port != 0 {
 		if !ki.CanUsePort() {
 			return t, fmt.Errorf("%s cannot run on a UDP port", kind)
 		}
-		if what, bad := reservedPorts[o.Port]; bad {
-			return t, fmt.Errorf("port %d is reserved for %s", o.Port, what)
+		if err := portAvailable(st, o.Port, ""); err != nil {
+			return t, err
 		}
-		if st.Panel != nil && int(o.Port) == st.Panel.Port {
-			return t, fmt.Errorf("port %d is the panel's port", o.Port)
-		}
-		if other := portUser(st, o.Port); other != "" {
-			return t, fmt.Errorf("port %d is already used by tunnel %s", o.Port, other)
-		}
+	} else if ki.UDP && kind != config.KindVXLAN && kind != config.KindGENEVE && o.Over == "" {
+		t.Port = FreePort(st, kind)
 	}
 	self := config.Side{Node: st.Self, Endpoint: st.Address}
 	switch {
@@ -194,9 +381,21 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		if _, err := netip.ParseAddr(o.Remote); err != nil {
 			return t, fmt.Errorf("remote must be an IP: %w", err)
 		}
+		if ki.NeedsPeer {
+			return t, fmt.Errorf("%s needs NeoTunnel on the far end", kind)
+		}
+		if t.Encrypt != "" {
+			return t, fmt.Errorf("IPsec needs NeoTunnel on the far end")
+		}
+		if kind == config.KindWireGuard && t.PeerKey == "" {
+			return t, fmt.Errorf("give the far end's WireGuard public key (--peer-key)")
+		}
 		t.Sides = [2]config.Side{self, {Endpoint: o.Remote}}
 	default:
 		return t, fmt.Errorf("choose a server or a remote IP")
+	}
+	if other := keylessConflict(st, t); other != "" {
+		return t, fmt.Errorf("tunnel %s already runs %s between these two servers and the kernel allows only one: give this one a UDP port, or pick GRE or VXLAN", other, kind)
 	}
 	if o.Over != "" {
 		parent, ok := st.Tunnel(o.Over)
@@ -208,8 +407,37 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		}
 		// The underlay comes from the parent's inner addresses.
 		t.Sides[0].Endpoint, t.Sides[1].Endpoint = "", ""
+		t.Encrypt, t.MTUProbe = "", false
 	}
 	return t, nil
+}
+
+// keylessConflict reports a tunnel the kernel can't tell apart from t: SIT,
+// IPIP and ip6tnl tunnels have no key, so only one of each type may run
+// between the same two addresses unless one of them is on a UDP port.
+func keylessConflict(st *config.State, t config.Tunnel) string {
+	group := func(k config.Kind) string {
+		switch k {
+		case config.KindSIT, config.KindIPIP:
+			return string(k)
+		case config.KindIPIP6, config.KindIP6IP6:
+			return "ip6tnl"
+		}
+		return ""
+	}
+	g := group(t.Kind)
+	if g == "" || t.Over != "" || t.Port != 0 {
+		return ""
+	}
+	ts, _ := st.Effective()
+	for _, o := range ts {
+		if o.Name != t.Name && o.Over == "" && o.Port == 0 && group(o.Kind) == g &&
+			((o.Sides[1].Endpoint == t.Sides[1].Endpoint && o.Sides[0].Endpoint == t.Sides[0].Endpoint) ||
+				(o.Sides[0].Endpoint == t.Sides[1].Endpoint && o.Sides[1].Endpoint == t.Sides[0].Endpoint)) {
+			return o.Name
+		}
+	}
+	return ""
 }
 
 // portUser returns the tunnel on this node already running on port.
@@ -223,12 +451,28 @@ func portUser(st *config.State, port uint16) string {
 	return ""
 }
 
-func freeName(st *config.State) string {
+// FreePort picks an unused UDP port for a kind that always needs one.
+func FreePort(st *config.State, kind config.Kind) uint16 {
+	start := uint16(51820)
+	if kind == config.KindObfs {
+		start = 30443
+	}
+	for p := start; p < 65000; p++ {
+		if portAvailable(st, p, "") == nil {
+			return p
+		}
+	}
+	return start
+}
+
+// FreeName returns the first unused default tunnel name (t1, t2, ...).
+func FreeName(st *config.State) string {
 	for i := 1; ; i++ {
 		n := fmt.Sprintf("t%d", i)
 		_, a := st.Tunnel(n)
 		_, b := st.Tunnel(n + "-6")
-		if !a && !b {
+		_, c := st.Tunnel(n + "-o")
+		if !a && !b && !c {
 			return n
 		}
 	}
@@ -257,8 +501,8 @@ func AddTunnel(t config.Tunnel) (config.Tunnel, Change, error) {
 	return *saved, ch, nil
 }
 
-// RemoveTunnel removes a tunnel, everything stacked on it and its carrier if
-// nothing else uses it, on both ends.
+// RemoveTunnel removes a tunnel, everything stacked on it and the layers
+// under it that nothing else uses, on both ends.
 func RemoveTunnel(name string) ([]string, Change, error) {
 	st, err := Node()
 	if err != nil {
@@ -272,9 +516,17 @@ func RemoveTunnel(name string) ([]string, Change, error) {
 		return nil, Change{}, fmt.Errorf("unknown tunnel %q", name)
 	}
 	drop := Dependents(st, name)
-	// Removing the user-facing tunnel of a stack also removes its carrier.
-	if t.Over != "" && len(Dependents(st, t.Over)) == 2 {
-		drop = append(drop, t.Over)
+	// Removing the user-facing tunnel of a stack also removes its carriers.
+	for under := t.Over; under != ""; {
+		if len(Dependents(st, under)) != len(drop)+1 {
+			break
+		}
+		drop = append(drop, under)
+		ut, ok := st.Tunnel(under)
+		if !ok {
+			break
+		}
+		under = ut.Over
 	}
 	var peers []string
 	for _, n := range drop {
@@ -291,10 +543,15 @@ func RemoveTunnel(name string) ([]string, Change, error) {
 
 // Stack returns name and the tunnels it runs over, underlay first.
 func Stack(st *config.State, name string) []string {
+	ts, _ := st.Effective()
+	byName := map[string]config.Tunnel{}
+	for _, t := range ts {
+		byName[t.Name] = t
+	}
 	var out []string
 	for n := name; n != "" && len(out) < 5; {
 		out = append([]string{n}, out...)
-		t, ok := st.Tunnel(n)
+		t, ok := byName[n]
 		if !ok {
 			break
 		}

@@ -12,8 +12,6 @@
 <a href="LICENSE"><img src="https://img.shields.io/github/license/neoauroraproject/neotunnel?style=flat-square&color=a78bfa" alt="license"></a>
 </p>
 
-<p align="center"><img src="docs/panel-dashboard.png" alt="داشبورد پنل NeoTunnel"></p>
-
 ## NeoTunnel چیست؟
 
 NeoTunnel تانل‌هایی را که روی میکروتیک می‌زنید، روی **اوبونتو** و بدون پیچیدگی می‌سازد. یک سرور (مثلاً ایران) **سرور اصلی** است و پنل روی آن نصب می‌شود؛ سرورهای مقصد (خارج) فقط با یک دستور به آن وصل می‌شوند و از آن به بعد **هر تغییری که در پنل بدهید، خودکار روی آن‌ها هم اعمال می‌شود**.
@@ -78,25 +76,6 @@ curl -fsSL https://raw.githubusercontent.com/neoauroraproject/neotunnel/main/ins
 
 اگر سرور خارج موقتاً در دسترس نبود، تغییرات را بدهید؛ پنل یک دستور `sudo neotunnel apply '…'` نشان می‌دهد که با اجرای آن روی سرور خارج، **همه‌ی تغییرات یک‌جا** اعمال می‌شود. لینک با کلید سرور اصلی امضا شده و سرور مقصد فقط لینک سرور اصلی خودش را (و نه نسخه‌ی قدیمی‌تر) قبول می‌کند.
 
-<table>
-<tr>
-<td><img src="docs/panel-tunnels.png" alt="تانل‌ها"></td>
-<td><img src="docs/panel-servers.png" alt="سرورها"></td>
-</tr>
-<tr>
-<td align="center">تانل‌ها: آدرس‌های داخلی، پورت، MTU و ترافیک زنده</td>
-<td align="center">سرورها: وضعیت اتصال، همگام‌سازی، ارتقا و دستور اتصال</td>
-</tr>
-<tr>
-<td><img src="docs/panel-speed.png" alt="تست سرعت"></td>
-<td><img src="docs/panel-ports.png" alt="پورت‌ها"></td>
-</tr>
-<tr>
-<td align="center">مقایسه‌ی همه‌ی انواع تانل و انتخاب سریع‌ترین</td>
-<td align="center">پورت‌های مختلف به لوکیشن‌های مختلف</td>
-</tr>
-</table>
-
 ## چند لوکیشن روی یک سرور
 
 هر تانل می‌تواند روی پورت UDP خودش اجرا شود و هر پورت ورودی می‌تواند به یک تانل دیگر برود. مثال: پورت 443 به آلمان، پورت 2053 به هلند (روی 443 مقصد):
@@ -124,6 +103,28 @@ sudo neotunnel quick netherlands --address 203.0.113.57  --port 3001 --forward 2
 | IPIP6 / IP6IP6 | 3 | IPv6 | — | IPIPv6 |
 | VXLAN | 2 | IPv4/IPv6 | همیشه | VXLAN |
 | GENEVE | 2 | IPv4/IPv6 | همیشه | — |
+| L2TPv3 | 2 | IPv4/IPv6 | ✅ (UDP یا IP 115) | L2TPv3 ایستا |
+| **WireGuard** (رمزدار، کرنل) | 3 | IPv4/IPv6 | همیشه | WireGuard (RouterOS 7) |
+| **NeoObfs** (رمزدار و مبهم) | 3 | IPv4/IPv6 | همیشه | — (دو طرف NeoTunnel) |
+
+### رمزنگاری و مبهم‌سازی
+
+- **IPsec در کرنل** (مثل ipsec-secret میکروتیک): هر تانل کرنلی بین دو سرور NeoTunnel می‌تواند با AES-128-GCM، AES-256-GCM یا ChaCha20-Poly1305 رمز شود. کلیدها از رمز مشترک خود تانل ساخته می‌شوند (تبادل کلیدی نیست که شکست بخورد)، بسته‌ی بی‌رمز از طرف مقابل دور ریخته می‌شود و هزینه‌اش ۳۸ بایت از MTU است.
+- **NeoObfs**: لایه‌ی رمزنگاری و مبهم‌سازی NeoTunnel روی UDP. هر بسته با XChaCha20-Poly1305 رمز می‌شود و هیچ بایت ثابتی ندارد، و با padding تصادفی اندازه‌ها هم تغییر می‌کنند. هر تانل کرنلی می‌تواند روی آن سوار شود (`--obfs`). در فضای کاربر اجرا می‌شود، پس از تانل‌های کرنلی کندتر است؛ برای مسیرهایی که پروتکل‌ها را شناسایی می‌کنند.
+
+### MTU خودکار
+
+با `--mtu-probe` (یا «اندازه‌گیری مسیر» در پنل) NeoTunnel با بسته‌های بدون شکستن، بزرگ‌ترین بسته‌ای را که مسیر تا مقصد رد می‌کند پیدا می‌کند، سربار همه‌ی لایه‌ها (رمزنگاری هم) را کم می‌کند و MTU تانل را تنظیم می‌کند؛ هر ۳۰ دقیقه دوباره می‌سنجد. `neotunnel mtu t1` فقط اندازه می‌گیرد و `--apply` آن را دائمی می‌کند.
+
+### رساندن IP واقعی کاربر
+
+هر فوروارد یکی از سه حالت را دارد:
+
+| حالت | سرویس مقصد چه می‌بیند | TCP / UDP |
+|---|---|---|
+| `nat` (پیش‌فرض) | آدرس داخلی تانل | هر دو |
+| `transparent` | IP واقعی کاربر، بدون هیچ تنظیمی در برنامه؛ پاسخ‌ها با مسیریابی بر اساس mark از همان تانل برمی‌گردند (مقصد باید NeoTunnel داشته باشد) | هر دو |
+| `proxy` | هدر PROXY protocol نسخه‌ی ۱ یا ۲ با IP و پورت کاربر، برای nginx، HAProxy، Xray و… | TCP؛ UDP فقط با v2 |
 
 برای وصل شدن به دستگاهی که NeoTunnel ندارد (مثلاً میکروتیک)، در ویزارد «دستگاه دیگر» را انتخاب کنید یا:
 
@@ -157,14 +158,17 @@ sudo neotunnel traffic          # ترافیک زنده
 | دستور | کار |
 |---|---|
 | `neotunnel quick <server> --address <ip> [--mode 6to4] [--port N] [--forward ports]` | ساخت تانل در یک مرحله |
-| `neotunnel tunnel add\|list\|remove\|kinds` | مدیریت تانل‌ها با جزئیات |
-| `neotunnel forward add <tunnel> <ports> [--to port] [--proto tcp\|udp\|both]` | فوروارد پورت |
+| `neotunnel quick … [--encrypt aes-gcm-128] [--obfs] [--mtu-probe] [--forward-mode transparent\|proxy]` | همان، رمزدار / مبهم / با IP واقعی کاربر |
+| `neotunnel tunnel add\|set\|list\|remove\|kinds` | مدیریت تانل‌ها و تنظیمات پیشرفته (MTU، TTL، رمزنگاری، پورت) |
+| `neotunnel forward add\|set <tunnel> <ports> [--to port] [--proto tcp\|udp\|both] [--mode nat\|transparent\|proxy]` | فوروارد پورت |
+| `neotunnel mtu <tunnel> [--apply]` | پیدا کردن بهترین MTU |
+| `neotunnel traffic` / `traffic reset [tunnel]` | ترافیک زنده و مجموع امروز، ماه و کل هر تانل |
 | `neotunnel peer add\|list\|link\|sync\|upgrade\|remove` | مدیریت سرورهای مقصد |
 | `neotunnel apply 'neotunnel://…'` | اعمال لینک سرور اصلی روی سرور مقصد |
 | `neotunnel test` / `bench` / `traffic` / `status` | تست و وضعیت |
 | `neotunnel panel info\|setup\|password\|port\|disable` | مدیریت پنل |
-| `neotunnel optimize` | BBR، fq و بافرهای شبکه (ماندگار) |
-| `neotunnel down` / `uninstall [--purge]` | حذف تانل‌ها / حذف کامل |
+| `neotunnel boost` | BBR، fq و بافرهای شبکه (ماندگار) |
+| `neotunnel down` / `uninstall [--keep-config] [-y]` | حذف تانل‌ها / حذف کامل (برنامه هم پاک می‌شود) |
 
 ## پورت‌ها و امنیت
 
@@ -180,9 +184,11 @@ sudo neotunnel traffic          # ترافیک زنده
 
 **تانل 6to4 بالا نمی‌آید و پینگ ندارد.** احتمالاً پروتکل 41 روی مسیر بسته است. تانل را روی یک پورت UDP بسازید (فیلد «پورت UDP» در ویزارد یا `--port 3000`) یا با «مقایسه‌ی سرعت» ببینید کدام نوع از مسیر عبور می‌کند.
 
-**رمزنگاری دارد؟** این نسخه تانل‌های خام کرنلی (بیشترین سرعت) را می‌سازد. رمزنگاری کرنلی (IPsec با AES-GCM) در نسخه‌ی بعد اضافه می‌شود.
+**رمزنگاری دارد؟** بله، اختیاری: IPsec در کرنل برای هر تانل، WireGuard، یا لایه‌ی NeoObfs (بالا را ببینید). بدون رمزنگاری سریع‌ترین حالت است.
 
-**حذف کامل:** `sudo neotunnel uninstall --purge && sudo rm /usr/local/bin/neotunnel`
+**دومین تانل 6to4 یا IPIP به همان سرور ساخته نمی‌شود.** کرنل بین دو آدرس فقط یک تانل SIT یا IPIP بی‌کلید می‌پذیرد؛ برای دومی پورت UDP بدهید یا GRE/VXLAN بسازید.
+
+**حذف کامل:** `sudo neotunnel uninstall` (تانل‌ها، IPsec، قوانین، تنظیمات و خود برنامه پاک می‌شوند؛ با `--keep-config` تنظیمات می‌ماند)
 
 ## ساخت از سورس
 
@@ -192,7 +198,6 @@ sudo neotunnel traffic          # ترافیک زنده
 go test ./...
 GOOS=linux GOARCH=amd64 go build -o dist/neotunnel-linux-amd64 ./cmd/neotunnel
 sudo test/e2e.sh dist/neotunnel-linux-amd64   # تست کامل روی کرنل واقعی با network namespace
-go run ./cmd/paneldemo                        # پنل با داده‌ی نمونه روی http://127.0.0.1:8099/demo/
 ```
 
 <div dir="rtl">

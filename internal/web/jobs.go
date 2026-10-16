@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,17 @@ type job struct {
 	Error    string
 	Started  time.Time
 	Finished time.Time
+	Live     JobLive
 	stop     context.CancelFunc
+}
+
+// JobLive is the measurement in progress, for the panel's gauge.
+type JobLive struct {
+	Step  string  `json:"step"`  // what is being measured (latest log line)
+	Phase string  `json:"phase"` // ping, upload, download
+	Value float64 `json:"value"` // ms for ping, bits/s otherwise
+	Peak  float64 `json:"peak"`  // highest value of this phase
+	Seq   int     `json:"seq"`   // counts steps, so the panel can tell them apart
 }
 
 type jobView struct {
@@ -39,12 +50,29 @@ type jobView struct {
 	Error    string         `json:"error,omitempty"`
 	Started  int64          `json:"started"`
 	Finished int64          `json:"finished,omitempty"`
+	Live     JobLive        `json:"live"`
 }
 
 func (j *job) log(line string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.Log = append(j.Log, line)
+	if !strings.HasPrefix(line, " ") {
+		j.Live.Step = line
+		j.Live.Seq++
+	}
+}
+
+func (j *job) live(phase string, v float64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if phase != j.Live.Phase {
+		j.Live.Peak = 0
+	}
+	j.Live.Phase, j.Live.Value = phase, v
+	if v > j.Live.Peak {
+		j.Live.Peak = v
+	}
 }
 
 func (j *job) view() jobView {
@@ -53,7 +81,7 @@ func (j *job) view() jobView {
 	v := jobView{
 		ID: j.ID, Kind: j.Kind, Target: j.Target, Status: j.Status, Error: j.Error,
 		Log: append([]string{}, j.Log...), Results: append([]bench.Result{}, j.Results...),
-		Started: j.Started.UnixMilli(),
+		Started: j.Started.UnixMilli(), Live: j.Live,
 	}
 	if !j.Finished.IsZero() {
 		v.Finished = j.Finished.UnixMilli()
@@ -69,7 +97,7 @@ type jobs struct {
 
 func newJobs() *jobs { return &jobs{all: map[string]*job{}} }
 
-func (js *jobs) start(kind, target string, run func(context.Context, func(string)) ([]bench.Result, error)) (*job, error) {
+func (js *jobs) start(kind, target string, run func(context.Context, func(string), func(string, float64)) ([]bench.Result, error)) (*job, error) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	if js.busy {
@@ -83,7 +111,7 @@ func (js *jobs) start(kind, target string, run func(context.Context, func(string
 	js.busy = true
 	js.prune()
 	go func() {
-		results, err := run(ctx, j.log)
+		results, err := run(ctx, j.log, j.live)
 		j.mu.Lock()
 		j.Results, j.Finished = results, time.Now()
 		switch {

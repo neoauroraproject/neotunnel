@@ -10,14 +10,16 @@ import (
 	"net/netip"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/pmtu"
 )
 
 const (
-	IfPrefix    = "nt-"
-	DefaultMTU  = 1500
-	DefaultTTL  = 255
-	DefaultPort = 4789 // VXLAN
-	GenevePort  = 6081
+	IfPrefix      = "nt-"
+	DefaultMTU    = 1500
+	DefaultTTL    = 255
+	DefaultPort   = 4789 // VXLAN
+	GenevePort    = 6081
+	WireGuardPort = 51820
 )
 
 // LinkSpec is one interface this node must have, fully resolved.
@@ -35,11 +37,28 @@ type LinkSpec struct {
 	MTU    int            `json:"mtu"`
 	Addrs  []netip.Prefix `json:"addrs"`
 	Parent string         `json:"parent,omitempty"`
+
+	// Side is this node's side of the tunnel (0 or 1); keys are derived
+	// per direction from Secret, which never leaves the node in a spec.
+	Side      int    `json:"side"`
+	Secret    string `json:"-"`
+	Encrypt   string `json:"encrypt,omitempty"` // IPsec cipher on the outer packets
+	Padding   int    `json:"padding,omitempty"`
+	Keepalive int    `json:"keepalive,omitempty"`
+	PeerKey   string `json:"peer_key,omitempty"`
+	Userspace bool   `json:"userspace,omitempty"`
 }
 
 // Hash identifies the spec's kernel-relevant settings; it is stored in the
 // interface alias so unchanged tunnels are never torn down.
 func (l LinkSpec) Hash() string {
+	// WireGuard's keys are set at creation only, so they are part of the
+	// identity (as a digest: the alias is world readable).
+	var keys string
+	if l.Kind == config.KindWireGuard {
+		d := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%d", l.Secret, l.PeerKey, l.Side, l.Keepalive)))
+		keys = hex.EncodeToString(d[:6])
+	}
 	b, _ := json.Marshal(struct {
 		K        config.Kind
 		L, R     netip.Addr
@@ -47,7 +66,8 @@ func (l LinkSpec) Hash() string {
 		Port     uint16
 		FOU      bool
 		TTL      uint8
-	}{l.Kind, l.Local, l.Remote, l.Key, l.VNI, l.Port, l.FOU, l.TTL})
+		Keys     string `json:",omitempty"`
+	}{l.Kind, l.Local, l.Remote, l.Key, l.VNI, l.Port, l.FOU, l.TTL, keys})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:8])
 }
@@ -163,6 +183,11 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		} else if local, err = resolve(remote); err != nil {
 			return nil, fmt.Errorf("no route to %s: %w", remote, err)
 		}
+		if t.MTUProbe {
+			if m := pmtu.Cached(remote.Unmap()); m > 0 {
+				underMTU = m
+			}
+		}
 	}
 	remote, local = remote.Unmap(), local.Unmap()
 	under6 := remote.Is6()
@@ -175,13 +200,19 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 	}
 
 	s := &LinkSpec{
-		Name:   Ifname(t.Name),
-		Tunnel: t.Name,
-		Kind:   t.Kind,
-		Local:  local,
-		Remote: remote,
-		TTL:    t.TTL,
-		MTU:    t.MTU,
+		Name:      Ifname(t.Name),
+		Tunnel:    t.Name,
+		Kind:      t.Kind,
+		Local:     local,
+		Remote:    remote,
+		TTL:       t.TTL,
+		MTU:       t.MTU,
+		Side:      me,
+		Secret:    t.Secret,
+		Padding:   t.Padding,
+		Keepalive: t.Keepalive,
+		PeerKey:   t.PeerKey,
+		Userspace: ki.Userspace,
 	}
 	if parent != nil {
 		s.Parent = parent.Name
@@ -189,25 +220,63 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 	if s.TTL == 0 {
 		s.TTL = DefaultTTL
 	}
-	if t.Port != 0 && ki.IPProto != 0 {
+	switch {
+	case t.Port != 0 && ki.FOU:
 		if under6 {
 			return nil, fmt.Errorf("a UDP port (FOU) needs an IPv4 underlay")
 		}
 		s.Port, s.FOU = t.Port, true
-	} else if t.Port != 0 && !ki.UDP {
+	case t.Port != 0 && !ki.CanUsePort():
 		return nil, fmt.Errorf("%s cannot run on a port", t.Kind)
 	}
+	overhead := ki.OverheadFor(under6, t.Port != 0)
+	if t.Kind == config.KindObfs {
+		overhead += t.Padding
+	}
+	if t.Encrypt != "" {
+		if ki.Encrypted {
+			return nil, fmt.Errorf("%s is already encrypted; IPsec is not needed", t.Kind)
+		}
+		if parent != nil {
+			return nil, fmt.Errorf("encryption belongs on the bottom tunnel of a stack")
+		}
+		if _, err := config.LookupCipher(t.Encrypt); err != nil {
+			return nil, err
+		}
+		s.Encrypt = t.Encrypt
+		overhead += config.ESPOverhead
+	}
 	if s.MTU == 0 {
-		s.MTU = underMTU - ki.OverheadFor(under6, s.FOU)
+		s.MTU = underMTU - overhead
+	}
+	if s.MTU < 1280 && ki.Carry6 && t.MTU == 0 {
+		// IPv6 needs 1280; better a fragmenting underlay than a dead tunnel.
+		s.MTU = 1280
 	}
 	switch t.Kind {
-	case config.KindGRE, config.KindGRETAP, config.KindIP6GRE, config.KindIP6GRETAP:
+	case config.KindGRE, config.KindGRETAP, config.KindIP6GRE, config.KindIP6GRETAP, config.KindL2TPv3:
 		s.Key = t.Key
 	case config.KindVXLAN, config.KindGENEVE:
 		s.VNI, s.Port = t.VNI, t.Port
 		if s.Port == 0 {
 			s.Port = map[config.Kind]uint16{config.KindVXLAN: DefaultPort, config.KindGENEVE: GenevePort}[t.Kind]
 		}
+	case config.KindWireGuard:
+		s.Port = t.Port
+		if s.Port == 0 {
+			s.Port = WireGuardPort
+		}
+	case config.KindObfs:
+		if t.Port == 0 {
+			return nil, fmt.Errorf("NeoObfs needs a UDP port")
+		}
+		s.Port = t.Port
+	}
+	if ki.PortEncap {
+		s.Port = t.Port
+	}
+	if ki.Encrypted && t.Secret == "" {
+		return nil, fmt.Errorf("no secret: re-create the tunnel")
 	}
 	for _, n := range []string{t.Net4, t.Net6} {
 		if n == "" {

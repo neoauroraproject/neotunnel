@@ -4,8 +4,10 @@ import (
 	"context"
 
 	"neotunnel/internal/bench"
+	"neotunnel/internal/config"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/traffic"
 )
 
 // Backend is everything the panel can read and do. Live implements it on the
@@ -18,34 +20,47 @@ type Backend interface {
 	SyncPeers(names []string) []manage.PeerSync
 	UpgradePeer(ctx context.Context, name string) (string, error)
 	CreateTunnel(req manage.TunnelRequest) (manage.Change, error)
+	UpdateTunnel(name string, set manage.Settings, port uint16) (manage.Change, error)
 	RemoveTunnel(name string) (manage.Change, error)
-	AddForward(tunnel, ports, proto string, to uint16) (manage.Change, error)
+	AddForward(req manage.ForwardRequest) (manage.Change, error)
+	UpdateForward(req manage.ForwardRequest) (manage.Change, error)
 	RemoveForward(tunnel, ports string) (manage.Change, error)
 	SetNode(name, address string) error
-	TestTunnel(ctx context.Context, name string, progress func(string)) ([]bench.Result, error)
-	Bench(ctx context.Context, peer string, only []string, progress func(string)) ([]bench.Result, error)
+	SetDefaults(d config.Defaults) error
+	TestTunnel(ctx context.Context, name string, progress func(string), live func(string, float64)) ([]bench.Result, error)
+	Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64)) ([]bench.Result, error)
+	// ProbeMTU measures the path MTU under a tunnel and remembers it.
+	ProbeMTU(ctx context.Context, name string) (MTUReport, error)
+	Traffic() map[string]traffic.Summary
+	ResetTraffic(tunnel string) error
+	System() (SystemInfo, error)
+	Boost() error
+	Backup() ([]byte, error)
 
 	Login(user, pass string) bool
 	ChangePassword(current, next string) error
+	SetUser(user string) error
 	// SetPanelPort saves a new panel port and returns the new URL; the panel
 	// restarts on it right after responding.
 	SetPanelPort(port int) (string, error)
 }
 
 type Overview struct {
-	Node     NodeInfo       `json:"node"`
-	Master   *MasterInfo    `json:"master,omitempty"`
-	Revision uint64         `json:"revision"`
-	Tunnels  []TunnelView   `json:"tunnels"`
-	Peers    []PeerView     `json:"peers"`
-	Forwards []ForwardView  `json:"forwards"`
-	Modes    []manage.Mode  `json:"modes"`
-	Errors   []string       `json:"errors,omitempty"`
-	Panel    PanelInfo      `json:"panel"`
-	Commands []CommandGroup `json:"commands"`
-	Install  string         `json:"install"` // one-line installer for a new server
-	Repo     string         `json:"repo"`
-	Time     int64          `json:"time"` // unix ms, for rate calculation
+	Node     NodeInfo        `json:"node"`
+	Master   *MasterInfo     `json:"master,omitempty"`
+	Revision uint64          `json:"revision"`
+	Tunnels  []TunnelView    `json:"tunnels"`
+	Peers    []PeerView      `json:"peers"`
+	Forwards []ForwardView   `json:"forwards"`
+	Modes    []manage.Mode   `json:"modes"`
+	Ciphers  []config.Cipher `json:"ciphers"`
+	Defaults config.Defaults `json:"defaults"`
+	Errors   []string        `json:"errors,omitempty"`
+	Panel    PanelInfo       `json:"panel"`
+	Commands []CommandGroup  `json:"commands"`
+	Install  string          `json:"install"` // one-line installer for a new server
+	Repo     string          `json:"repo"`
+	Time     int64           `json:"time"` // unix ms, for rate calculation
 }
 
 type NodeInfo struct {
@@ -88,6 +103,51 @@ type TunnelView struct {
 	Tx      uint64 `json:"tx"`
 	Managed bool   `json:"managed"` // defined by our master, read-only here
 	Error   string `json:"error,omitempty"`
+
+	// Stack lists the layers under the tunnel, bottom first (e.g. obfs, sit).
+	Stack    []LayerView     `json:"stack,omitempty"`
+	Settings manage.Settings `json:"settings"`
+	BasePort uint16          `json:"base_port,omitempty"` // UDP port of the bottom layer
+	Obfs     bool            `json:"obfs,omitempty"`
+	Encrypt  string          `json:"encrypt,omitempty"`  // IPsec or the kind's own encryption
+	PathMTU  int             `json:"path_mtu,omitempty"` // measured, when probing
+	WGKey    string          `json:"wg_key,omitempty"`   // our WireGuard public key
+	Total    traffic.Pair    `json:"total"`
+	Today    traffic.Pair    `json:"today"`
+	Month    traffic.Pair    `json:"month"`
+}
+
+// LayerView is one tunnel of a stack.
+type LayerView struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	MTU  int    `json:"mtu"`
+	Up   bool   `json:"up"`
+}
+
+// MTUReport is the result of a path MTU measurement.
+type MTUReport struct {
+	Remote   string `json:"remote"`
+	PathMTU  int    `json:"path_mtu"`
+	Overhead int    `json:"overhead"` // every layer of the stack, encryption included
+	Best     int    `json:"best"`     // the MTU the tunnel should have
+	Current  int    `json:"current"`
+	Probing  bool   `json:"probing"` // the tunnel follows measurements automatically
+}
+
+// SystemInfo describes the host's network tuning.
+type SystemInfo struct {
+	Sysctl  []SysctlView `json:"sysctl"`
+	Boosted bool         `json:"boosted"`
+	Kernel  string       `json:"kernel"`
+	Nft     bool         `json:"nft"`
+	Ufw     bool         `json:"ufw"`
+}
+
+type SysctlView struct {
+	Key  string `json:"key"`
+	Want string `json:"want"`
+	Have string `json:"have"`
 }
 
 type PeerView struct {
@@ -110,6 +170,8 @@ type ForwardView struct {
 	To     uint16 `json:"to,omitempty"`
 	Target string `json:"target"` // far inner address
 	Public string `json:"public"` // this node's public address
+	Mode   string `json:"mode"`
+	ProxyV int    `json:"proxy_version,omitempty"`
 }
 
 type PanelInfo struct {

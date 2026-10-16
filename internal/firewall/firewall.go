@@ -15,6 +15,7 @@ type Needs struct {
 	Ifaces   []string // tunnel interfaces: traffic in and routed through them
 	UDPPorts []int    // tunnel ports (FOU, VXLAN, GENEVE)
 	Ports    []string // ufw port specs, e.g. "7710/tcp", "7711"
+	ESP      bool     // encrypted tunnels: IPsec ESP packets
 }
 
 func (n Needs) rules() [][]string {
@@ -30,6 +31,9 @@ func (n Needs) rules() [][]string {
 	}
 	for _, p := range n.Ports {
 		out = append(out, []string{"allow", p})
+	}
+	if n.ESP {
+		out = append(out, []string{"allow", "proto", "esp", "from", "any", "to", "any"})
 	}
 	return out
 }

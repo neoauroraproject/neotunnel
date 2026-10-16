@@ -81,6 +81,9 @@ func (s *State) Allocate(t *Tunnel) error {
 	if (t.Kind == KindVXLAN || t.Kind == KindGENEVE) && t.VNI == 0 {
 		t.VNI = keyFor(t.Name) & 0xffffff
 	}
+	if t.NeedsSecret() && t.Secret == "" {
+		t.Secret = NewSecret()
+	}
 	return nil
 }
 

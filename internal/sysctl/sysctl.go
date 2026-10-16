@@ -19,9 +19,9 @@ var forwarding = map[string]string{
 	"net.ipv4.conf.default.rp_filter": "0",
 }
 
-// Optimize is the throughput/latency profile: BBR with fq, larger socket
+// Boost is the throughput/latency profile: BBR with fq, larger socket
 // buffers and a busier backlog. Safe on any modern Ubuntu kernel.
-var Optimize = map[string]string{
+var Boost = map[string]string{
 	"net.core.default_qdisc":             "fq",
 	"net.ipv4.tcp_congestion_control":    "bbr",
 	"net.core.rmem_max":                  "67108864",
@@ -62,13 +62,16 @@ func set(values map[string]string) error {
 
 func EnsureForwarding() error { return set(forwarding) }
 
-// ApplyOptimize sets the profile now and persists it across reboots.
-func ApplyOptimize() error {
+// Set changes one value now (not persisted; the daemon re-applies it).
+func Set(key, value string) error { return set(map[string]string{key: value}) }
+
+// ApplyBoost sets the profile now and persists it across reboots.
+func ApplyBoost() error {
 	all := map[string]string{}
 	for k, v := range forwarding {
 		all[k] = v
 	}
-	for k, v := range Optimize {
+	for k, v := range Boost {
 		all[k] = v
 	}
 	keys := make([]string, 0, len(all))
@@ -77,7 +80,7 @@ func ApplyOptimize() error {
 	}
 	sort.Strings(keys)
 	var b strings.Builder
-	b.WriteString("# Managed by neotunnel (neotunnel optimize)\n")
+	b.WriteString("# Managed by neotunnel (neotunnel boost)\n")
 	for _, k := range keys {
 		fmt.Fprintf(&b, "%s = %s\n", k, all[k])
 	}

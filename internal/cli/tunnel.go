@@ -13,7 +13,7 @@ import (
 
 func tunnelCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "tunnel", Short: "Add, list and remove tunnels"}
-	cmd.AddCommand(tunnelAddCmd(), tunnelListCmd(), tunnelRemoveCmd(), kindsCmd())
+	cmd.AddCommand(tunnelAddCmd(), tunnelSetCmd(), tunnelListCmd(), tunnelRemoveCmd(), kindsCmd())
 	return cmd
 }
 
@@ -53,6 +53,7 @@ func tunnelAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			withDefaults(cmd.Flags(), st, &o.Settings, nil)
 			t, err := manage.NewTunnel(st, args[0], o)
 			if err != nil {
 				return err
@@ -64,6 +65,10 @@ func tunnelAddCmd() *cobra.Command {
 			printChange(ch)
 			st, _ = loadNode()
 			printTunnel(st, saved)
+			if saved.Kind == config.KindWireGuard && o.Remote != "" {
+				pub, _ := engine.WireGuardPublicKey(saved, 0)
+				info("this server's WireGuard public key: %s (port %d)", bold(pub), saved.Port)
+			}
 			return nil
 		},
 	}
@@ -72,8 +77,8 @@ func tunnelAddCmd() *cobra.Command {
 	f.StringVar(&o.Peer, "peer", "", "managed peer for the other end")
 	f.StringVar(&o.Remote, "remote", "", "remote endpoint IP when the far end is not managed by neotunnel")
 	f.StringVar(&o.Over, "over", "", "run on top of another tunnel")
-	f.IntVar(&o.MTU, "mtu", 0, "MTU (default: computed from overhead)")
-	f.Uint16Var(&o.Port, "port", 0, "UDP port the tunnel runs on (FOU for sit/ipip/gre/gretap; vxlan/geneve port)")
+	f.Uint16Var(&o.Port, "port", 0, "UDP port the tunnel runs on (FOU for sit/ipip/gre/gretap; vxlan/geneve/wireguard/obfs port; L2TPv3 over UDP)")
+	settingsFlags(f, &o.Settings)
 	f.Uint32Var(&o.VNI, "vni", 0, "VNI for vxlan/geneve (default: derived from name)")
 	cmd.MarkFlagRequired("kind")
 	return cmd
@@ -160,12 +165,14 @@ func forwardCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "forward", Short: "Forward public ports on this node through a tunnel"}
 	var proto string
 	var to uint16
+	var mode manage.ForwardRequest
 	add := &cobra.Command{
 		Use:   "add <tunnel> <ports>",
 		Short: "Forward ports (e.g. 443,8080-8090) to the tunnel's far end",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ch, err := manage.AddForward(args[0], args[1], proto, to)
+			ch, err := manage.AddForward(manage.ForwardRequest{Tunnel: args[0], Ports: args[1], Proto: proto, To: to,
+				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion})
 			if err != nil {
 				return err
 			}
@@ -180,6 +187,7 @@ func forwardCmd() *cobra.Command {
 	}
 	add.Flags().StringVar(&proto, "proto", "both", "tcp, udp or both")
 	add.Flags().Uint16Var(&to, "to", 0, "target port on the far end (default: same port)")
+	forwardModeFlags(add.Flags(), &mode)
 	list := &cobra.Command{
 		Use:   "list",
 		Short: "List port forwards",
@@ -217,6 +225,6 @@ func forwardCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(add, list, rm)
+	cmd.AddCommand(add, forwardSetCmd(), list, rm)
 	return cmd
 }

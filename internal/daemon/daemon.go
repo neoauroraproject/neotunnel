@@ -1,6 +1,6 @@
 // Package daemon is the long-running service: it keeps the kernel in sync
 // with the state file, serves the agent and probe ports, and completes
-// pairing with the master when a setup link was applied offline.
+// pairing with the master when a setup key was applied offline.
 package daemon
 
 import (
@@ -21,6 +21,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/probe"
+	"neotunnel/internal/traffic"
 	"neotunnel/internal/web"
 )
 
@@ -54,10 +55,20 @@ func Run(ctx context.Context) error {
 		}
 	}()
 
-	startPanel(id)
+	dp := newDataPlane()
+	engine.SetUserspace(dp)
+	defer dp.Close()
+
+	store := traffic.Open()
+	go account(ctx, store)
+	go probeMTUs(ctx, poke)
+
+	startPanel(id, store, poke)
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
+	term := make(chan os.Signal, 1)
+	signal.Notify(term, syscall.SIGTERM)
 	log.Printf("neotunnel daemon started, key %s", identity.Fingerprint(id.PublicString()))
 
 	t := time.NewTicker(reconcileEvery)
@@ -87,6 +98,10 @@ func Run(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
+			store.Save()
+			return nil
+		case <-term:
+			store.Save()
 			return nil
 		case <-t.C:
 		case <-hup:
@@ -118,13 +133,13 @@ func currentProblems() []string {
 }
 
 // startPanel serves the web panel when it is configured.
-func startPanel(id *identity.Identity) {
+func startPanel(id *identity.Identity, store *traffic.Store, reconcile func()) {
 	st, err := config.Load()
 	if err != nil || st.Panel == nil {
 		return
 	}
 	srv := &web.Server{
-		Backend: &web.Live{ID: id, Started: time.Now(), Problems: currentProblems},
+		Backend: &web.Live{ID: id, Started: time.Now(), Problems: currentProblems, Store: store, Reconcile: reconcile},
 		Path:    st.Panel.Path,
 		Restart: func() {
 			log.Printf("panel port changed; restarting")
@@ -139,7 +154,7 @@ func startPanel(id *identity.Identity) {
 	}()
 }
 
-// tryRegister completes pairing for a node that received its setup link
+// tryRegister completes pairing for a node that received its setup key
 // while the master was unreachable.
 func tryRegister(ctx context.Context, id *identity.Identity, st *config.State) {
 	m := st.Managed

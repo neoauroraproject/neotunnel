@@ -10,6 +10,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -140,6 +141,12 @@ const (
 
 // Bandwidth runs streams parallel TCP connections for d and returns bits/s.
 func Bandwidth(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, streams int) (float64, error) {
+	return BandwidthLive(ctx, addr, tok, dir, d, streams, nil)
+}
+
+// BandwidthLive is Bandwidth that also reports the current rate (bits/s,
+// measured locally over the last half second) while it runs.
+func BandwidthLive(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, streams int, report func(bps float64)) (float64, error) {
 	if streams < 1 {
 		streams = 1
 	}
@@ -148,13 +155,33 @@ func Bandwidth(ctx context.Context, addr string, tok Token, dir Direction, d tim
 		mu    sync.Mutex
 		total int64
 		first error
+		moved atomic.Int64
 	)
+	if report != nil {
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			t := time.NewTicker(500 * time.Millisecond)
+			defer t.Stop()
+			last, at := int64(0), time.Now()
+			for {
+				select {
+				case <-stop:
+					return
+				case now := <-t.C:
+					n := moved.Load()
+					report(float64(n-last) * 8 / now.Sub(at).Seconds())
+					last, at = n, now
+				}
+			}
+		}()
+	}
 	start := time.Now()
 	for i := 0; i < streams; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := stream(ctx, addr, tok, dir, d)
+			n, err := stream(ctx, addr, tok, dir, d, &moved)
 			mu.Lock()
 			defer mu.Unlock()
 			total += n
@@ -173,7 +200,7 @@ func Bandwidth(ctx context.Context, addr string, tok Token, dir Direction, d tim
 	return float64(total*8) / time.Since(start).Seconds(), nil
 }
 
-func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration) (int64, error) {
+func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, moved *atomic.Int64) (int64, error) {
 	var dl net.Dialer
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	c, err := dl.DialContext(dctx, "tcp", addr)
@@ -198,7 +225,9 @@ func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.D
 		deadline := time.Now().Add(d)
 		c.SetWriteDeadline(deadline.Add(2 * time.Second))
 		for time.Now().Before(deadline) {
-			if _, err := c.Write(buf); err != nil {
+			n, err := c.Write(buf)
+			moved.Add(int64(n))
+			if err != nil {
 				break
 			}
 		}
@@ -211,10 +240,18 @@ func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.D
 		return int64(binary.BigEndian.Uint64(out[:])), nil
 	default:
 		c.SetReadDeadline(time.Now().Add(d + 5*time.Second))
-		n, err := io.Copy(io.Discard, c)
-		if n > 0 {
-			err = nil
+		buf := make([]byte, 128<<10)
+		var n int64
+		for {
+			m, err := c.Read(buf)
+			n += int64(m)
+			moved.Add(int64(m))
+			if err != nil {
+				if n > 0 || err == io.EOF {
+					err = nil
+				}
+				return n, err
+			}
 		}
-		return n, err
 	}
 }

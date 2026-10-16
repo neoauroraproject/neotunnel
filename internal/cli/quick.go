@@ -15,12 +15,21 @@ func quickCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "quick <peer>",
 		Short: "One step: tunnel to a peer (6to4 by default) with optional port forwarding",
-		Example: `  neotunnel quick kharej --address 203.0.113.10 --forward 443,8443
+		Example: `  neotunnel quick germany --address 203.0.113.10 --forward 443,8443
   neotunnel quick germany --address 198.51.100.7 --port 3000 --forward 2053 --forward-to 443
-  neotunnel quick kharej --mode vxlan`,
+  neotunnel quick germany --encrypt aes-gcm-128 --mtu-probe
+  neotunnel quick germany --obfs --port 8443 --padding 32
+  neotunnel quick germany --forward 443 --forward-mode transparent
+  neotunnel quick germany --mode wireguard`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req.Peer = args[0]
+			if st, err := loadNode(); err == nil {
+				withDefaults(cmd.Flags(), st, &req.Settings, &req.Obfs)
+				if !cmd.Flags().Changed("forward-mode") {
+					req.ForwardMode = st.D().ForwardMode
+				}
+			}
 			return quick(req, address)
 		},
 	}
@@ -32,6 +41,10 @@ func quickCmd() *cobra.Command {
 	f.StringVar(&req.Forward, "forward", "", "ports on this node to forward to the peer, e.g. 443,2053-2096")
 	f.Uint16Var(&req.ForwardTo, "forward-to", 0, "target port on the peer (default: same port)")
 	f.StringVar(&req.Proto, "proto", "both", "forwarded protocol: tcp, udp, both")
+	f.StringVar(&req.ForwardMode, "forward-mode", "", "nat (default), transparent (keeps the client IP) or proxy (PROXY protocol)")
+	f.IntVar(&req.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --forward-mode proxy: 2 (default) or 1")
+	f.BoolVar(&req.Obfs, "obfs", false, "run the tunnel over NeoObfs (encrypted UDP that looks like noise; give --port)")
+	settingsFlags(f, &req.Settings)
 	return cmd
 }
 

@@ -19,9 +19,12 @@ import (
 //
 //	neotunnel:<hash>                 persistent tunnel
 //	neotunnel-bench:<expiry>:<hash>  temporary test tunnel, removed after expiry
+//	neotunnel-user:<hash>            user-space tunnel (NeoObfs), owned by the
+//	                                 daemon process that holds its TUN device
 const (
 	aliasPersistent = "neotunnel:"
 	aliasBench      = "neotunnel-bench:"
+	aliasUser       = "neotunnel-user:"
 )
 
 // ip6tnl flag: don't insert the 8-byte encapsulation-limit option header.
@@ -64,8 +67,40 @@ func buildLink(s LinkSpec) (netlink.Link, error) {
 	case config.KindGENEVE:
 		// geneve has no local-address attribute; the kernel picks the source by route.
 		return &netlink.Geneve{LinkAttrs: attrs, ID: s.VNI, Remote: r, Dport: s.Port, Ttl: s.TTL}, nil
+	case config.KindWireGuard:
+		return &netlink.Wireguard{LinkAttrs: attrs}, nil
 	}
 	return nil, fmt.Errorf("unsupported kind %s", s.Kind)
+}
+
+// create adds the kernel interface for s and configures what can only be
+// set right after creation (WireGuard keys and peer).
+func create(s LinkSpec) error {
+	if s.Kind == config.KindL2TPv3 {
+		return createL2TP(s)
+	}
+	l, err := buildLink(s)
+	if err != nil {
+		return err
+	}
+	if err := netlink.LinkAdd(l); err != nil {
+		return fmt.Errorf("create %s (%s): %w", s.Name, s.Kind, explain(err))
+	}
+	if s.Kind == config.KindWireGuard {
+		if err := wgConfigure(s); err != nil {
+			netlink.LinkDel(l)
+			return err
+		}
+	}
+	return nil
+}
+
+// delLink removes one of our interfaces (L2TP sessions go with their tunnel).
+func delLink(l netlink.Link) error {
+	if id, ok := l2tpTunnelOf(l.Attrs().Name); ok {
+		return ipCmd("l2tp", "del", "tunnel", "tunnel_id", id)
+	}
+	return netlink.LinkDel(l)
 }
 
 // ensure makes the kernel interface match s. alias is the full alias to set.
@@ -74,7 +109,7 @@ func ensure(s LinkSpec, alias string) (bool, error) {
 	cur, err := netlink.LinkByName(s.Name)
 	created := false
 	if err == nil && cur.Attrs().Alias != alias {
-		if err := netlink.LinkDel(cur); err != nil {
+		if err := delLink(cur); err != nil {
 			return false, fmt.Errorf("remove stale %s: %w", s.Name, err)
 		}
 		cur = nil
@@ -86,36 +121,38 @@ func ensure(s LinkSpec, alias string) (bool, error) {
 		cur = nil
 	}
 	if cur == nil {
-		l, err := buildLink(s)
-		if err != nil {
+		if err := create(s); err != nil {
 			return false, err
-		}
-		if err := netlink.LinkAdd(l); err != nil {
-			return false, fmt.Errorf("create %s (%s): %w", s.Name, s.Kind, explain(err))
 		}
 		if cur, err = netlink.LinkByName(s.Name); err != nil {
 			return false, err
 		}
+		// The alias marks the link as ours and complete; set it last.
 		if err := netlink.LinkSetAlias(cur, alias); err != nil {
-			netlink.LinkDel(cur)
+			delLink(cur)
 			return false, err
 		}
 		created = true
 	}
+	return created, configure(cur, s)
+}
+
+// configure brings an existing interface's MTU, addresses and state in line.
+func configure(cur netlink.Link, s LinkSpec) error {
 	if cur.Attrs().MTU != s.MTU {
 		if err := netlink.LinkSetMTU(cur, s.MTU); err != nil {
-			return created, fmt.Errorf("set mtu on %s: %w", s.Name, err)
+			return fmt.Errorf("set mtu on %s: %w", s.Name, err)
 		}
 	}
 	if err := syncAddrs(cur, s.Addrs); err != nil {
-		return created, err
+		return err
 	}
 	if cur.Attrs().Flags&net.FlagUp == 0 {
 		if err := netlink.LinkSetUp(cur); err != nil {
-			return created, fmt.Errorf("bring up %s: %w", s.Name, err)
+			return fmt.Errorf("bring up %s: %w", s.Name, err)
 		}
 	}
-	return created, nil
+	return nil
 }
 
 func syncAddrs(l netlink.Link, want []netip.Prefix) error {
@@ -168,7 +205,7 @@ func owned() (map[string]netlink.Link, error) {
 	out := map[string]netlink.Link{}
 	for _, l := range ls {
 		a := l.Attrs().Alias
-		if strings.HasPrefix(a, aliasPersistent) || strings.HasPrefix(a, aliasBench) {
+		if strings.HasPrefix(a, aliasPersistent) || strings.HasPrefix(a, aliasBench) || strings.HasPrefix(a, aliasUser) {
 			out[l.Attrs().Name] = l
 		}
 	}

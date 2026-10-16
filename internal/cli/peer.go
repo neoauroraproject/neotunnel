@@ -50,7 +50,7 @@ func nodeCmd() *cobra.Command {
 
 func peerCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "peer", Short: "Manage the servers this node controls"}
-	cmd.AddCommand(peerAddCmd(), peerListCmd(), peerRemoveCmd(), peerLinkCmd(), peerSyncCmd(), peerUpgradeCmd())
+	cmd.AddCommand(peerAddCmd(), peerListCmd(), peerRemoveCmd(), peerConnectCmd(), peerSyncCmd(), peerUpgradeCmd())
 	return cmd
 }
 
@@ -131,9 +131,9 @@ func peerRemoveCmd() *cobra.Command {
 	}
 }
 
-func peerLinkCmd() *cobra.Command {
+func peerConnectCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "link <name>",
+		Use:   "connect <name>",
 		Short: "Print the command that brings a peer to this node's configuration",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

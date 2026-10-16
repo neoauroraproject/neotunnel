@@ -20,8 +20,8 @@ func newID(t *testing.T) *identity.Identity {
 
 func payload(rev uint64) Payload {
 	return Payload{
-		Master:   config.MasterRef{Name: "iran", Address: "198.51.100.1:7710"},
-		Peer:     "kharej",
+		Master:   config.MasterRef{Name: "hub", Address: "198.51.100.1:7710"},
+		Peer:     "edge",
 		Revision: rev,
 		Tunnels:  []config.Tunnel{{Name: "t1", Kind: config.KindSIT}},
 	}
@@ -29,31 +29,31 @@ func payload(rev uint64) Payload {
 
 func TestRoundTrip(t *testing.T) {
 	id := newID(t)
-	link, err := Encode(id, payload(3))
+	key, err := Encode(id, payload(3))
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := Decode(link)
+	p, err := Decode(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Peer != "kharej" || p.Revision != 3 || p.Master.PublicKey != id.PublicString() || len(p.Tunnels) != 1 {
+	if p.Peer != "edge" || p.Revision != 3 || p.Master.PublicKey != id.PublicString() || len(p.Tunnels) != 1 {
 		t.Errorf("payload mangled: %+v", p)
 	}
 }
 
 func TestTamperDetected(t *testing.T) {
 	id := newID(t)
-	link, _ := Encode(id, payload(1))
-	body, sig, _ := strings.Cut(strings.TrimPrefix(link, Scheme), ".")
+	key, _ := Encode(id, payload(1))
+	body, sig, _ := strings.Cut(strings.TrimPrefix(key, Prefix), ".")
 	other, _ := Encode(newID(t), payload(1))
-	_, otherSig, _ := strings.Cut(strings.TrimPrefix(other, Scheme), ".")
+	_, otherSig, _ := strings.Cut(strings.TrimPrefix(other, Prefix), ".")
 
-	if _, err := Decode(Scheme + body + "." + otherSig); err == nil {
+	if _, err := Decode(Prefix + body + "." + otherSig); err == nil {
 		t.Error("signature from another key accepted")
 	}
-	if _, err := Decode(Scheme + body[:len(body)-4] + "." + sig); err == nil {
-		t.Error("truncated link accepted")
+	if _, err := Decode(Prefix + body[:len(body)-4] + "." + sig); err == nil {
+		t.Error("truncated setup key accepted")
 	}
 }
 
@@ -65,7 +65,7 @@ func TestAcceptRules(t *testing.T) {
 	if err := Accept(st, p1, false); err != nil {
 		t.Fatal(err)
 	}
-	if st.Self != "kharej" || st.Managed.Revision != 5 {
+	if st.Self != "edge" || st.Managed.Revision != 5 {
 		t.Fatalf("not applied: %+v", st.Managed)
 	}
 
@@ -78,7 +78,7 @@ func TestAcceptRules(t *testing.T) {
 	other, _ := Encode(newID(t), payload(9))
 	po, _ := Decode(other)
 	if Accept(st, po, false) == nil {
-		t.Error("link from a different master accepted without --force")
+		t.Error("setup key from a different master accepted without --force")
 	}
 	if Accept(st, po, true) != nil {
 		t.Error("--force should switch masters")

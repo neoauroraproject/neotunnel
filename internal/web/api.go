@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"neotunnel/internal/bench"
+	"neotunnel/internal/config"
 	"neotunnel/internal/manage"
 )
 
@@ -85,17 +86,81 @@ func (s *Server) routes(m *http.ServeMux) {
 		ch, err := b.RemoveTunnel(r.PathValue("name"))
 		reply(w, ch, err)
 	}))
-
-	m.HandleFunc("POST /api/forwards", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("PATCH /api/tunnels/{name}", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Tunnel, Ports, Proto string
-			To                   uint16
+			manage.Settings
+			Port uint16 `json:"port"`
 		}
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		ch, err := b.AddForward(req.Tunnel, req.Ports, req.Proto, req.To)
+		ch, err := b.UpdateTunnel(r.PathValue("name"), req.Settings, req.Port)
+		reply(w, ch, err)
+	}))
+	m.HandleFunc("POST /api/tunnels/{name}/mtu", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+		rep, err := b.ProbeMTU(ctx, r.PathValue("name"))
+		reply(w, rep, err)
+	}))
+
+	m.HandleFunc("GET /api/traffic", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, b.Traffic())
+	}))
+	m.HandleFunc("POST /api/traffic/reset", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Tunnel string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		reply(w, map[string]bool{"ok": true}, b.ResetTraffic(req.Tunnel))
+	}))
+
+	m.HandleFunc("GET /api/system", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		si, err := b.System()
+		reply(w, si, err)
+	}))
+	m.HandleFunc("POST /api/system/boost", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		reply(w, map[string]bool{"ok": true}, b.Boost())
+	}))
+	m.HandleFunc("POST /api/system/restart", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		if s.Restart != nil {
+			go func() {
+				time.Sleep(time.Second)
+				s.Restart()
+			}()
+		}
+	}))
+	m.HandleFunc("GET /api/backup", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		data, err := b.Backup()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="neotunnel-backup-`+time.Now().Format("2006-01-02")+`.json"`)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(data)
+	}))
+
+	m.HandleFunc("POST /api/forwards", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req manage.ForwardRequest
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		ch, err := b.AddForward(req)
+		reply(w, ch, err)
+	}))
+	m.HandleFunc("POST /api/forwards/update", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req manage.ForwardRequest
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		ch, err := b.UpdateForward(req)
 		reply(w, ch, err)
 	}))
 	m.HandleFunc("POST /api/forwards/remove", s.authed(func(w http.ResponseWriter, r *http.Request) {
@@ -117,11 +182,11 @@ func (s *Server) routes(m *http.ServeMux) {
 			fail(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		j, err := s.jobs.start(req.Kind, req.Target, func(ctx context.Context, log func(string)) ([]bench.Result, error) {
+		j, err := s.jobs.start(req.Kind, req.Target, func(ctx context.Context, log func(string), live func(string, float64)) ([]bench.Result, error) {
 			if req.Kind == "test" {
-				return b.TestTunnel(ctx, req.Target, log)
+				return b.TestTunnel(ctx, req.Target, log, live)
 			}
-			return b.Bench(ctx, req.Target, req.Only, log)
+			return b.Bench(ctx, req.Target, req.Only, log, live)
 		})
 		if err != nil {
 			fail(w, http.StatusConflict, err.Error())
@@ -152,6 +217,22 @@ func (s *Server) routes(m *http.ServeMux) {
 			return
 		}
 		reply(w, map[string]bool{"ok": true}, b.SetNode(req.Name, req.Address))
+	}))
+	m.HandleFunc("POST /api/settings/defaults", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req config.Defaults
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		reply(w, map[string]bool{"ok": true}, b.SetDefaults(req))
+	}))
+	m.HandleFunc("POST /api/settings/user", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ User string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		reply(w, map[string]bool{"ok": true}, b.SetUser(req.User))
 	}))
 	m.HandleFunc("POST /api/settings/password", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Current, Next string }

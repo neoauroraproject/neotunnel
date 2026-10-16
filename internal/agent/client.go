@@ -41,7 +41,7 @@ func newClient(id *identity.Identity, addr, pinned string, timeout time.Duration
 // ToPeer connects to a paired peer as its master.
 func ToPeer(id *identity.Identity, p config.Peer) (*Client, error) {
 	if !p.Paired() {
-		return nil, fmt.Errorf("peer %s is not paired yet: run its setup link on it", p.Name)
+		return nil, fmt.Errorf("peer %s is not paired yet: run its connect command on it", p.Name)
 	}
 	port := p.AgentPort
 	if port == 0 {

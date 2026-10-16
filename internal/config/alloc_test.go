@@ -51,7 +51,7 @@ func TestInner(t *testing.T) {
 }
 
 func TestValidName(t *testing.T) {
-	for _, ok := range []string{"t1", "t1-6", "kharej-01"} {
+	for _, ok := range []string{"t1", "t1-6", "edge-01"} {
 		if ValidName(ok) != nil {
 			t.Errorf("%q should be valid", ok)
 		}

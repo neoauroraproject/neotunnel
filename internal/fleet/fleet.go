@@ -1,5 +1,5 @@
 // Package fleet is the master's view of its peers: pushing configuration,
-// building setup links for peers that can't be reached, and upgrades.
+// building setup keys for peers that can't be reached, and upgrades.
 package fleet
 
 import (
@@ -64,8 +64,8 @@ type Setup struct {
 	Peer    string `json:"peer"`
 	Address string `json:"address"` // the peer's IP, for display
 	Paired  bool   `json:"paired"`
-	Link    string `json:"link"`  // neotunnel://...
-	Apply   string `json:"apply"` // sudo neotunnel apply '<link>'
+	Key     string `json:"key"`   // signed setup key (NT1....)
+	Apply   string `json:"apply"` // sudo neotunnel apply '<key>'
 	// Install downloads the binary from this master, verifies it and applies
 	// (only while the peer isn't paired).
 	Install string `json:"install,omitempty"`
@@ -79,7 +79,7 @@ func randToken() string {
 	return hex.EncodeToString(b)
 }
 
-// MakeSetup builds a signed link for peer carrying its full configuration.
+// MakeSetup builds a signed setup key for peer carrying its full configuration.
 // Unpaired peers also get a fresh enrollment token (valid EnrollTTL) and an
 // install one-liner that downloads this binary from the master and checks it.
 func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
@@ -105,7 +105,7 @@ func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
 		return Setup{}, fmt.Errorf("this node's public address is unknown; set it with: neotunnel node --address <ip>")
 	}
 	ts, fs := st.ForPeer(peer)
-	link, err := setuplink.Encode(id, setuplink.Payload{
+	key, err := setuplink.Encode(id, setuplink.Payload{
 		Issued:      time.Now().UTC(),
 		Master:      config.MasterRef{Name: st.Self, Address: net.JoinHostPort(st.Address, strconv.Itoa(agent.DefaultPort))},
 		Peer:        peer,
@@ -119,11 +119,11 @@ func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
 	}
 	p, _ := st.Peer(peer)
 	s := Setup{
-		Peer: peer, Address: p.Address, Paired: p.Paired(), Link: link,
-		Apply: fmt.Sprintf("sudo neotunnel apply '%s'", link),
+		Peer: peer, Address: p.Address, Paired: p.Paired(), Key: key,
+		Apply: fmt.Sprintf("sudo neotunnel apply '%s'", key),
 	}
 	if token != "" {
-		s.GitHub = fmt.Sprintf("curl -fsSL %s | sudo bash -s -- --no-panel && %s", version.InstallURL, s.Apply)
+		s.GitHub = fmt.Sprintf("curl -fsSL %s | sudo bash -s -- --no-panel --no-menu && %s", version.InstallURL, s.Apply)
 		exe, err := os.Executable()
 		if err == nil {
 			if b, err := os.ReadFile(exe); err == nil {
@@ -131,7 +131,7 @@ func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
 				url := fmt.Sprintf("https://%s/dl/%s", net.JoinHostPort(st.Address, strconv.Itoa(agent.DefaultPort)), token)
 				// -k is safe here: the checksum is verified before anything runs.
 				s.Install = fmt.Sprintf("curl -fsSk %s -o /tmp/neotunnel && echo '%x  /tmp/neotunnel' | sha256sum -c --quiet && sudo install -m 755 /tmp/neotunnel /usr/local/bin/neotunnel && rm /tmp/neotunnel && sudo neotunnel apply '%s'",
-					url, sum, link)
+					url, sum, key)
 			}
 		}
 	}
