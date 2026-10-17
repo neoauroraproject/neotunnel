@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"neotunnel/internal/agent"
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
@@ -665,4 +666,32 @@ func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all bool) ([
 	}
 	c := bench.Candidate{Name: "check", Title: req.Mode, Mode: req.Mode, Port: defs[0].Port, Tunnels: defs}
 	return r.Compare(ctx, []bench.Candidate{c}, nil), nil
+}
+
+// RestartTunnel takes a tunnel and the layers under it down and up again,
+// on this node and on the far server, without changing any setting.
+func (l *Live) RestartTunnel(ctx context.Context, name string) error {
+	st, err := manage.Node()
+	if err != nil {
+		return err
+	}
+	t, ok := st.Tunnel(name)
+	if !ok {
+		return fmt.Errorf("unknown tunnel %q", name)
+	}
+	names := manage.Stack(st, name)
+	var peerErr error
+	if p, ok := st.Peer(t.Sides[1].Node); ok && p.Paired() {
+		if c, err := agent.ToPeer(l.ID, *p); err != nil {
+			peerErr = err
+		} else if err := c.Restart(ctx, names); err != nil && !strings.Contains(err.Error(), "404") {
+			peerErr = fmt.Errorf("%s: %w", p.Name, err)
+		}
+	}
+	engine.Restart(names, func() {
+		if cur, err := config.Load(); err == nil {
+			engine.Apply(cur)
+		}
+	})
+	return peerErr
 }

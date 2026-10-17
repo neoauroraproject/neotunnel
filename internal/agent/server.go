@@ -47,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/bench/down", s.fromMaster(s.benchDown))
 	mux.HandleFunc("POST /v1/upgrade", s.fromMaster(s.upgrade))
 	mux.HandleFunc("POST /v1/traffic/exclude", s.fromMaster(s.excludeTraffic))
+	mux.HandleFunc("POST /v1/restart", s.fromMaster(s.restart))
 	return mux
 }
 
@@ -346,5 +347,20 @@ func (s *Server) excludeTraffic(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// restart takes the named tunnels down and up again on this node.
+func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
+	var req RestartRequest
+	if err := readJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	engine.Restart(req.Tunnels, func() {
+		if st, err := config.Load(); err == nil {
+			engine.Apply(st)
+		}
+	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

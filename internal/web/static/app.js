@@ -186,7 +186,7 @@
     modal: null, wiz: null, form: {}, drawer: null,
     open: null, tset: {}, edit: false, fwdEdit: {},
     sec: store("nt-settings") || "node", defs: null,
-    jobs: [], job: null, pv: {}, upgrading: {}, prates: {}, dtab: {}, speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
+    jobs: [], job: null, pv: {}, upgrading: {}, restarting: {}, prates: {}, dtab: {}, speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
   };
   document.documentElement.dataset.theme = S.theme;
 
@@ -363,11 +363,14 @@
   // them by hand.
   function behindNote() {
     const ps = (S.ov.peers || []).filter((p) => p.paired && !p.in_sync);
-    if (!ps.length) return "";
+    const old = (S.ov.peers || []).filter((p) => p.paired && p.version && p.version !== S.ov.node.version && !S.upgrading[p.name]);
+    const oldNote = old.length ? html`<div class="note warn behind">${I.alert(16)}<div class="grow">${old.map((p) => html`<b>${p.name}</b> `)} نسخه‌ی قدیمی‌تری (${old.map((p) => p.version).join("، ")}) از این سرور (<span class="ltr">${S.ov.node.version}</span>) دارد؛ تنظیمات تازه را نمی‌شناسد و ممکن است تانل یا فوروارد کار نکند.</div>
+      ${old.map((p) => html`<button class="btn sm primary" data-act="upgrade" data-name="${p.name}">${I.upgrade(14)} ارتقای ${p.name}</button>`)}</div>` : "";
+    if (!ps.length) return oldNote;
     return html`<div class="note warn behind">${I.alert(16)}<div class="grow">${ps.length === 1 ? html`سرور <b>${ps[0].name}</b> آخرین تغییرات را نگرفته است.` : html`${ps.length} سرور آخرین تغییرات را نگرفته‌اند: ${ps.map((p) => p.name).join("، ")}.`}
       <span class="faint"> اگر دوباره ارسال نشد، لینک تغییرات را روی همان سرور اجرا کنید.</span></div>
       <button class="btn sm" data-act="sync-all">${I.sync(14)} ارسال دوباره</button>
-      ${ps.map((p) => html`<button class="btn sm primary" data-act="setup" data-name="${p.name}">${I.term(14)} لینک تغییرات${ps.length > 1 ? " " + p.name : ""}</button>`)}</div>`;
+      ${ps.map((p) => html`<button class="btn sm primary" data-act="setup" data-name="${p.name}">${I.term(14)} لینک تغییرات${ps.length > 1 ? " " + p.name : ""}</button>`)}</div>${oldNote}`;
   }
 
   function pageHead() {
@@ -662,22 +665,34 @@
   function viewTunnels() {
     const ts = visible();
     if (!ts.length) return html`<div class="panel"><div class="empty">${I.tunnel(32)}<b>هیچ تانلی وجود ندارد</b>با چند کلیک یک تانل 6to4 بسازید؛ اگر مسیر پروتکل‌ها را می‌بندد، روی پورت UDP یا با NeoObfs اجرایش کنید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div></div>`;
-    return html`<div class="panel"><div class="list">${ts.map(tunnelRow)}</div></div>`;
+    const open = ts.find((t) => t.name === S.open);
+    return html`<div class="tcards">${ts.map(tunnelCard)}</div>
+      ${open ? html`<section class="panel tdetail" data-key="td-${open.name}"><header><h2>${open.name}</h2><span class="aside">${kindTitle(open)} به ${open.peer || open.far_ip}</span>
+        <button class="btn sm ghost icon" data-act="toggle-tunnel" data-name="${open.name}" style="margin-inline-start:auto" aria-label="بستن">${I.x(16)}</button></header>${tunnelDetail(open)}</section>` : ""}`;
   }
 
-  function tunnelRow(t) {
-    const r = rate(t.name), open = S.open === t.name;
-    return html`<div class="item ${open ? "open" : ""}">
-      <button class="sum" data-act="toggle-tunnel" data-name="${t.name}" aria-expanded="${open}">
-        <i class="dot ${status(t)[0]}"></i>
-        <div class="name">${t.name}<small>${kindTitle(t)}${t.base_port ? ` روی UDP ${t.base_port}` : ""}</small></div>
-        <div class="muted small hide-sm">${t.peer || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
-        <div class="cell-tags hide-sm">${profileTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}</div>
-        <div class="rate"><b data-live="rx:${t.name}">${fmtRate(r.rx)}</b> ↓<br><span data-live="tx:${t.name}">${fmtRate(r.tx)}</span> ↑</div>
-        <span class="chev">${I.chev(16)}</span>
+  // One tunnel at a glance: state, where it goes, live traffic, health, and
+  // the actions used most; the card opens its details below the grid.
+  function tunnelCard(t) {
+    const r = rate(t.name), open = S.open === t.name, [st, label] = status(t), h = t.health;
+    const off = t.limits && t.limits.disabled, busy = S.restarting[t.name];
+    const ping = off ? "" : h && h.probes >= 3 ? (h.passes ? ms(h.ping_ms) + (h.loss >= 1 ? ` · افت ${h.loss.toFixed(0)}٪` : "") : "بدون پاسخ") : "";
+    return html`<article class="tcard ${open ? "open" : ""} ${off ? "off" : ""}" data-key="tc-${t.name}">
+      <button class="tc-main" data-act="toggle-tunnel" data-name="${t.name}" aria-expanded="${open}">
+        <div class="tc-top"><span class="state"><i class="dot ${busy ? "busy" : st}"></i>${busy ? "در حال ری‌استارت…" : label}</span>${ping ? html`<span class="faint small ltr">${ping}</span>` : ""}</div>
+        <div class="tc-name"><b>${t.name}</b><span>${kindTitle(t)}${t.base_port ? ` · ${t.kind === "tcp" ? "TCP" : "UDP"} ${t.base_port}` : ""}</span></div>
+        <div class="tc-dest">${I.server(14)} ${t.peer || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
+        <div class="tc-rates"><div><span class="faint small">دانلود</span><b class="ltr" data-live="rx:${t.name}">${fmtRate(r.rx)}</b></div><div><span class="faint small">آپلود</span><b class="ltr" data-live="tx:${t.name}">${fmtRate(r.tx)}</b></div><div><span class="faint small">امروز</span><b class="ltr" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</b></div></div>
+        <div class="tc-tags">${profileTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}</div>
       </button>
-      ${open ? tunnelDetail(t) : ""}
-    </div>`;
+      <footer class="tc-foot">
+        <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(14)} تست</button>
+        ${t.managed ? "" : html`<button class="btn sm" data-act="tunnel-restart" data-name="${t.name}" ${busy || off ? "disabled" : ""}>${I.sync(14)} ری‌استارت</button>
+        <button class="btn sm ${off ? "primary" : "ghost"}" data-act="tunnel-power" data-name="${t.name}">${I.power(14)} ${off ? "روشن" : "خاموش"}</button>`}
+        <span class="grow"></span>
+        <button class="btn sm ghost icon" data-act="toggle-tunnel" data-name="${t.name}" aria-label="جزئیات">${I.chev(16)}</button>
+      </footer>
+    </article>`;
   }
 
   function tunnelDetail(t) {
@@ -692,6 +707,7 @@
           <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
           ${t.managed ? "" : html`<button class="btn sm" data-act="mtu" data-name="${t.name}">${I.ruler(15)} بهترین MTU</button>`}
           <button class="btn sm" data-act="drawer" data-type="tunnel" data-name="${t.name}">نمودار</button>
+          ${t.managed ? "" : html`<button class="btn sm" data-act="tunnel-restart" data-name="${t.name}" ${S.restarting[t.name] || (t.limits && t.limits.disabled) ? "disabled" : ""}>${I.sync(15)} ری‌استارت</button>`}
           ${t.peer && peer(t.peer) ? html`<button class="btn sm ghost" data-act="setup" data-name="${t.peer}">${I.term(15)} دستور اتصال</button>` : ""}
           <span class="grow"></span>
           ${t.managed ? "" : html`<button class="btn sm ${t.limits.disabled ? "primary" : "ghost"}" data-act="tunnel-power" data-name="${t.name}">${I.power(15)} ${t.limits.disabled ? "روشن کردن" : "خاموش کردن"}</button>`}
@@ -1687,7 +1703,11 @@
     },
     "drawer-close"() { S.drawer = null; draw(); },
     "open-tunnel"(el) { S.drawer = null; S.open = el.dataset.name; location.hash = "#/tunnels"; draw(); },
-    "toggle-tunnel"(el) { const n = el.dataset.name; S.open = S.open === n ? null : n; if (S.open !== n) delete S.tset[n]; S.edit = false; draw(); },
+    "toggle-tunnel"(el) {
+      const n = el.dataset.name; S.open = S.open === n ? null : n; if (S.open !== n) delete S.tset[n]; S.edit = false; draw();
+      const d = S.open && $(".tdetail");
+      if (d) d.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
+    },
     dtab(el) { S.dtab[el.dataset.name] = el.dataset.tab; draw(); },
     "reset-tset"(el) { delete S.tset[el.dataset.name]; S.edit = false; draw(); },
     async mtu(el) {
@@ -1757,6 +1777,14 @@
     async "del-forward-go"(el) {
       try { const ch = await api("POST", "forwards/remove", { tunnel: el.dataset.tunnel, ports: el.dataset.ports }); closeModal(); await refresh(); reportChange(ch, "فوروارد حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
+    },
+    async "tunnel-restart"(el) {
+      const n = el.dataset.name;
+      if (S.restarting[n]) return;
+      S.restarting[n] = true; draw();
+      try { await api("POST", `tunnels/${encodeURIComponent(n)}/restart`); toast(`${n} ری‌استارت شد`); }
+      catch (e) { toast(`ری‌استارت ${n}: ${e.message}`, "bad"); }
+      delete S.restarting[n]; await refresh();
     },
     async "tunnel-power"(el) {
       const t = tunnel(el.dataset.name); if (!t) return;

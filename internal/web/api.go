@@ -98,6 +98,11 @@ func (s *Server) routes(m *http.ServeMux) {
 		ch, err := b.UpdateTunnel(r.PathValue("name"), req.Settings, req.Port)
 		reply(w, ch, err)
 	}))
+	m.HandleFunc("POST /api/tunnels/{name}/restart", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		reply(w, map[string]bool{"ok": true}, b.RestartTunnel(ctx, r.PathValue("name")))
+	}))
 	m.HandleFunc("POST /api/tunnels/{name}/limits", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req manage.Limits
 		if readJSON(r, &req) != nil {

@@ -144,3 +144,9 @@ func Register(ctx context.Context, id *identity.Identity, m *config.Managed) err
 func (c *Client) ExcludeTraffic(ctx context.Context, tunnel string, d traffic.Pair) error {
 	return c.do(ctx, "POST", "/v1/traffic/exclude", ExcludeRequest{Tunnel: tunnel, Bytes: d}, nil, nil)
 }
+
+// Restart asks the peer to take tunnels down and up again. Peers older than
+// this call answer 404.
+func (c *Client) Restart(ctx context.Context, tunnels []string) error {
+	return c.do(ctx, "POST", "/v1/restart", RestartRequest{Tunnels: tunnels}, nil, nil)
+}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"time"
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/pmtu"
@@ -134,6 +135,36 @@ func SetBlocked(names map[string]bool) {
 	blocked = names
 }
 
+var (
+	heldMu sync.Mutex
+	held   = map[string]bool{}
+)
+
+// Hold keeps tunnels down until Release, without changing the saved
+// configuration: a restart is Hold, Apply, Release, Apply.
+func Hold(names []string) {
+	heldMu.Lock()
+	defer heldMu.Unlock()
+	for _, n := range names {
+		held[n] = true
+	}
+}
+
+// Release lets held tunnels come back on the next Apply.
+func Release(names []string) {
+	heldMu.Lock()
+	defer heldMu.Unlock()
+	for _, n := range names {
+		delete(held, n)
+	}
+}
+
+func isHeld(name string) bool {
+	heldMu.Lock()
+	defer heldMu.Unlock()
+	return held[name]
+}
+
 // Blocked reports whether a tunnel is down for having used its quota.
 func Blocked(name string) bool {
 	blockedMu.Lock()
@@ -147,7 +178,7 @@ func Active(ts []config.Tunnel) []config.Tunnel {
 	off := map[string]bool{}
 	users := map[string][]string{}
 	for _, t := range ts {
-		if t.Disabled || Blocked(t.Name) {
+		if t.Disabled || Blocked(t.Name) || isHeld(t.Name) {
 			off[t.Name] = true
 		}
 		if t.Over != "" {
@@ -522,4 +553,15 @@ func TunnelState(tunnel string) LinkState {
 		s.RxPkts, s.TxPkts = s.RxPkts+l.RxPkts, s.TxPkts+l.TxPkts
 	}
 	return s
+}
+
+// Restart takes tunnels down and brings them back up, so every interface,
+// key and connection of theirs is made anew. apply converges the kernel
+// to the saved configuration (engine.Apply with a fresh state).
+func Restart(names []string, apply func()) {
+	Hold(names)
+	apply()
+	time.Sleep(300 * time.Millisecond)
+	Release(names)
+	apply()
 }

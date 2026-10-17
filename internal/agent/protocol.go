@@ -76,3 +76,8 @@ type ExcludeRequest struct {
 	Tunnel string       `json:"tunnel"`
 	Bytes  traffic.Pair `json:"bytes"`
 }
+
+// RestartRequest names the tunnels a peer takes down and up again.
+type RestartRequest struct {
+	Tunnels []string `json:"tunnels"`
+}

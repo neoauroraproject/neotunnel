@@ -22,6 +22,8 @@ type Backend interface {
 	CreateTunnel(req manage.TunnelRequest) (manage.Change, error)
 	UpdateTunnel(name string, set manage.Settings, port uint16) (manage.Change, error)
 	SetLimits(name string, l manage.Limits) (manage.Change, error)
+	// RestartTunnel takes a tunnel down and up on both servers, settings unchanged.
+	RestartTunnel(ctx context.Context, name string) error
 	RemoveTunnel(name string) (manage.Change, error)
 	AddForward(req manage.ForwardRequest) (manage.Change, error)
 	UpdateForward(req manage.ForwardRequest) (manage.Change, error)
