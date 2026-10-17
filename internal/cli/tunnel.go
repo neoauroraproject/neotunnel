@@ -116,13 +116,16 @@ func printTunnel(st *config.State, t config.Tunnel) {
 	if far == "" {
 		far = t.Sides[1-me].Endpoint
 	}
-	ls := engine.State(engine.Ifname(t.Name))
+	ls := engine.TunnelState(t.Name)
 	extra := ""
 	if t.Over != "" {
 		extra += dim(" over " + t.Over)
 	}
 	if t.Port != 0 {
 		extra += dim(fmt.Sprintf(" udp/%d", t.Port))
+	}
+	if n := t.LaneCount(); n > 1 {
+		extra += dim(fmt.Sprintf(" %d lanes", n))
 	}
 	if t.Disabled {
 		extra += dim(" (disabled)")
@@ -180,6 +183,9 @@ func forwardCmd() *cobra.Command {
 		Short: "Forward ports (e.g. 443,8080-8090) to the tunnel's far end",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if mode.Mode == config.ForwardRelay && !cmd.Flags().Changed("proto") {
+				proto = "tcp" // relay mode carries TCP only
+			}
 			ch, err := manage.AddForward(manage.ForwardRequest{Tunnel: args[0], Ports: args[1], Proto: proto, To: to,
 				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion})
 			if err != nil {

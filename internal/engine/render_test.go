@@ -340,3 +340,59 @@ func TestProfileCoversStack(t *testing.T) {
 		}
 	}
 }
+
+func TestLanes(t *testing.T) {
+	st := &config.State{Self: "hub"}
+	g := config.Tunnel{Name: "g1", Kind: config.KindGRE, Lanes: 4, Port: 5000, RateMbit: 100, Sides: [2]config.Side{
+		{Node: "hub", Endpoint: "198.51.100.1"}, {Node: "edge", Endpoint: "203.0.113.10"}}}
+	if err := st.Allocate(&g); err != nil {
+		t.Fatal(err)
+	}
+	st.Tunnels = []config.Tunnel{g}
+	specs, errs := Render(st, fixedSource("198.51.100.1"))
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if len(specs) != 4 {
+		t.Fatalf("want 4 lanes, got %d", len(specs))
+	}
+	keys := map[uint32]bool{}
+	for i, s := range specs {
+		if s.Name != LaneName("g1", i) || s.Lane != i || s.Lanes != 4 || s.Tunnel != "g1" {
+			t.Errorf("lane %d: %s lane %d/%d", i, s.Name, s.Lane, s.Lanes)
+		}
+		if !s.FOU || s.Port != 5000 || s.RateMbit != 25 {
+			t.Errorf("lane %d: fou %v port %d rate %d", i, s.FOU, s.Port, s.RateMbit)
+		}
+		keys[s.Key] = true
+		if len(s.Addrs) != 2 || s.Addrs[0].String() != "10.77.0.1/32" || s.Addrs[1].Bits() != 128 {
+			t.Errorf("lane %d addrs %v, want host addresses", i, s.Addrs)
+		}
+		if len(s.Far) != 2 || s.Far[0].String() != "10.77.0.2" {
+			t.Errorf("lane %d far %v", i, s.Far)
+		}
+	}
+	if len(keys) != 4 || specs[1].Key != g.Key+1 {
+		t.Errorf("lanes need distinct GRE keys: %v", keys)
+	}
+	if specs[0].Hash() == specs[1].Hash() {
+		t.Error("lanes must hash differently")
+	}
+
+	// The far end mirrors it.
+	peer := &config.State{Self: "edge", Tunnels: st.Tunnels}
+	far, errs := Render(peer, fixedSource("203.0.113.10"))
+	if len(errs) > 0 || len(far) != 4 || far[2].Key != specs[2].Key || far[0].Far[0].String() != "10.77.0.1" {
+		t.Fatalf("peer lanes: %v %+v", errs, far)
+	}
+
+	// Lanes need keys, so not toward a router.
+	g.Sides[1].Node = ""
+	if _, errs := RenderTunnels(st.IsSelf, []config.Tunnel{g}, fixedSource("198.51.100.1")); len(errs) == 0 {
+		t.Error("keyless GRE on lanes must fail")
+	}
+	g.Sides[1].Node, g.Kind = "edge", config.KindIPIP
+	if _, errs := RenderTunnels(st.IsSelf, []config.Tunnel{g}, fixedSource("198.51.100.1")); len(errs) == 0 {
+		t.Error("IPIP on lanes must fail")
+	}
+}

@@ -16,7 +16,7 @@ type Userspace interface {
 	// SyncLinks runs exactly these user-space tunnels (creating their TUN/TAP
 	// interfaces, which Apply then configures like any other link).
 	SyncLinks(specs []LinkSpec) []error
-	SyncRelays(specs []relay.Spec) []error
+	SyncRelays(specs []relay.Spec, exits []relay.Exit) []error
 	// StartBench runs a temporary tunnel for a speed test until expiry or
 	// StopBench, whichever comes first.
 	StartBench(spec LinkSpec, expiry time.Time) error

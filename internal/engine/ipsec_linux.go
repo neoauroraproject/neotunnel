@@ -42,7 +42,7 @@ func syncIPsec(specs []LinkSpec) []error {
 	wantSA := map[saKey]*netlink.XfrmState{}
 	var wantPol []*netlink.XfrmPolicy
 	for _, s := range specs {
-		if s.Encrypt == "" {
+		if s.Encrypt == "" || s.Lane > 0 { // one SA pair covers every lane
 			continue
 		}
 		out, err1 := espFor(s, s.Side)

@@ -249,7 +249,7 @@ type ForwardRequest struct {
 	Ports        string `json:"ports"`
 	Proto        string `json:"proto,omitempty"` // tcp, udp, both (default)
 	To           uint16 `json:"to,omitempty"`
-	Mode         string `json:"mode,omitempty"` // nat (default), transparent, proxy
+	Mode         string `json:"mode,omitempty"` // nat (default), transparent, proxy, relay
 	ProxyVersion int    `json:"proxy_version,omitempty"`
 }
 
@@ -257,11 +257,14 @@ func (r *ForwardRequest) check(st *config.State) error {
 	if _, err := forward.ParsePorts(r.Ports); err != nil {
 		return err
 	}
-	if r.Proto == "" {
-		r.Proto = "both"
-	}
 	if r.Mode == "" {
 		r.Mode = st.D().ForwardMode
+	}
+	if r.Proto == "" {
+		r.Proto = "both"
+		if r.Mode == config.ForwardRelay {
+			r.Proto = "tcp"
+		}
 	}
 	if err := config.ValidForwardMode(r.Mode, r.ProxyVersion, r.Proto); err != nil {
 		return err
@@ -273,7 +276,10 @@ func (r *ForwardRequest) check(st *config.State) error {
 	if r.Mode == config.ForwardTransparent && t.Sides[1].Node == "" {
 		return fmt.Errorf("transparent forwarding needs NeoTunnel on the far end to route replies back")
 	}
-	if r.Mode == config.ForwardProxy && len(forward.Expand(r.Ports)) > forward.MaxRelayPorts {
+	if r.Mode == config.ForwardRelay && t.Sides[1].Node == "" {
+		return fmt.Errorf("relay mode needs NeoTunnel on the far end to accept the connections")
+	}
+	if (r.Mode == config.ForwardProxy || r.Mode == config.ForwardRelay) && len(forward.Expand(r.Ports)) > forward.MaxRelayPorts {
 		return fmt.Errorf("proxy mode supports up to %d ports per forward", forward.MaxRelayPorts)
 	}
 	return nil
@@ -291,9 +297,11 @@ func AddForward(r ForwardRequest) (Change, error) {
 	}
 	t, _ := st.Tunnel(r.Tunnel)
 	_, ch, err := Commit(st.PeersOf(*t), func(s *config.State) error {
-		if _, ok := s.Tunnel(r.Tunnel); !ok {
+		t, ok := s.Tunnel(r.Tunnel)
+		if !ok {
 			return fmt.Errorf("unknown tunnel %q", r.Tunnel)
 		}
+		relaySecret(t, r.Mode)
 		if err := portsFree(s, r.Ports, r.Proto, ""); err != nil {
 			return err
 		}
@@ -318,6 +326,9 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 	_, ch, err := Commit(st.PeersOf(*t), func(s *config.State) error {
 		for i, f := range s.Forwards {
 			if f.Node == s.Self && f.Tunnel == r.Tunnel && f.Ports == r.Ports {
+				if t, ok := s.Tunnel(r.Tunnel); ok {
+					relaySecret(t, r.Mode)
+				}
 				f.Proto, f.To, f.Mode, f.ProxyVersion = r.Proto, r.To, r.Mode, r.ProxyVersion
 				s.Forwards[i] = f
 				return portsFreeExcept(s, i)
@@ -326,6 +337,14 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 		return fmt.Errorf("no forward of %s on %s", r.Ports, r.Tunnel)
 	})
 	return ch, err
+}
+
+// relaySecret gives a tunnel the secret its relay forwards' keys come from
+// (tunnels that encrypt nothing have none).
+func relaySecret(t *config.Tunnel, mode string) {
+	if mode == config.ForwardRelay && t.Secret == "" {
+		t.Secret = config.NewSecret()
+	}
 }
 
 // portsFreeExcept checks forward i against the others on this node.

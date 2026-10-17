@@ -28,6 +28,7 @@ func settingsFlags(f *pflag.FlagSet, s *manage.Settings) {
 	f.IntVar(&s.Keepalive, "keepalive", 0, "WireGuard/NeoObfs keepalive in seconds (-1 = off, default 25)")
 	f.StringVar(&s.PeerKey, "peer-key", "", "WireGuard: the far end's public key, when it doesn't run NeoTunnel")
 	f.StringVar(&s.Profile, "profile", "", "speed profile: lean (low latency, light traffic), balanced (default) or max (heavy traffic, uses every CPU core)")
+	f.IntVar(&s.Lanes, "lanes", 0, fmt.Sprintf("GRE/GRETAP to a NeoTunnel server: run on this many parallel tunnels (1-%d), each flow on one, to use more CPU cores", config.MaxLanes))
 	f.Var(tunnelID{&s.TunnelID}, "tunnel-id", "EoIP: the tunnel id, same as the MikroTik's tunnel-id (0-65535, 0-4095 on EoIPv6 without a port; default: from the name)")
 }
 
@@ -102,6 +103,7 @@ func tunnelSetCmd() *cobra.Command {
 			keep("peer-key", func() { s.PeerKey = cur.PeerKey })
 			keep("tunnel-id", func() { s.TunnelID = cur.TunnelID })
 			keep("profile", func() { s.Profile = cur.Profile })
+			keep("lanes", func() { s.Lanes = cur.Lanes })
 			if f.Changed("no-encrypt") {
 				s.Encrypt = ""
 			}
@@ -176,7 +178,7 @@ func forwardSetCmd() *cobra.Command {
 	var r manage.ForwardRequest
 	cmd := &cobra.Command{
 		Use:   "set <tunnel> <ports>",
-		Short: "Change a forward's mode (nat, transparent, proxy), target port or protocol",
+		Short: "Change a forward's mode (nat, transparent, proxy, relay), target port or protocol",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := loadNode()
@@ -218,8 +220,8 @@ func forwardSetCmd() *cobra.Command {
 }
 
 func forwardModeFlags(f *pflag.FlagSet, r *manage.ForwardRequest) {
-	f.StringVar(&r.Mode, "mode", "", "nat (default), transparent (far end sees the client's IP) or proxy (PROXY protocol header)")
-	f.IntVar(&r.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --mode proxy: 2 (default, TCP+UDP) or 1 (TCP)")
+	f.StringVar(&r.Mode, "mode", "", "nat (default), transparent (far end sees the client's IP), proxy (PROXY protocol header) or relay (TCP only: each connection is carried to the far node as its own TCP connection, no tunnel packets; fastest on long, lossy paths)")
+	f.IntVar(&r.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --mode proxy: 2 (default, TCP+UDP) or 1 (TCP); with --mode relay: 0 (no header, default), 1 or 2")
 }
 
 // resetRequest asks the daemon, which owns the counters, to zero them.

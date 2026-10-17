@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"neotunnel/internal/config"
 	"neotunnel/internal/manage"
 )
 
@@ -30,6 +31,9 @@ func quickCmd() *cobra.Command {
 					req.ForwardMode = st.D().ForwardMode
 				}
 			}
+			if req.ForwardMode == config.ForwardRelay && !cmd.Flags().Changed("proto") {
+				req.Proto = "tcp" // relay mode carries TCP only
+			}
 			return quick(req, address)
 		},
 	}
@@ -41,8 +45,8 @@ func quickCmd() *cobra.Command {
 	f.StringVar(&req.Forward, "forward", "", "ports on this node to forward to the peer, e.g. 443,2053-2096")
 	f.Uint16Var(&req.ForwardTo, "forward-to", 0, "target port on the peer (default: same port)")
 	f.StringVar(&req.Proto, "proto", "both", "forwarded protocol: tcp, udp, both")
-	f.StringVar(&req.ForwardMode, "forward-mode", "", "nat (default), transparent (keeps the client IP) or proxy (PROXY protocol)")
-	f.IntVar(&req.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --forward-mode proxy: 2 (default) or 1")
+	f.StringVar(&req.ForwardMode, "forward-mode", "", "nat (default), transparent (keeps the client IP), proxy (PROXY protocol) or relay (TCP only, each connection carried as its own TCP connection; fastest on long, lossy paths)")
+	f.IntVar(&req.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --forward-mode proxy: 2 (default) or 1; with relay: 0 (none, default), 1 or 2")
 	f.BoolVar(&req.Obfs, "obfs", false, "run the tunnel over NeoObfs (encrypted UDP that looks like noise; give --port)")
 	settingsFlags(f, &req.Settings)
 	return cmd

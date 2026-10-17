@@ -20,6 +20,10 @@ type Spec struct {
 	Target  netip.AddrPort // the far end's tunnel address and port
 	Version int            // PROXY protocol version, 1 or 2
 	Public  netip.Addr     // this node's public address (destination in UDP headers)
+	// Via, when set, makes this a relay-mode forward (TCP only): the user's
+	// connection goes to the far node as its own TCP connection, which
+	// connects to Target's port on its loopback. Version 0 sends no header.
+	Via Via
 }
 
 func (s Spec) key() string { return fmt.Sprintf("%s/%d", s.Proto, s.Port) }
@@ -31,13 +35,21 @@ const (
 
 // Manager runs the daemon's relays.
 type Manager struct {
-	mu  sync.Mutex
-	run map[string]*server
+	mu       sync.Mutex
+	run      map[string]*server
+	pools    map[Via]*pool
+	exit     *exitServer
+	exitPort int
 
-	Conns atomic.Int64 // open TCP connections and UDP sessions
+	Conns         atomic.Int64  // open TCP connections and UDP sessions
+	BadHandshakes atomic.Uint64 // relay connections that failed to authenticate
 }
 
-func NewManager() *Manager { return &Manager{run: map[string]*server{}} }
+func NewManager() *Manager { return newManager(RelayPort) }
+
+func newManager(exitPort int) *Manager {
+	return &Manager{run: map[string]*server{}, pools: map[Via]*pool{}, exitPort: exitPort}
+}
 
 type server struct {
 	spec  Spec
@@ -50,6 +62,19 @@ func (m *Manager) Sync(specs []Spec) []error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var errs []error
+	// Relay-mode forwards share one pool of ready connections per far end.
+	vias := map[Via]bool{}
+	for _, s := range specs {
+		if s.Via.Tunnel != "" {
+			vias[s.Via] = true
+		}
+	}
+	for v, p := range m.pools {
+		if !vias[v] {
+			p.close()
+			delete(m.pools, v)
+		}
+	}
 	want := map[string]bool{}
 	for _, s := range specs {
 		k := s.key()
@@ -63,13 +88,18 @@ func (m *Manager) Sync(specs []Spec) []error {
 		}
 		var srv *server
 		var err error
-		if s.Proto == "udp" {
+		switch {
+		case s.Via.Tunnel != "" && s.Proto == "tcp":
+			srv, err = m.serveStream(s)
+		case s.Via.Tunnel != "":
+			err = errors.New("relay mode carries TCP only")
+		case s.Proto == "udp":
 			srv, err = m.serveUDP(s)
-		} else {
+		default:
 			srv, err = m.serveTCP(s)
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("PROXY protocol relay on %s port %d: %w", s.Proto, s.Port, err))
+			errs = append(errs, fmt.Errorf("relay on %s port %d: %w", s.Proto, s.Port, err))
 			continue
 		}
 		m.run[k] = srv
@@ -83,9 +113,29 @@ func (m *Manager) Sync(specs []Spec) []error {
 	return errs
 }
 
-func (m *Manager) Close() { m.Sync(nil) }
+func (m *Manager) Close() {
+	m.Sync(nil)
+	m.SyncExits(nil)
+}
 
 func (m *Manager) serveTCP(s Spec) (*server, error) {
+	return m.listenTCP(s, func(c *net.TCPConn) { m.handleTCP(s, c) })
+}
+
+// serveStream serves a relay-mode forward (see stream.go).
+func (m *Manager) serveStream(s Spec) (*server, error) {
+	p := m.pools[s.Via]
+	if p == nil {
+		var err error
+		if p, err = newPool(s.Via); err != nil {
+			return nil, err
+		}
+		m.pools[s.Via] = p
+	}
+	return m.listenTCP(s, func(c *net.TCPConn) { m.handleStream(s, p, c) })
+}
+
+func (m *Manager) listenTCP(s Spec, handle func(*net.TCPConn)) (*server, error) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{Port: int(s.Port)})
 	if err != nil {
 		return nil, err
@@ -101,7 +151,7 @@ func (m *Manager) serveTCP(s Spec) (*server, error) {
 				}
 				return
 			}
-			go m.handleTCP(s, c)
+			go handle(c)
 		}
 	}()
 	return &server{spec: s, close: func() { ln.Close() }}, nil
@@ -125,13 +175,19 @@ func (m *Manager) handleTCP(s Spec, c *net.TCPConn) {
 	pipe(c, up.(*net.TCPConn))
 }
 
+// halfConn is a connection that can end its sending side alone.
+type halfConn interface {
+	net.Conn
+	CloseWrite() error
+}
+
 // pipe copies both ways (spliced in the kernel on Linux) and passes on
 // half-closes so protocols that rely on them keep working. A direction that
 // fails (reset, dead client) ends both at once, so a broken connection never
 // lingers holding the other side open.
-func pipe(a, b *net.TCPConn) {
+func pipe(a, b halfConn) {
 	done := make(chan error, 2)
-	cp := func(dst, src *net.TCPConn) {
+	cp := func(dst, src halfConn) {
 		_, err := io.Copy(dst, src)
 		dst.CloseWrite()
 		done <- err

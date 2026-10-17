@@ -76,11 +76,17 @@ type Settings struct {
 	TunnelID *uint16 `json:"tunnel_id,omitempty"`
 	// Profile: lean, balanced ("") or max; see config.ProfileMax.
 	Profile string `json:"profile,omitempty"`
+	// Lanes runs the tunnel on this many parallel GRE tunnels (0 or 1 = one,
+	// up to config.MaxLanes), so its flows spread over CPU cores.
+	Lanes int `json:"lanes,omitempty"`
 }
 
 func (s Settings) validate() error {
 	if !config.ValidProfile(s.Profile) {
 		return fmt.Errorf("profile must be lean, balanced or max")
+	}
+	if s.Lanes < 0 || s.Lanes > config.MaxLanes {
+		return fmt.Errorf("lanes must be 1-%d", config.MaxLanes)
 	}
 	if s.MTU != 0 && (s.MTU < 576 || s.MTU > 9000) {
 		return fmt.Errorf("MTU must be between 576 and 9000")
@@ -136,6 +142,9 @@ type TunnelRequest struct {
 // CreateTunnel builds the mode's stack (carrier first) and its forward.
 func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 	if req.Forward != "" {
+		if req.Proto == "" && req.ForwardMode == config.ForwardRelay {
+			req.Proto = "tcp"
+		}
 		if _, err := forward.ParsePorts(req.Forward); err != nil {
 			return config.Tunnel{}, Change{}, err
 		}
@@ -175,6 +184,9 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 			}
 			s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: name, Proto: proto, Ports: req.Forward,
 				To: req.ForwardTo, Mode: req.ForwardMode, ProxyVersion: req.ProxyVersion})
+			if t, ok := s.Tunnel(name); ok {
+				relaySecret(t, req.ForwardMode)
+			}
 		}
 		return nil
 	})
@@ -241,6 +253,8 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 			return "", nil, fmt.Errorf("give the far end's WireGuard public key (peer key)")
 		case req.ForwardMode == config.ForwardTransparent:
 			return "", nil, fmt.Errorf("transparent forwarding needs NeoTunnel on the far end to route replies back")
+		case req.ForwardMode == config.ForwardRelay:
+			return "", nil, fmt.Errorf("relay mode needs NeoTunnel on the far end to accept the connections")
 		}
 	}
 	if req.Obfs && mode.TCP {
@@ -319,6 +333,10 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 	}
 	top := &defs[len(defs)-1]
 	top.Mode, top.MTU, top.Profile = mode.Name, req.MTU, profileOf(req.Profile)
+	top.Lanes = lanesOf(req.Lanes)
+	if err := checkLanes(*top); err != nil {
+		return "", nil, err
+	}
 	return name, defs, nil
 }
 
@@ -357,6 +375,11 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 			return Change{}, err
 		}
 	}
+	lc := *t
+	lc.Lanes = lanesOf(set.Lanes)
+	if err := checkLanes(lc); err != nil {
+		return Change{}, err
+	}
 	if port != 0 && port != bottom.Port {
 		if !bk.CanUsePort() {
 			return Change{}, fmt.Errorf("%s cannot run on a UDP port", bottom.Kind)
@@ -376,6 +399,7 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 			return fmt.Errorf("tunnel %q changed meanwhile", name)
 		}
 		top.MTU, top.Profile = set.MTU, profileOf(set.Profile)
+		top.Lanes = lanesOf(set.Lanes)
 		b.MTUProbe, b.TTL, b.Encrypt = set.MTUProbe, set.TTL, set.Encrypt
 		b.NoDF, b.DSCP = set.NoDF, set.DSCP
 		b.Keepalive, b.Padding = set.Keepalive, set.Padding
@@ -410,7 +434,7 @@ func SettingsOf(st *config.State, name string) (Settings, uint16) {
 	}
 	top, b := find(name), find(stack[0])
 	return Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, NoDF: b.NoDF, DSCP: b.DSCP, Encrypt: b.Encrypt,
-		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID, Profile: top.Profile}, b.Port
+		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID, Profile: top.Profile, Lanes: top.Lanes}, b.Port
 }
 
 // TunnelOpts describes a single tunnel of any kind.
@@ -506,6 +530,10 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		return t, fmt.Errorf("choose a server or a remote IP")
 	}
 	if err := checkTunnelID(t); err != nil {
+		return t, err
+	}
+	t.Lanes = lanesOf(o.Lanes)
+	if err := checkLanes(t); err != nil {
 		return t, err
 	}
 	if other := keylessConflict(st, t); other != "" && !o.stacked {
@@ -774,4 +802,27 @@ func profileOf(p string) string {
 		return ""
 	}
 	return p
+}
+
+// lanesOf stores one lane as 0.
+func lanesOf(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return n
+}
+
+// checkLanes allows several lanes only where they work: kernel GRE kinds
+// (each lane is a GRE key) to a far end that runs NeoTunnel.
+func checkLanes(t config.Tunnel) error {
+	if t.LaneCount() < 2 {
+		return nil
+	}
+	if !config.LaneKinds(t.Kind) {
+		return fmt.Errorf("%s cannot run on several lanes; GRE and GRETAP can", t.Kind)
+	}
+	if t.Sides[0].Node == "" || t.Sides[1].Node == "" {
+		return fmt.Errorf("lanes need NeoTunnel on the far end (toward a MikroTik, bond several EoIP tunnels there)")
+	}
+	return nil
 }

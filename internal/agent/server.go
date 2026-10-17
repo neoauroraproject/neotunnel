@@ -193,7 +193,7 @@ func LocalStatus(st *config.State, started time.Time) Status {
 	}
 	ts, _ := st.Effective()
 	for _, t := range ts {
-		ls := engine.State(engine.Ifname(t.Name))
+		ls := engine.TunnelState(t.Name)
 		out.Tunnels = append(out.Tunnels, TunnelStatus{
 			Name: t.Name, Iface: engine.Ifname(t.Name), Kind: string(t.Kind),
 			Up: ls.Up, MTU: ls.MTU, RxBytes: ls.RxBytes, TxBytes: ls.TxBytes,

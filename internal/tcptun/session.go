@@ -87,24 +87,30 @@ func newAEAD(c string, key []byte) (cipher.AEAD, error) {
 }
 
 func deriveKeys(c Config) (*keys, error) {
-	if c.Side != 0 && c.Side != 1 {
-		return nil, fmt.Errorf("bad side %d", c.Side)
+	return deriveKeysFor("tcp", c.Secret, c.Tunnel, c.Cipher, c.Side)
+}
+
+// deriveKeysFor derives keys whose labels start with purpose, so another
+// user of the handshake (the relay) never shares keys with a tunnel.
+func deriveKeysFor(purpose, secret, tunnel, cph string, side int) (*keys, error) {
+	if side != 0 && side != 1 {
+		return nil, fmt.Errorf("bad side %d", side)
 	}
-	auth, err := config.DeriveKey(c.Secret, c.Tunnel, "tcp auth", 32)
+	auth, err := config.DeriveKey(secret, tunnel, purpose+" auth", 32)
 	if err != nil {
 		return nil, err
 	}
-	k := &keys{auth: auth, cipher: c.Cipher, side: c.Side}
-	if c.Cipher == "" {
+	k := &keys{auth: auth, cipher: cph, side: side}
+	if cph == "" {
 		return k, nil
 	}
-	if _, err := keyLen(c.Cipher); err != nil {
+	if _, err := keyLen(cph); err != nil {
 		return nil, err
 	}
-	if k.send, err = config.DeriveKey(c.Secret, c.Tunnel, fmt.Sprintf("tcp %s %d>%d", c.Cipher, c.Side, 1-c.Side), 32); err != nil {
+	if k.send, err = config.DeriveKey(secret, tunnel, fmt.Sprintf("%s %s %d>%d", purpose, cph, side, 1-side), 32); err != nil {
 		return nil, err
 	}
-	k.recv, err = config.DeriveKey(c.Secret, c.Tunnel, fmt.Sprintf("tcp %s %d>%d", c.Cipher, 1-c.Side, c.Side), 32)
+	k.recv, err = config.DeriveKey(secret, tunnel, fmt.Sprintf("%s %s %d>%d", purpose, cph, 1-side, side), 32)
 	return k, err
 }
 

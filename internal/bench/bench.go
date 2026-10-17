@@ -389,10 +389,9 @@ func Table(rs []Result) string {
 // bytes out of the tunnel's traffic totals, here and on the peer (which
 // sees the same bytes the other way round).
 func (r *Runner) MeasureTunnel(ctx context.Context, tunnel string, addr netip.Addr) (probe.LatencyResult, float64, float64, error) {
-	iface := engine.Ifname(tunnel)
-	before := engine.State(iface)
+	before := engine.TunnelState(tunnel)
 	lat, up, down, err := r.Measure(ctx, addr)
-	after := engine.State(iface)
+	after := engine.TunnelState(tunnel)
 	if before.Exists && after.Exists && after.RxBytes >= before.RxBytes && after.TxBytes >= before.TxBytes {
 		d := traffic.Pair{Rx: after.RxBytes - before.RxBytes, Tx: after.TxBytes - before.TxBytes,
 			RxP: after.RxPkts - before.RxPkts, TxP: after.TxPkts - before.TxPkts}

@@ -13,10 +13,12 @@ import (
 )
 
 // Reserved ports are never forwarded so a typo can't lock you out.
-var Reserved = map[int]string{22: "SSH", 7710: "neotunnel agent", 7711: "neotunnel probe"}
+var Reserved = map[int]string{22: "SSH", 7710: "neotunnel agent", 7711: "neotunnel probe", relay.RelayPort: "neotunnel relay"}
 
 type Rule struct {
-	Iface  string
+	Iface string
+	// Lanes are the tunnel's other interfaces when it runs on several lanes.
+	Lanes  []string
 	Proto  []string // tcp and/or udp
 	Ports  string   // nft set body: "443, 8080-8090"
 	Target netip.Addr
@@ -32,6 +34,8 @@ type Ruleset struct {
 	Ifaces []string // tunnel interfaces that get MSS clamping
 	// Relays are proxy-mode forwards, served by the daemon instead of nft.
 	Relays []relay.Spec
+	// Exits are tunnels whose relay-mode forwards end on this node.
+	Exits []relay.Exit
 	// Returns are tunnels whose far side forwards clients transparently:
 	// connections arriving on them are marked and their replies routed back.
 	Returns []Return
@@ -43,6 +47,7 @@ type Ruleset struct {
 // Return is a tunnel that carries transparent forwards from its far side.
 type Return struct {
 	Iface string
+	Lanes []string // the tunnel's other lane interfaces
 	Mark  uint32
 }
 
@@ -121,4 +126,17 @@ func protos(p string) ([]string, error) {
 		return []string{"tcp", "udp"}, nil
 	}
 	return nil, fmt.Errorf("bad protocol %q (tcp, udp, both)", p)
+}
+
+// ifMatch is the nft operand that matches a tunnel's interfaces: its own
+// name, or a set when it runs on several lanes.
+func ifMatch(iface string, lanes []string) string {
+	if len(lanes) == 0 {
+		return strconv.Quote(iface)
+	}
+	q := []string{strconv.Quote(iface)}
+	for _, l := range lanes {
+		q = append(q, strconv.Quote(l))
+	}
+	return "{ " + strings.Join(q, ", ") + " }"
 }

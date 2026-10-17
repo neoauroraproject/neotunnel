@@ -13,6 +13,7 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/firewall"
 	"neotunnel/internal/forward"
+	"neotunnel/internal/relay"
 	"neotunnel/internal/sysctl"
 )
 
@@ -25,6 +26,12 @@ var mu sync.Mutex
 func Apply(st *config.State) Result {
 	mu.Lock()
 	defer mu.Unlock()
+	// Apply what is saved now, not the copy the caller loaded earlier: the
+	// daemon's loop and a push from the main server can race, and applying
+	// the older copy last would undo the newer one until the next tick.
+	if cur, err := config.Load(); err == nil {
+		st = cur
+	}
 
 	var res Result
 	if err := sysctl.EnsureForwarding(); err != nil {
@@ -103,6 +110,7 @@ func Apply(st *config.State) Result {
 		}
 	}
 
+	res.Errors = append(res.Errors, syncLanes(specs)...)
 	res.Errors = append(res.Errors, syncIPsec(specs)...)
 
 	all, fs := st.Effective()
@@ -119,7 +127,7 @@ func Apply(st *config.State) Result {
 	}
 	res.Errors = append(res.Errors, syncReturns(rules.Returns, specs)...)
 	if us != nil {
-		res.Errors = append(res.Errors, us.SyncRelays(rules.Relays)...)
+		res.Errors = append(res.Errors, us.SyncRelays(rules.Relays, rules.Exits)...)
 	}
 	if err := firewall.Ensure(firewallNeeds(st, specs, rules)); err != nil {
 		res.Errors = append(res.Errors, err)
@@ -168,6 +176,9 @@ func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firew
 	}
 	for _, r := range rs.Relays {
 		n.Ports = append(n.Ports, fmt.Sprintf("%d/%s", r.Port, r.Proto))
+	}
+	if len(rs.Exits) > 0 {
+		n.Ports = append(n.Ports, fmt.Sprintf("%d/tcp", relay.RelayPort))
 	}
 	// Our own servers are trusted for everything: the temporary tunnels of
 	// speed tests and wizard checks use ports and protocols no saved tunnel
@@ -299,7 +310,7 @@ func Down() error {
 	defer mu.Unlock()
 	if us := currentUserspace(); us != nil {
 		us.SyncLinks(nil)
-		us.SyncRelays(nil)
+		us.SyncRelays(nil, nil)
 	}
 	have, err := owned()
 	if err != nil {
@@ -310,6 +321,7 @@ func Down() error {
 	}
 	removeAllFOU()
 	removeIPsec()
+	syncLanes(nil)
 	syncReturns(nil, nil)
 	return forward.Apply(forward.Ruleset{})
 }

@@ -54,7 +54,7 @@ func outerProto(s LinkSpec) (proto int, port uint16) {
 func protects(specs []LinkSpec) []forward.Protect {
 	var out []forward.Protect
 	for _, s := range specs {
-		if s.Encrypt == "" {
+		if s.Encrypt == "" || s.Lane > 0 {
 			continue
 		}
 		p, port := outerProto(s)

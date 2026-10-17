@@ -204,6 +204,38 @@ for _ in $(seq 15); do ip netns exec $HUB ping -c 1 -W 1 "$(inner $EDGE nt-c2)" 
 api -d '{"peer":"edge","mode":"tcp","encrypt":"aes-gcm-128"}' "$base/api/check" | tee "$WORK/tcpcheck.json" | grep -q '"status":"passed"' || { cat "$WORK/tcpcheck.json"; fail "panel check of a tcp tunnel"; }
 pass "TCP transport carries ping and bandwidth, reconnects, and passes the panel check"
 
+# 12c. Lanes: one GRE tunnel on 4 parallel GRE tunnels (distinct keys), the
+#      far end's address reached by a multipath route over all of them; a
+#      speed test, a NAT and a transparent forward through it, then back to
+#      one lane.
+in_hub tunnel add g4 --kind gre --peer edge --lanes 4 >/dev/null || fail "add gre on 4 lanes"
+for ns in $HUB $EDGE; do
+  for i in "" .1 .2 .3; do ip -n $ns -d link show "nt-g4$i" | grep -q "gre remote" || fail "lane nt-g4$i missing in $ns"; done
+done
+g4far=$(ip -n $EDGE -o -4 addr show dev nt-g4 | awk '{print $4}' | cut -d/ -f1)
+[ "$(ip -n $EDGE -o -4 addr show dev nt-g4.3 | awk '{print $4}')" = "$g4far/32" ] || fail "lanes do not share the inner address"
+[ "$(ip -n $HUB route show "$g4far" | grep -c 'nexthop')" = 4 ] || { ip -n $HUB route show "$g4far"; fail "no 4-way multipath route to $g4far"; }
+ip netns exec $HUB ping -c 3 -W 2 "$g4far" >/dev/null || fail "ping through gre on lanes"
+in_hub test g4 --duration 2s --pings 20 | tee "$WORK/lanetest.txt"
+grep -q "Mbit/s\|Gbit/s" "$WORK/lanetest.txt" || fail "no throughput through the lanes"
+used=0
+for i in "" .1 .2 .3; do
+  rx=$(ip netns exec $EDGE cat "/sys/class/net/nt-g4$i/statistics/rx_packets")
+  [ "$rx" -gt 100 ] && used=$((used + 1))
+done
+[ "$used" -ge 2 ] || fail "the speed test used only $used lane(s)"
+in_hub forward add g4 8082 --to 8080 --proto tcp >/dev/null || fail "add forward over lanes"
+[ "$(http_code http://198.18.0.1:8082/)" = 200 ] || fail "forward through gre on lanes"
+in_hub forward add g4 8083 --to 8080 --proto tcp --mode transparent >/dev/null || fail "add transparent forward over lanes"
+for _ in 1 2 3 4 5 6; do [ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "transparent forward through lanes"; done
+in_hub tunnel set g4 --lanes 1 >/dev/null || fail "back to one lane"
+ip -n $EDGE link show nt-g4.1 >/dev/null 2>&1 && fail "lane nt-g4.1 left after going to one lane"
+ip -n $HUB route show proto 77 | grep -q . && fail "lane route left after going to one lane"
+ip netns exec $HUB ping -c 3 -W 2 "$g4far" >/dev/null || fail "ping after going back to one lane"
+[ "$(http_code http://198.18.0.1:8082/)" = 200 ] || fail "forward after going back to one lane"
+in_hub tunnel remove g4 >/dev/null
+pass "lanes: GRE on 4 parallel tunnels carries ping, a speed test and forwards; back to one lane cleans up"
+
 # 13. L2TPv3, where the kernel has it.
 if out=$(in_hub tunnel add l1 --kind l2tpv3 --peer edge 2>&1) && ip -n $HUB link show nt-l1 >/dev/null 2>&1; then
   ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-l1)" >/dev/null || fail "ping through l2tpv3"
@@ -256,6 +288,64 @@ sleep 1
 grep -q "^PROXY TCP4 198.18.0.2 198.18.0.1 [0-9]* 9101" "$WORK/proxy.txt" || { cat "$WORK/proxy.txt"; fail "no PROXY header"; }
 grep -q "hello" "$WORK/proxy.txt" || fail "payload after the PROXY header missing"
 pass "PROXY protocol v1 header carries the client's address"
+
+# 15b. Relay mode: TCP forwards carried to edge's relay port as their own TCP
+#      connections, no tunnel packets. Plain over t1 (a 6to4 stack: edge's
+#      address comes from the sit under it), encrypted over e1 (an IPsec
+#      tunnel, so the relay uses its cipher), and with a PROXY header.
+ip netns exec $EDGE python3 -c '
+import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 9102)); s.listen(1)
+c, _ = s.accept(); d = b""
+while True:
+    x = c.recv(4096)
+    if not x: break
+    d += x
+open(sys.argv[1], "wb").write(d)' "$WORK/relay-proxy.txt" &
+in_hub forward add t1 8090 --to 8080 --mode relay >/dev/null || fail "add relay forward"
+in_hub forward add e1 8091 --to 8080 --mode relay >/dev/null || fail "add encrypted relay forward"
+in_hub forward add t1 9103 --to 9102 --mode relay --proxy-version 1 >/dev/null || fail "add relay forward with PROXY header"
+hup 3
+[ "$(http_code http://198.18.0.1:8090/)" = 200 ] || fail "relay forward 8090 -> edge 8080"
+[ "$(http_code http://198.18.0.1:8091/)" = 200 ] || fail "encrypted relay forward 8091 -> edge 8080"
+ip netns exec $CLIENT curl -s -m 5 http://198.18.0.1:8090/ | grep -q hello-from-edge || fail "relay forward content"
+ip netns exec $EDGE ss -Htn state established "( sport = :7712 )" | grep -q "$HUB_IP" || fail "no relay connections from hub on edge:7712"
+ip netns exec $HUB nft list table inet neotunnel | grep -q "8090" && fail "relay forward must not be a DNAT rule"
+ip netns exec $CLIENT bash -c 'exec 3<>/dev/tcp/198.18.0.1/9103; printf hello >&3; exec 3>&-' || fail "connect to relay forward 9103"
+sleep 1
+grep -q "^PROXY TCP4 198.18.0.2 198.18.0.1 [0-9]* 9103" "$WORK/relay-proxy.txt" || { cat "$WORK/relay-proxy.txt"; fail "no PROXY header through the relay"; }
+grep -q "hello" "$WORK/relay-proxy.txt" || fail "payload after the relay's PROXY header missing"
+pass "relay mode: plain, encrypted and with the client's address in a PROXY header"
+
+# 15c. Optional (NT_BENCH=1): throughput of a TCP forward through a GENEVE
+#      tunnel vs a relay forward, on a long lossy path (netem on the link
+#      between the servers, both directions).
+if [ "${NT_BENCH:-0}" = 1 ]; then
+  in_hub tunnel add gv --kind geneve --peer edge >/dev/null || fail "add geneve for the benchmark"
+  in_hub forward add gv 5301 --to 5300 --proto tcp >/dev/null || fail "add nat forward over geneve"
+  in_hub forward add gv 5302 --to 5300 --mode relay >/dev/null || fail "add relay forward over geneve's pair"
+  hup 3
+  ip netns exec $EDGE python3 /tcpbench.py server 5300 &
+  sleep 1
+  NETEM=${NT_NETEM:-delay 50ms loss 0.5%}
+  ip netns exec $HUB tc qdisc add dev veth-hub root netem $NETEM
+  ip netns exec $EDGE tc qdisc add dev veth-edge root netem $NETEM
+  secs=${NT_BENCH_SECS:-20}
+  echo "--- netem '$NETEM' each way between the servers, ${secs}s per run, one TCP connection, Mbit/s"
+  for cc in cubic bbr; do
+    ip netns exec $EDGE sysctl -qw net.ipv4.tcp_congestion_control=$cc
+    for dir in down up; do
+      nat=$(ip netns exec $CLIENT python3 /tcpbench.py client 198.18.0.1 5301 $dir $secs || echo err)
+      rel=$(ip netns exec $CLIENT python3 /tcpbench.py client 198.18.0.1 5302 $dir $secs || echo err)
+      echo "BENCH edge-cc=$cc $dir: geneve+nat $nat  relay $rel"
+    done
+  done
+  ip netns exec $HUB tc qdisc del dev veth-hub root
+  ip netns exec $EDGE tc qdisc del dev veth-edge root
+  ip netns exec $EDGE sysctl -qw net.ipv4.tcp_congestion_control=cubic
+  in_hub tunnel remove gv >/dev/null
+fi
 
 # 16. Panel: traffic totals, MTU measurement, changing a tunnel's settings.
 sleep 11  # one traffic sample

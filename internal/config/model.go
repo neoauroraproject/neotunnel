@@ -36,7 +36,7 @@ type Defaults struct {
 	MTUProbe    bool   `json:"mtu_probe,omitempty"`    // measure the path MTU of new tunnels
 	Obfs        bool   `json:"obfs,omitempty"`         // run new tunnels over a NeoObfs layer
 	Padding     int    `json:"padding,omitempty"`      // NeoObfs random padding
-	ForwardMode string `json:"forward_mode,omitempty"` // nat, transparent, proxy
+	ForwardMode string `json:"forward_mode,omitempty"` // nat, transparent, proxy, relay
 }
 
 // D returns the defaults, never nil.
@@ -161,6 +161,33 @@ type Tunnel struct {
 	// "" for balanced. Set on the user-facing tunnel; it applies to every
 	// layer of its stack.
 	Profile string `json:"profile,omitempty"`
+	// Lanes carries the tunnel over this many parallel tunnels between the
+	// same two servers (0 or 1 = one), each inner flow pinned to one lane,
+	// so the work spreads over CPU cores; see LaneKinds.
+	Lanes int `json:"lanes,omitempty"`
+}
+
+// MaxLanes is the most lanes a tunnel can have (lane interfaces are named
+// nt-<name>.<n>, which must fit 15 characters).
+const MaxLanes = 8
+
+// LaneCount is the number of parallel tunnels the tunnel runs on (>= 1).
+func (t Tunnel) LaneCount() int {
+	if t.Lanes < 1 {
+		return 1
+	}
+	return t.Lanes
+}
+
+// LaneKinds reports whether a kind can run on several lanes: the kernel GRE
+// family, whose lanes are told apart by their keys. (Keyless SIT and IPIP
+// allow one tunnel per address pair; EoIP's user-space carrier is per tunnel.)
+func LaneKinds(k Kind) bool {
+	switch k {
+	case KindGRE, KindGRETAP, KindIP6GRE, KindIP6GRETAP:
+		return true
+	}
+	return false
 }
 
 type Side struct {
@@ -195,9 +222,15 @@ type Forward struct {
 	//                  back through the tunnel, so it must run NeoTunnel)
 	//   proxy          a PROXY protocol header carrying the client's address,
 	//                  sent by a relay in the daemon (nginx, HAProxy, Xray...)
+	//   relay          TCP only, without the tunnel's packets: each user
+	//                  connection is carried to the far node as its own TCP
+	//                  connection (port 7712, keyed by the tunnel's secret,
+	//                  encrypted when the tunnel is), and the far node
+	//                  connects to the port on its own loopback. A PROXY
+	//                  header is sent when ProxyVersion is 1 or 2.
 	Mode string `json:"mode,omitempty"`
 	// ProxyVersion is the PROXY protocol version: 2 (default, TCP and UDP)
-	// or 1 (text, TCP only).
+	// or 1 (text, TCP only). In relay mode 0 sends no header.
 	ProxyVersion int `json:"proxy_version,omitempty"`
 }
 
@@ -206,6 +239,7 @@ const (
 	ForwardNAT         = "nat"
 	ForwardTransparent = "transparent"
 	ForwardProxy       = "proxy"
+	ForwardRelay       = "relay"
 )
 
 // ModeOf returns the forward's mode with the default filled in.
@@ -227,8 +261,15 @@ func ValidForwardMode(mode string, version int, proto string) error {
 		if version == 1 && proto != "tcp" {
 			return fmt.Errorf("PROXY protocol v1 only works with TCP; use v2 for UDP")
 		}
+	case ForwardRelay:
+		if version != 0 && version != 1 && version != 2 {
+			return fmt.Errorf("PROXY protocol version must be 0 (none), 1 or 2")
+		}
+		if proto != "tcp" {
+			return fmt.Errorf("relay mode carries TCP only; forward UDP ports in another mode")
+		}
 	default:
-		return fmt.Errorf("bad forward mode %q (nat, transparent, proxy)", mode)
+		return fmt.Errorf("bad forward mode %q (nat, transparent, proxy, relay)", mode)
 	}
 	return nil
 }
@@ -277,8 +318,9 @@ func (s *State) ForPeer(peer string) ([]Tunnel, []Forward) {
 	var fs []Forward
 	for _, f := range s.Forwards {
 		// The far end of a transparent forward must know about it to route
-		// replies back through the tunnel.
-		if f.Node == peer || (f.ModeOf() == ForwardTransparent && touches[f.Tunnel]) {
+		// replies back through the tunnel, and of a relay forward to accept
+		// its connections.
+		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay) && touches[f.Tunnel]) {
 			fs = append(fs, f)
 		}
 	}

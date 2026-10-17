@@ -57,6 +57,14 @@ type LinkSpec struct {
 	// Profile is the stack's speed profile (see config.ProfileMax); applied
 	// in place, so not part of Hash.
 	Profile string `json:"profile,omitempty"`
+	// Lane is this interface's lane of a tunnel on several lanes (0 = the
+	// tunnel's own interface, named like any other) and Lanes how many the
+	// tunnel has. Every lane holds this end's inner addresses as host
+	// addresses; Far are the other end's, reached by one multipath route
+	// over the lanes.
+	Lane  int          `json:"lane,omitempty"`
+	Lanes int          `json:"lanes,omitempty"`
+	Far   []netip.Addr `json:"far,omitempty"`
 }
 
 // Hash identifies the spec's kernel-relevant settings; it is stored in the
@@ -84,6 +92,24 @@ func (l LinkSpec) Hash() string {
 
 // Ifname is the interface name for a tunnel.
 func Ifname(tunnel string) string { return IfPrefix + tunnel }
+
+// LaneName is the interface of a tunnel's lane: lane 0 is the tunnel's own
+// interface, the others are nt-<name>.<n> ('.' never appears in names).
+func LaneName(tunnel string, lane int) string {
+	if lane == 0 {
+		return Ifname(tunnel)
+	}
+	return fmt.Sprintf("%s.%d", Ifname(tunnel), lane)
+}
+
+// LaneNames lists every interface of a tunnel.
+func LaneNames(t config.Tunnel) []string {
+	out := make([]string, t.LaneCount())
+	for i := range out {
+		out[i] = LaneName(t.Name, i)
+	}
+	return out
+}
 
 // Resolver returns the local source address used to reach remote.
 type Resolver func(remote netip.Addr) (netip.Addr, error)
@@ -193,6 +219,7 @@ func RenderTunnels(isSelf func(string) bool, ts []config.Tunnel, resolve Resolve
 		}
 		done[name] = s
 		specs = append(specs, *s)
+		specs = append(specs, laneSpecs(*s)...)
 		return s, nil
 	}
 	for _, t := range ts {
@@ -411,7 +438,55 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		}
 		s.Addrs = append(s.Addrs, p)
 	}
+	if n := t.LaneCount(); n > 1 {
+		if err := setLanes(s, t, n, keyless); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// setLanes turns s into lane 0 of a tunnel on n lanes: its addresses become
+// host addresses (the same on every lane) and Far the other end's, which
+// the engine routes over all lanes at once.
+func setLanes(s *LinkSpec, t config.Tunnel, n int, keyless bool) error {
+	switch {
+	case n > config.MaxLanes:
+		return fmt.Errorf("at most %d lanes", config.MaxLanes)
+	case !config.LaneKinds(t.Kind):
+		return fmt.Errorf("%s cannot run on several lanes (GRE and GRETAP can)", t.Kind)
+	case keyless:
+		return fmt.Errorf("lanes need NeoTunnel on the far end (each lane is a GRE key)")
+	}
+	s.Lanes = n
+	if s.RateMbit > 0 {
+		// Each lane shapes its own share of the cap.
+		s.RateMbit = (s.RateMbit + n - 1) / n
+	}
+	for i, p := range s.Addrs {
+		far, _ := config.Inner(p.Masked().String(), 1-s.Side)
+		s.Far = append(s.Far, far.Addr())
+		s.Addrs[i] = netip.PrefixFrom(p.Addr(), p.Addr().BitLen())
+	}
+	return nil
+}
+
+// laneSpecs are the other lanes of a tunnel on several lanes: copies of lane
+// 0 with their own interface and GRE key (key+1, key+2, ...).
+func laneSpecs(s LinkSpec) []LinkSpec {
+	var out []LinkSpec
+	for i := 1; i < s.Lanes; i++ {
+		l := s
+		l.Name, l.Lane = LaneName(s.Tunnel, i), i
+		l.Key = s.Key + uint32(i)
+		if l.Key < uint32(i) { // wrapped past zero, which would mean no key
+			l.Key++
+		}
+		l.Addrs = append([]netip.Prefix(nil), s.Addrs...)
+		l.Far = append([]netip.Addr(nil), s.Far...)
+		out = append(out, l)
+	}
+	return out
 }
 
 // activeForwards drops the forwards of tunnels that are turned off, which
@@ -432,4 +507,19 @@ func activeForwards(ts []config.Tunnel, fs []config.Forward) []config.Forward {
 		}
 	}
 	return out
+}
+
+// TunnelState is a tunnel's live state with the counters of all its lanes
+// added up (lane 0's state and MTU otherwise).
+func TunnelState(tunnel string) LinkState {
+	s := State(Ifname(tunnel))
+	for i := 1; i < config.MaxLanes && s.Exists; i++ {
+		l := State(LaneName(tunnel, i))
+		if !l.Exists {
+			break
+		}
+		s.RxBytes, s.TxBytes = s.RxBytes+l.RxBytes, s.TxBytes+l.TxBytes
+		s.RxPkts, s.TxPkts = s.RxPkts+l.RxPkts, s.TxPkts+l.TxPkts
+	}
+	return s
 }

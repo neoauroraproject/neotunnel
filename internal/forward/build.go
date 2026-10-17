@@ -23,9 +23,15 @@ type Link struct {
 func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []error) {
 	var rs Ruleset
 	var errs []error
+	// A tunnel on several lanes has one link per lane, its own first.
 	ifByTunnel := map[string]string{}
+	lanes := map[string][]string{}
 	for _, l := range links {
-		ifByTunnel[l.Tunnel] = l.Name
+		if _, ok := ifByTunnel[l.Tunnel]; ok {
+			lanes[l.Tunnel] = append(lanes[l.Tunnel], l.Name)
+		} else {
+			ifByTunnel[l.Tunnel] = l.Name
+		}
 		rs.Ifaces = append(rs.Ifaces, l.Name)
 	}
 	ts, _ := st.Effective()
@@ -35,6 +41,16 @@ func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []erro
 	}
 	for _, f := range fs {
 		t, ok := byName[f.Tunnel]
+		if ok && f.ModeOf() == config.ForwardRelay {
+			// Relay forwards don't use the tunnel's interface.
+			specs, err := streamRelays(st, f, t, byName)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("forward %s on %s: %w", f.Ports, f.Tunnel, err))
+				continue
+			}
+			rs.Relays = append(rs.Relays, specs...)
+			continue
+		}
 		iface, up := ifByTunnel[f.Tunnel]
 		if !ok || !up {
 			errs = append(errs, fmt.Errorf("forward %s: tunnel %s is not running here", f.Ports, f.Tunnel))
@@ -72,14 +88,15 @@ func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []erro
 			rs.Relays = append(rs.Relays, specs...)
 			continue
 		}
-		rs.Rules = append(rs.Rules, Rule{Iface: iface, Proto: ps, Ports: ports, Target: target.Addr(), To: f.To,
+		rs.Rules = append(rs.Rules, Rule{Iface: iface, Lanes: lanes[f.Tunnel], Proto: ps, Ports: ports, Target: target.Addr(), To: f.To,
 			Transparent: f.ModeOf() == config.ForwardTransparent, Key: f.Proto + "/" + f.Ports})
 	}
 	for _, name := range st.ReturnPaths() {
 		if iface, up := ifByTunnel[name]; up {
-			rs.Returns = append(rs.Returns, Return{Iface: iface, Mark: ReturnMark(name)})
+			rs.Returns = append(rs.Returns, Return{Iface: iface, Lanes: lanes[name], Mark: ReturnMark(name)})
 		}
 	}
+	rs.Exits = relayExits(st, byName)
 	return rs, errs
 }
 
@@ -174,9 +191,9 @@ func Script(rs Ruleset) string {
 		seen[r.Iface] = true
 		if transparent[r.Iface] {
 			// Transparent forwards keep the client's address.
-			fmt.Fprintf(&b, "    oifname %q ct status dnat ct mark != 0x%08x masquerade\n", r.Iface, transparentMark)
+			fmt.Fprintf(&b, "    oifname %s ct status dnat ct mark != 0x%08x masquerade\n", ifMatch(r.Iface, r.Lanes), transparentMark)
 		} else {
-			fmt.Fprintf(&b, "    oifname %q ct status dnat masquerade\n", r.Iface)
+			fmt.Fprintf(&b, "    oifname %s ct status dnat masquerade\n", ifMatch(r.Iface, r.Lanes))
 		}
 	}
 	b.WriteString("  }\n")
@@ -216,7 +233,7 @@ func Script(rs Ruleset) string {
 		// packets that would take the default route back through the tunnel.
 		b.WriteString("  chain return_in {\n    type filter hook prerouting priority mangle; policy accept;\n")
 		for _, r := range rs.Returns {
-			fmt.Fprintf(&b, "    iifname %q ct state new ct mark set 0x%08x\n", r.Iface, r.Mark)
+			fmt.Fprintf(&b, "    iifname %s ct state new ct mark set 0x%08x\n", ifMatch(r.Iface, r.Lanes), r.Mark)
 			fmt.Fprintf(&b, "    ct mark 0x%08x meta mark set ct mark\n", r.Mark)
 		}
 		b.WriteString("  }\n")

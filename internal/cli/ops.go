@@ -322,7 +322,7 @@ func showTraffic() error {
 		fmt.Fprintf(&b, "  %-12s %-6s %14s %14s %12s %12s\n", "TUNNEL", "STATE", "IN", "OUT", "TOTAL IN", "TOTAL OUT")
 		for _, t := range ts {
 			n := engine.Ifname(t.Name)
-			cur := engine.State(n)
+			cur := engine.TunnelState(t.Name)
 			p, had := prev[n]
 			in, out := "-", "-"
 			if had && cur.Exists {

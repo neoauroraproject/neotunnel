@@ -165,7 +165,7 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 			q, _ := config.Inner(t.Net6, 1-me)
 			v.There6 = q.Addr().String()
 		}
-		ls := engine.State(engine.Ifname(t.Name))
+		ls := engine.TunnelState(t.Name)
 		v.Up, v.MTU, v.Rx, v.Tx = ls.Up, ls.MTU, ls.RxBytes, ls.TxBytes
 		if h, ok := hs[t.Name]; ok && h.Probes > 0 {
 			v.Health = &HealthView{Ping: h.AvgMs, Loss: h.Loss, Passes: h.Passes, Last: h.Last}
@@ -245,6 +245,9 @@ func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardVi
 			}
 			if a, ok := config.Inner(n, 1-me); ok {
 				v.Target = a.Addr().String()
+			}
+			if v.Mode == config.ForwardRelay {
+				v.Target = "127.0.0.1" // the far node connects to its own loopback
 			}
 		}
 		out = append(out, v)

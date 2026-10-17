@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"net"
+	"net/netip"
 
 	"github.com/vishvananda/netlink"
 
@@ -45,6 +46,7 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 		mark uint32
 		fam  int
 	}
+	lanes, _ := lanesOf(specs)
 	wanted := map[want]bool{}
 	for _, r := range rs {
 		s, ok := byIface[r.Iface]
@@ -55,8 +57,11 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 		if err != nil {
 			continue
 		}
-		for _, a := range s.Addrs {
+		for i, a := range s.Addrs {
 			peer, ok := config.Inner(a.Masked().String(), 1-s.Side)
+			if s.Lanes > 1 && i < len(s.Far) {
+				peer, ok = netip.PrefixFrom(s.Far[i], s.Far[i].BitLen()), true
+			}
 			if !ok {
 				continue
 			}
@@ -65,6 +70,10 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 				fam, dst = netlink.FAMILY_V6, &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
 			}
 			route := &netlink.Route{LinkIndex: l.Attrs().Index, Dst: dst, Gw: toIP(peer.Addr()), Table: int(r.Mark)}
+			if s.Lanes > 1 {
+				// Replies spread over the lanes like any other traffic.
+				route = &netlink.Route{Dst: dst, Table: int(r.Mark), MultiPath: laneHops(lanes[s.Tunnel], peer.Addr())}
+			}
 			if err := netlink.RouteReplace(route); err != nil {
 				errs = append(errs, fmt.Errorf("return route via %s: %w", s.Name, err))
 				continue

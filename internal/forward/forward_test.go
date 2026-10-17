@@ -156,3 +156,20 @@ func TestProtectScript(t *testing.T) {
 		}
 	}
 }
+
+func TestLaneInterfaces(t *testing.T) {
+	st := &config.State{Self: "hub"}
+	st.Tunnels = []config.Tunnel{{Name: "g1", Kind: config.KindGRE, Net4: "10.77.0.0/30", Lanes: 2,
+		Sides: [2]config.Side{{Node: "hub"}, {Node: "edge"}}}}
+	fs := []config.Forward{{Node: "hub", Tunnel: "g1", Proto: "tcp", Ports: "80"}}
+	rs, errs := Build(st, fs, []Link{{Name: "nt-g1", Tunnel: "g1"}, {Name: "nt-g1.1", Tunnel: "g1"}})
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if len(rs.Rules) != 1 || rs.Rules[0].Target.String() != "10.77.0.2" {
+		t.Fatalf("rules %+v", rs.Rules)
+	}
+	if s := Script(rs); !strings.Contains(s, `oifname { "nt-g1", "nt-g1.1" } ct status dnat masquerade`) {
+		t.Errorf("masquerade must cover every lane:\n%s", s)
+	}
+}

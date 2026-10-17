@@ -136,7 +136,13 @@ func (d *dataPlane) StopBench(names []string) {
 	}
 }
 
-func (d *dataPlane) SyncRelays(specs []relay.Spec) []error { return d.relay.Sync(specs) }
+func (d *dataPlane) SyncRelays(specs []relay.Spec, exits []relay.Exit) []error {
+	errs := d.relay.Sync(specs)
+	if err := d.relay.SyncExits(exits); err != nil {
+		errs = append(errs, err)
+	}
+	return errs
+}
 
 func (d *dataPlane) Close() {
 	d.relay.Close()
@@ -171,7 +177,7 @@ func account(ctx context.Context, store *traffic.Store, changed func()) {
 			names := make([]string, 0, len(ts))
 			for _, tn := range ts {
 				names = append(names, tn.Name)
-				if ls := engine.State(engine.Ifname(tn.Name)); ls.Exists {
+				if ls := engine.TunnelState(tn.Name); ls.Exists {
 					store.Sample(tn.Name, counters(ls), now)
 				}
 			}
