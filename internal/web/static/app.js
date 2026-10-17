@@ -379,7 +379,7 @@
         <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط"}</span><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>
       </header>
       <section class="readouts">
-        <div class="ro main"><span class="k">ترافیک لحظه‌ای</span><span class="v mono"><b data-live="total-num">${rv}</b><small data-live="total-unit">${ru}</small></span>
+        <div class="ro hero"><span class="k">ترافیک لحظه‌ای</span><span class="v mono"><b data-live="total-num">${rv}</b><small data-live="total-unit">${ru}</small></span>
           <span class="f mono ltr"><i class="rx">↓</i> <span data-live="total-rx">${fmtRate(tr.rx)}</span>  <i class="tx">↑</i> <span data-live="total-tx">${fmtRate(tr.tx)}</span></span></div>
         <div class="ro"><span class="k">امروز</span><span class="v mono"><b>${tv}</b><small>${tu}</small></span><span class="f">ترافیک کاربران، بدون تست‌ها</span></div>
         <div class="ro"><span class="k">این ماه</span><span class="v mono"><b>${mv}</b><small>${mu}</small></span><span class="f">${nic ? html`کارت شبکه <span class="mono">${fmtBytes(nic)}</span>` : "مجموع همه‌ی تانل‌ها"}</span></div>
@@ -807,9 +807,9 @@
       ${fs.map((f) => {
         const k = f.tunnel + "|" + f.ports, ed = S.fwdEdit[k];
         return html`<tr>
-          <td><b class="ltr">${f.ports}</b><div class="faint small ltr">${f.public}</div></td>
+          <td><b class="ltr">${f.ports}</b><div class="faint small"><span class="ltr">${f.public}</span></div></td>
           <td class="hide-sm">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</td>
-          <td>${f.tunnel} <span class="faint">به</span> ${f.peer || ""}<div class="faint small ltr">${f.target}:${f.to || f.ports}</div></td>
+          <td>${f.tunnel} <span class="faint">به</span> ${f.peer || ""}<div class="faint small"><span class="ltr">${f.target}:${f.to || f.ports}</span></div></td>
           <td>${ed ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" style="height:32px;width:auto" data-bind="fwdEdit.${k}.mode" aria-label="حالت">${Object.entries(MODES_FWD).map(([v, [l]]) => html`<option value="${v}" ${ed.mode === v ? "selected" : ""}>${l}</option>`)}</select>
               ${ed.mode === "proxy" ? html`<select class="input" style="height:32px;width:auto" data-bind="fwdEdit.${k}.proxy_version" aria-label="نسخه"><option value="2" ${+ed.proxy_version !== 1 ? "selected" : ""}>v2</option><option value="1" ${+ed.proxy_version === 1 ? "selected" : ""}>v1</option></select>` : ""}
               <button class="btn sm primary" data-act="save-fwd" data-key="${k}">ذخیره</button><button class="btn sm ghost" data-act="cancel-fwd" data-key="${k}">انصراف</button></div>`
@@ -907,7 +907,9 @@
   function sparkPath(area) {
     const h = G.hist;
     if (h.length < 2) return area ? "" : "M0 47 L300 47";
-    const n = 60, max = Math.max(1, ...h), step = 300 / (n - 1), off = (n - h.length) * step;
+    // Spread over the full width from the first sample, so the trace fills
+    // in as the measurement goes instead of creeping in from one edge.
+    const max = Math.max(1, ...h), step = 300 / (h.length - 1), off = 0;
     const y = (v) => (46 - (v / max) * 40).toFixed(1);
     let d = h.map((v, i) => `${i ? "L" : "M"}${(off + i * step).toFixed(1)} ${y(v)}`).join(" ");
     if (area) d += ` L300 48 L${off.toFixed(1)} 48 Z`;

@@ -6,6 +6,7 @@ package manage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
@@ -42,10 +43,24 @@ type Change struct {
 // it to peers.
 func Commit(peers []string, fn func(*config.State) error) (*config.State, Change, error) {
 	st, err := config.Update(func(s *config.State) error {
+		// Peers whose own configuration this change leaves alone stay in
+		// sync: the revision is global, but they have nothing new to apply.
+		before := map[string]string{}
+		for _, p := range s.Peers {
+			if p.AppliedRevision == s.Revision {
+				before[p.Name] = peerConfig(s, p.Name)
+			}
+		}
 		if err := fn(s); err != nil {
 			return err
 		}
 		s.Revision++
+		for i := range s.Peers {
+			p := &s.Peers[i]
+			if was, ok := before[p.Name]; ok && was == peerConfig(s, p.Name) {
+				p.AppliedRevision = s.Revision
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -406,4 +421,14 @@ func expand(ports string) map[int]bool {
 		}
 	}
 	return out
+}
+
+// peerConfig is what a peer receives, for telling whether a change concerns it.
+func peerConfig(s *config.State, peer string) string {
+	ts, fs := s.ForPeer(peer)
+	b, _ := json.Marshal(struct {
+		T []config.Tunnel
+		F []config.Forward
+	}{ts, fs})
+	return string(b)
 }
