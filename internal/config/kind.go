@@ -18,6 +18,7 @@ const (
 	KindL2TPv3    Kind = "l2tpv3"    // L2 pseudowire over IP (proto 115) or UDP
 	KindWireGuard Kind = "wireguard" // L3, encrypted, over UDP (kernel)
 	KindObfs      Kind = "obfs"      // L3, encrypted and obfuscated UDP (user space)
+	KindEoIP      Kind = "eoip"      // L2, MikroTik EoIP / EoIPv6 (user space)
 )
 
 // KindInfo describes what a tunnel kind carries and costs.
@@ -62,6 +63,7 @@ var kinds = []KindInfo{
 	{Kind: KindGENEVE, Title: "GENEVE", Layer: 2, UnderAny: true, Carry4: true, Carry6: true, Overhead: 50, UDP: true},
 	{Kind: KindL2TPv3, Title: "L2TPv3 (Ethernet pseudowire)", Layer: 2, UnderAny: true, Carry4: true, Carry6: true, Overhead: 38, IPProto: 115, PortEncap: true},
 	{Kind: KindWireGuard, Title: "WireGuard", Layer: 3, UnderAny: true, Carry4: true, Carry6: true, Overhead: 60, UDP: true, Encrypted: true, NeedsPeer: false},
+	{Kind: KindEoIP, Title: "EoIP / EoIPv6 (MikroTik Ethernet over IP)", Layer: 2, UnderAny: true, Carry4: true, Carry6: true, Overhead: 42, IPProto: 47, PortEncap: true, Userspace: true},
 	{Kind: KindObfs, Title: "NeoObfs (encrypted, obfuscated UDP)", Layer: 3, UnderAny: true, Carry4: true, Carry6: true, Overhead: ObfsOverhead, UDP: true, Encrypted: true, Userspace: true, NeedsPeer: true},
 }
 
@@ -95,6 +97,9 @@ func (ki KindInfo) IsGRE() bool {
 // OverheadFor returns the encapsulation cost given the underlay family and
 // whether a port is in use (FOU for IP-protocol kinds, UDP encap for L2TPv3).
 func (ki KindInfo) OverheadFor(under6, port bool) int {
+	if ki.Kind == KindEoIP {
+		return eoipOverhead(under6, port)
+	}
 	o := ki.Overhead
 	if ki.IsGRE() {
 		o += 4 // key field; we always set a key
@@ -109,4 +114,32 @@ func (ki KindInfo) OverheadFor(under6, port bool) int {
 		o += 12 // UDP header + L2TPv3 UDP header
 	}
 	return o
+}
+
+// EtherIPProto is EoIPv6's outer IP protocol (EtherIP, RFC 3378).
+const EtherIPProto = 97
+
+// eoipOverhead: EoIP is outer IP + an 8-byte GRE header + the Ethernet
+// header (42 over IPv4); EoIPv6 has a 2-byte EtherIP header instead (56).
+// On a port the GRE-style header rides in UDP over either family.
+func eoipOverhead(under6, port bool) int {
+	ip := 20
+	if under6 {
+		ip = 40
+	}
+	switch {
+	case port:
+		return ip + 8 + 8 + 14
+	case under6:
+		return ip + 2 + 14
+	}
+	return ip + 8 + 14
+}
+
+// OuterProto is the IP protocol the kind's packets use without a port.
+func (ki KindInfo) OuterProto(under6 bool) int {
+	if ki.Kind == KindEoIP && under6 {
+		return EtherIPProto
+	}
+	return ki.IPProto
 }

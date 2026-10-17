@@ -193,6 +193,21 @@ else
   in_hub tunnel remove l1 >/dev/null 2>&1 || true
 fi
 
+# 13b. EoIP (MikroTik's Ethernet over IP, user space TAP): raw GRE and in UDP.
+if out=$(in_hub tunnel add eo1 --kind eoip --peer edge 2>&1) && hup 3 && ip -n $HUB link show nt-eo1 >/dev/null 2>&1 && ip -n $EDGE link show nt-eo1 >/dev/null 2>&1; then
+  ip -n $HUB -d link show nt-eo1 | grep -q "tun type tap" || fail "eoip is not a TAP interface"
+  ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-eo1)" >/dev/null || fail "ping through EoIP"
+  ip -n $HUB neigh show dev nt-eo1 | grep -q lladdr || fail "no layer-2 neighbor over EoIP"
+  in_hub tunnel add eo2 --kind eoip --peer edge --port 8450 >/dev/null || fail "add eoip over udp"
+  hup 3
+  ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-eo2)" >/dev/null || fail "ping through EoIP over UDP"
+  in_hub tunnel remove eo1 >/dev/null; in_hub tunnel remove eo2 >/dev/null
+  pass "EoIP carries Ethernet over GRE and over UDP"
+else
+  echo "SKIP EoIP: TAP interface did not come up here ($(tail -n 1 <<<"$out"))"
+  in_hub tunnel remove eo1 >/dev/null 2>&1 || true
+fi
+
 # 14. Transparent forward: the service on edge sees the client's real IP,
 #     and its replies find their way back through the tunnel.
 ip netns exec $EDGE python3 -m http.server 8081 --directory "$WORK/www" >"$WORK/www8081.log" 2>&1 &

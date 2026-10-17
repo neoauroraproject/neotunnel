@@ -90,6 +90,7 @@
     vxlan: { t: "VXLAN", d: "لایه ۲ روی UDP؛ استاندارد شبکه‌های مجازی دیتاسنتر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "بله، RouterOS 7", best: "لایه ۲ روی مسیری که فقط UDP رد می‌شود", udp: true },
     geneve: { t: "GENEVE", d: "نسل جدیدتر VXLAN با هدر انعطاف‌پذیر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "خیر", best: "لایه ۲ بین سرورهای لینوکسی", udp: true },
     l2tpv3: { t: "L2TPv3", d: "شبه‌سیم Ethernet استاندارد با شناسه‌های ایستا، روی IP (پروتکل 115) یا روی UDP اگر پورت بدهید.", layer: 2, carry: "Ethernet", over: 38, crypt: "ندارد (IPsec اختیاری)", mt: "روترهایی که L2TPv3 ایستا دارند", best: "لایه ۲ سازگار با تجهیزات شبکه" },
+    eoip: { t: "EoIP", d: "تانل لایه ۲ میکروتیک (Ethernet over IP) در لینوکس: فریم‌های Ethernet داخل GRE با شناسه‌ی تانل می‌روند؛ روی IPv6 همان EoIPv6 است. اگر مسیر پروتکل 47 را ببندد، با یک پورت داخل UDP اجرا می‌شود. در فضای کاربری NeoTunnel اجرا می‌شود و ماژول کرنلی نمی‌خواهد.", layer: 2, carry: "Ethernet", over: 42, crypt: "ندارد (IPsec اختیاری)", mt: "بله، EoIP و EoIPv6 (با شناسه‌ی تانل یکسان)", best: "بریج لایه ۲ بین دو سرور، یا اتصال به میکروتیک" },
   };
   const MODES_FWD = {
     nat: ["NAT", "سرویس مقصد آدرس داخلی تانل را می‌بیند. ساده و سازگار با همه‌چیز."],
@@ -675,7 +676,7 @@
             : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}</select>
             <span class="help">IPsec در کرنل روی بسته‌های بیرونی همین تانل؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ${38} بایت از MTU.</span>`}</div>
         <details class="adv" ${S.tset[t.name].adv ? "open" : ""} data-act="adv-toggle" data-name="${t.name}">
-          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
+          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard", "eoip"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
           <div class="in">${advancedFields(`tset.${t.name}`, st, base.kind, true)}</div>
         </details>
         <div class="form-foot"><button class="btn primary" type="submit">ذخیره‌ی تنظیمات</button><button class="btn ghost" type="button" data-act="reset-tset" data-name="${t.name}">بازگردانی</button></div>
@@ -695,7 +696,7 @@
           <span class="help">${PROTO[kind] && PROTO[kind].udp || kind === "obfs" || kind === "wireguard" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی = پروتکل خام (سریع‌ترین). با پورت، تانل داخل UDP می‌رود؛ وقتی مسیر پروتکل 41 یا 47 را می‌بندد."}</span></div>
         <div class="field"><label>TTL</label><input class="input ltr" type="number" min="1" max="255" data-bind="${path}.ttl" value="${st.ttl || ""}" placeholder="255"><span class="help">TTL بسته‌های بیرونی.</span></div>
         ${kind === "obfs" ? html`<div class="field"><label>Padding (بایت)</label><input class="input ltr" type="number" min="0" max="255" data-bind="${path}.padding" value="${st.padding || ""}" placeholder="0"><span class="help">تا این تعداد بایت تصادفی به هر بسته اضافه می‌شود تا اندازه‌ها چیزی را لو ندهند. هزینه‌اش همین مقدار از MTU است.</span></div>` : ""}
-        ${["obfs", "wireguard"].includes(kind) ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="25"><span class="help">نگه‌داشتن مسیر NAT باز؛ ‎-1 یعنی خاموش.</span></div>` : ""}
+        ${["obfs", "wireguard", "eoip"].includes(kind) ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="25"><span class="help">نگه‌داشتن مسیر NAT باز؛ ‎-1 یعنی خاموش.</span></div>` : ""}
         ${kind === "wireguard" ? html`<div class="field full"><label>کلید عمومی طرف مقابل</label><input class="input ltr" data-bind="${path}.peer_key" value="${st.peer_key || ""}" placeholder="فقط وقتی آن طرف NeoTunnel ندارد"><span class="help">برای میکروتیک یا هر WireGuard دیگر؛ بین دو سرور NeoTunnel کلیدها خودکار ساخته می‌شوند.</span></div>` : ""}
         <div class="field"><label>DSCP بسته‌های بیرونی</label><input class="input ltr" type="number" min="0" max="63" data-bind="${path}.dscp" value="${st.dscp || ""}" placeholder="ارث‌بری"><span class="help">کلاس کیفیت سرویس؛ خالی = همان کلاس بسته‌ی داخلی. فقط تانل‌های کرنلی.</span></div>
         <div class="field full"><label class="switch"><input type="checkbox" data-act="st-check" data-path="${path}.noDF" ${st.noDF ? "checked" : ""}>اجازه‌ی تکه‌تکه شدن بسته‌ها در مسیر</label><span class="help">پیش‌فرض خاموش است (بیت Don't-Fragment روشن): سریع‌تر، ولی به MTU درست نیاز دارد. روشنش کنید اگر مسیر MTU کوچکی دارد و تانل بسته‌های بزرگ را می‌اندازد.</span></div>

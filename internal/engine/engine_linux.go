@@ -107,7 +107,7 @@ func Apply(st *config.State) Result {
 	return res
 }
 
-// adopt configures a TUN interface the daemon's data plane created.
+// adopt configures a TUN/TAP interface the daemon's data plane created.
 func adopt(s LinkSpec) error {
 	l, err := netlink.LinkByName(s.Name)
 	if err != nil {
@@ -190,7 +190,7 @@ func modulesFor(s LinkSpec) []string {
 		ms = []string{"l2tp_eth", "l2tp_netlink", "l2tp_ip", "l2tp_ip6"}
 	case config.KindWireGuard:
 		ms = []string{"wireguard"}
-	case config.KindObfs:
+	case config.KindObfs, config.KindEoIP:
 		ms = []string{"tun"}
 	}
 	if s.FOU {

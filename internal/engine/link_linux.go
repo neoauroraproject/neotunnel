@@ -19,8 +19,8 @@ import (
 //
 //	neotunnel:<hash>                 persistent tunnel
 //	neotunnel-bench:<expiry>:<hash>  temporary test tunnel, removed after expiry
-//	neotunnel-user:<hash>            user-space tunnel (NeoObfs), owned by the
-//	                                 daemon process that holds its TUN device
+//	neotunnel-user:<hash>            user-space tunnel (NeoObfs, EoIP), owned by the
+//	                                 daemon process that holds its TUN/TAP device
 const (
 	aliasPersistent = "neotunnel:"
 	aliasBench      = "neotunnel-bench:"

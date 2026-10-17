@@ -35,6 +35,7 @@ var modeHints = map[string]string{
 	"wireguard": "encrypted in the kernel; also talks to MikroTik v7",
 	"obfs":      "NeoObfs: encrypted UDP that looks like random noise",
 	"l2tpv3":    "layer 2 pseudowire over IP or UDP, MikroTik compatible",
+	"eoip":      "MikroTik EoIP / EoIPv6: layer 2 over GRE, IPv6 or UDP",
 }
 
 type session struct {

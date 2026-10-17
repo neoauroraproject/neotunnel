@@ -8,6 +8,7 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/eoip"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/obfs"
 	"neotunnel/internal/pmtu"
@@ -15,37 +16,56 @@ import (
 	"neotunnel/internal/traffic"
 )
 
-// dataPlane is the daemon's engine.Userspace: NeoObfs tunnels and PROXY
-// protocol relays.
+// dataPlane is the daemon's engine.Userspace: NeoObfs and EoIP tunnels and
+// PROXY protocol relays.
 type dataPlane struct {
 	obfs  *obfs.Manager
+	eoip  *eoip.Manager
 	relay *relay.Manager
 }
 
-func newDataPlane() *dataPlane { return &dataPlane{obfs: obfs.NewManager(), relay: relay.NewManager()} }
+func newDataPlane() *dataPlane {
+	return &dataPlane{obfs: obfs.NewManager(), eoip: eoip.NewManager(), relay: relay.NewManager()}
+}
+
+// keepalive maps a spec's keepalive setting (0 = 25s, -1 = off).
+func keepalive(s engine.LinkSpec) time.Duration {
+	switch {
+	case s.Keepalive == 0:
+		return 25 * time.Second
+	case s.Keepalive < 0:
+		return 0
+	}
+	return time.Duration(s.Keepalive) * time.Second
+}
 
 func (d *dataPlane) SyncLinks(specs []engine.LinkSpec) []error {
-	cfgs := make([]obfs.Config, 0, len(specs))
+	var ocfgs []obfs.Config
+	var ecfgs []eoip.Config
 	for _, s := range specs {
-		ka := time.Duration(s.Keepalive) * time.Second
-		if s.Keepalive == 0 {
-			ka = 25 * time.Second
-		} else if s.Keepalive < 0 {
-			ka = 0
+		switch s.Kind {
+		case config.KindObfs:
+			ocfgs = append(ocfgs, obfs.Config{
+				Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
+				Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
+				Padding: s.Padding, Keepalive: keepalive(s),
+			})
+		case config.KindEoIP:
+			ecfgs = append(ecfgs, eoip.Config{
+				Name: s.Name, Tunnel: s.Tunnel, Side: s.Side, ID: uint16(s.Key),
+				Local: s.Local, Remote: s.Remote, Port: s.Port,
+				TTL: s.TTL, DSCP: s.DSCP, NoDF: s.NoDF, Keepalive: keepalive(s),
+			})
 		}
-		cfgs = append(cfgs, obfs.Config{
-			Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
-			Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
-			Padding: s.Padding, Keepalive: ka,
-		})
 	}
-	return d.obfs.Sync(cfgs)
+	return append(d.obfs.Sync(ocfgs), d.eoip.Sync(ecfgs)...)
 }
 
 func (d *dataPlane) SyncRelays(specs []relay.Spec) []error { return d.relay.Sync(specs) }
 
 func (d *dataPlane) Close() {
 	d.relay.Close()
+	d.eoip.Close()
 	d.obfs.Close()
 }
 

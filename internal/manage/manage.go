@@ -56,7 +56,7 @@ func Commit(peers []string, fn func(*config.State) error) (*config.State, Change
 		ch.Errors = append(ch.Errors, e.Error())
 	}
 	if !engine.InDaemon() {
-		// NeoObfs tunnels and PROXY protocol relays live in the daemon.
+		// NeoObfs and EoIP tunnels and PROXY protocol relays live in the daemon.
 		service.Reload()
 	}
 	ch.Peers = Sync(st, peers)

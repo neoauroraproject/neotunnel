@@ -35,6 +35,7 @@ var modes = []Mode{
 	{Name: "vxlan", Title: "VXLAN (L2)", Kinds: []config.Kind{config.KindVXLAN}, Layer: 2, Port: true, UDP: true},
 	{Name: "geneve", Title: "GENEVE (L2)", Kinds: []config.Kind{config.KindGENEVE}, Layer: 2, Port: true, UDP: true},
 	{Name: "l2tpv3", Title: "L2TPv3 (L2)", Kinds: []config.Kind{config.KindL2TPv3}, Layer: 2, Port: true},
+	{Name: "eoip", Title: "EoIP (L2)", Kinds: []config.Kind{config.KindEoIP}, Layer: 2, Port: true},
 }
 
 func Modes() []Mode { return modes }

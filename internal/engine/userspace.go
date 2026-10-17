@@ -7,10 +7,10 @@ import (
 )
 
 // Userspace is the daemon's own data plane for what the kernel can't do:
-// NeoObfs tunnels and PROXY protocol relays. Only the daemon has one; other
+// NeoObfs and EoIP tunnels and PROXY protocol relays. Only the daemon has one; other
 // processes (the CLI) leave those parts alone and nudge the daemon instead.
 type Userspace interface {
-	// SyncLinks runs exactly these NeoObfs tunnels (creating their TUN
+	// SyncLinks runs exactly these NeoObfs and EoIP tunnels (creating their TUN/TAP
 	// interfaces, which Apply then configures like any other link).
 	SyncLinks(specs []LinkSpec) []error
 	SyncRelays(specs []relay.Spec) []error

@@ -221,3 +221,34 @@ func TestGREToRouterIsKeyless(t *testing.T) {
 		t.Errorf("GRE between NeoTunnel servers keeps its key: %+v", ms[0])
 	}
 }
+
+func TestEoIP(t *testing.T) {
+	cases := []struct {
+		local, remote string
+		port          uint16
+		mtu, proto    int
+		maxID         uint32
+	}{
+		{"198.51.100.1", "203.0.113.10", 0, 1458, 47, 0xffff},
+		{"198.51.100.1", "203.0.113.10", 4000, 1450, 17, 0xffff},
+		{"2001:db8::1", "2001:db8::2", 0, 1444, config.EtherIPProto, 0x0fff},
+		{"2001:db8::1", "2001:db8::2", 4000, 1430, 17, 0xffff},
+	}
+	for _, c := range cases {
+		st := peerTunnel(config.KindEoIP, func(tn *config.Tunnel) {
+			tn.Name, tn.Port = "eoipnamex", c.port
+			tn.Sides[0].Endpoint, tn.Sides[1].Endpoint = c.local, c.remote
+		})
+		specs, errs := Render(st, fixedSource(c.local))
+		if len(errs) > 0 {
+			t.Fatal(errs)
+		}
+		s := specs[0]
+		if !s.Userspace || s.FOU || s.Port != c.port || s.MTU != c.mtu || s.Key > c.maxID || s.Key != st.Tunnels[0].Key&c.maxID {
+			t.Errorf("eoip %s port %d: %+v", c.remote, c.port, s)
+		}
+		if p, _ := outerProto(s); p != c.proto {
+			t.Errorf("eoip %s port %d: outer proto %d, want %d", c.remote, c.port, p, c.proto)
+		}
+	}
+}
