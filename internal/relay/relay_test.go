@@ -85,3 +85,56 @@ func TestTCPRelay(t *testing.T) {
 		t.Errorf("client got %q", reply)
 	}
 }
+
+// A UDP service that is down for a moment must not break the client's flow
+// for good: once it is back, replies flow again on the same client port.
+func TestUDPRelayRecovers(t *testing.T) {
+	free := func() uint16 {
+		c, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		defer c.Close()
+		return uint16(c.LocalAddr().(*net.UDPAddr).Port)
+	}
+	backPort, relayPort := free(), free()
+	target := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), backPort)
+	m := NewManager()
+	defer m.Close()
+	if errs := m.Sync([]Spec{{Proto: "udp", Port: relayPort, Target: target, Version: 2, Public: netip.MustParseAddr("127.0.0.1")}}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(relayPort)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	// The service is down: these packets are refused.
+	for i := 0; i < 3; i++ {
+		client.Write([]byte("early"))
+		time.Sleep(50 * time.Millisecond)
+	}
+	back, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer back.Close()
+	go func() {
+		b := make([]byte, 2048)
+		for {
+			n, from, err := back.ReadFromUDP(b)
+			if err != nil {
+				return
+			}
+			if n > 16 { // strip the PROXY v2 header and echo
+				back.WriteToUDP([]byte("echo"), from)
+			}
+		}
+	}()
+	buf := make([]byte, 64)
+	for i := 0; i < 20; i++ {
+		client.Write([]byte("hello"))
+		client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		if n, err := client.Read(buf); err == nil && string(buf[:n]) == "echo" {
+			return
+		}
+	}
+	t.Fatal("no reply after the service came back")
+}

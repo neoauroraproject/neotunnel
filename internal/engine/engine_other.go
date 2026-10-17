@@ -21,5 +21,6 @@ func Down() error                                { return errLinux }
 func Doctor(*config.State, bool) []Finding       { return nil }
 func DoctorFOU(*config.State, bool) []Finding    { return nil }
 func PublicIface() string                        { return "" }
+func PublicIPv6() string                         { return "" }
 func State(string) LinkState                     { return LinkState{} }
 func RouteSource(netip.Addr) (netip.Addr, error) { return netip.Addr{}, errLinux }

@@ -450,19 +450,22 @@ func runBench(peer string, o bench.Options, only map[string]bool) error {
 	if len(only) == 0 || only["direct"] {
 		results = append(results, r.Baseline(ctx))
 	}
+	var cands []bench.Candidate
 	for _, c := range bench.Candidates(st.Self, p.Name, st.Address, p.Address) {
-		if len(only) > 0 && !only[c.Name] {
-			continue
+		if len(only) == 0 || only[c.Name] {
+			cands = append(cands, c)
 		}
-		if ctx.Err() != nil {
-			break
-		}
-		res := r.Run(ctx, c)
-		if res.Err != "" {
-			warn("%s: %s", c.Title, res.Err)
-		}
-		results = append(results, res)
 	}
+	results = append(results, r.Compare(ctx, cands, func(res bench.Result) {
+		switch res.Status {
+		case bench.StatusPassed:
+			success("%s connects (%.1f ms)", res.Title, float64(res.Latency.Avg.Microseconds())/1000)
+		case bench.StatusFailed:
+			warn("%s: %s", res.Title, res.Err)
+		case bench.StatusDone:
+			info("%s: download %s, upload %s", res.Title, bench.Rate(res.Down), bench.Rate(res.Up))
+		}
+	})...)
 	bench.Rank(results)
 	title("Results (best first)")
 	fmt.Print(bench.Table(results))

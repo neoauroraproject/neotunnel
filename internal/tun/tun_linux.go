@@ -1,4 +1,5 @@
-package obfs
+// Package tun opens layer-3 TUN interfaces for the user-space data planes.
+package tun
 
 import (
 	"fmt"
@@ -7,9 +8,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// openTUN creates (or attaches to) a layer-3 TUN interface without packet
+// Open creates (or attaches to) a layer-3 TUN interface without packet
 // information headers. The interface disappears when the file is closed.
-func openTUN(name string) (*os.File, error) {
+func Open(name string) (*os.File, error) {
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/net/tun: %w (is the tun module loaded?)", err)

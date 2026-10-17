@@ -161,17 +161,26 @@ func BandwidthLive(ctx context.Context, addr string, tok Token, dir Direction, d
 		stop := make(chan struct{})
 		defer close(stop)
 		go func() {
-			t := time.NewTicker(500 * time.Millisecond)
+			// Report often, averaged over a short window, so a gauge can
+			// follow the rate smoothly without jumping on every burst.
+			type sample struct {
+				n  int64
+				at time.Time
+			}
+			t := time.NewTicker(200 * time.Millisecond)
 			defer t.Stop()
-			last, at := int64(0), time.Now()
+			win := []sample{{0, time.Now()}}
 			for {
 				select {
 				case <-stop:
 					return
 				case now := <-t.C:
-					n := moved.Load()
-					report(float64(n-last) * 8 / now.Sub(at).Seconds())
-					last, at = n, now
+					win = append(win, sample{moved.Load(), now})
+					if len(win) > 5 {
+						win = win[len(win)-5:]
+					}
+					a, b := win[0], win[len(win)-1]
+					report(float64(b.n-a.n) * 8 / b.at.Sub(a.at).Seconds())
 				}
 			}
 		}()

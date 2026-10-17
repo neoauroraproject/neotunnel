@@ -21,6 +21,7 @@ type Backend interface {
 	UpgradePeer(ctx context.Context, name string) (string, error)
 	CreateTunnel(req manage.TunnelRequest) (manage.Change, error)
 	UpdateTunnel(name string, set manage.Settings, port uint16) (manage.Change, error)
+	SetLimits(name string, l manage.Limits) (manage.Change, error)
 	RemoveTunnel(name string) (manage.Change, error)
 	AddForward(req manage.ForwardRequest) (manage.Change, error)
 	UpdateForward(req manage.ForwardRequest) (manage.Change, error)
@@ -28,7 +29,10 @@ type Backend interface {
 	SetNode(name, address string) error
 	SetDefaults(d config.Defaults) error
 	TestTunnel(ctx context.Context, name string, progress func(string), live func(string, float64)) ([]bench.Result, error)
-	Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64)) ([]bench.Result, error)
+	Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error)
+	// Check brings a would-be tunnel up for a few seconds and reports whether
+	// traffic passes (all: every kind at once).
+	Check(ctx context.Context, req manage.TunnelRequest, all bool) ([]bench.Result, error)
 	// ProbeMTU measures the path MTU under a tunnel and remembers it.
 	ProbeMTU(ctx context.Context, name string) (MTUReport, error)
 	Traffic() map[string]traffic.Summary
@@ -66,6 +70,7 @@ type Overview struct {
 type NodeInfo struct {
 	Name     string     `json:"name"`
 	Address  string     `json:"address"`
+	Address6 string     `json:"address6,omitempty"`
 	Version  string     `json:"version"`
 	Arch     string     `json:"arch"`
 	Key      string     `json:"key"`
@@ -125,7 +130,11 @@ type TunnelView struct {
 	Month    traffic.Pair    `json:"month"`
 	Tests    traffic.Pair    `json:"tests"`      // speed tests, not in the totals
 	Wire     uint64          `json:"wire_today"` // today's bytes on the network, overhead included
-	Overhead int             `json:"overhead"`   // bytes each packet gains on the wire
+	// Limits are the on/off switch, speed limit and monthly quota; Blocked
+	// means the quota ran out and the tunnel is down until next month.
+	Limits   manage.Limits `json:"limits"`
+	Blocked  bool          `json:"blocked,omitempty"`
+	Overhead int           `json:"overhead"` // bytes each packet gains on the wire
 }
 
 // LayerView is one tunnel of a stack.
@@ -164,6 +173,7 @@ type SysctlView struct {
 type PeerView struct {
 	Name     string `json:"name"`
 	Address  string `json:"address"`
+	Address6 string `json:"address6,omitempty"`
 	Paired   bool   `json:"paired"`
 	InSync   bool   `json:"in_sync"`
 	Applied  uint64 `json:"applied"`

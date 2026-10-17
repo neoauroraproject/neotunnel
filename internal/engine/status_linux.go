@@ -2,6 +2,7 @@ package engine
 
 import (
 	"net"
+	"net/netip"
 
 	"github.com/vishvananda/netlink"
 )
@@ -33,4 +34,17 @@ func PublicIface() string {
 		return ""
 	}
 	return l.Attrs().Name
+}
+
+// PublicIPv6 is the global IPv6 address this host sends from on its default
+// IPv6 route, or "" when it has none (many servers have IPv4 only).
+func PublicIPv6() string {
+	rs, err := netlink.RouteGet(net.ParseIP("2001:4860:4860::8888"))
+	if err != nil || len(rs) == 0 || rs[0].Src == nil {
+		return ""
+	}
+	if a, ok := netip.AddrFromSlice(rs[0].Src); ok && a.Is6() && a.IsGlobalUnicast() && !a.IsPrivate() {
+		return a.String()
+	}
+	return ""
 }

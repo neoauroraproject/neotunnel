@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -125,17 +126,22 @@ func (m *Manager) handleTCP(s Spec, c *net.TCPConn) {
 }
 
 // pipe copies both ways (spliced in the kernel on Linux) and passes on
-// half-closes so protocols that rely on them keep working.
+// half-closes so protocols that rely on them keep working. A direction that
+// fails (reset, dead client) ends both at once, so a broken connection never
+// lingers holding the other side open.
 func pipe(a, b *net.TCPConn) {
-	done := make(chan struct{}, 2)
+	done := make(chan error, 2)
 	cp := func(dst, src *net.TCPConn) {
-		io.Copy(dst, src)
+		_, err := io.Copy(dst, src)
 		dst.CloseWrite()
-		done <- struct{}{}
+		done <- err
 	}
 	go cp(a, b)
 	go cp(b, a)
-	<-done
+	if err := <-done; err != nil {
+		a.Close()
+		b.Close()
+	}
 	<-done
 }
 
@@ -196,23 +202,38 @@ func (m *Manager) serveUDP(s Spec) (*server, error) {
 				ss = &udpSession{conn: up}
 				sessions[from] = ss
 				m.Conns.Add(1)
-				go func(client netip.AddrPort) {
+				go func(client netip.AddrPort, ss *udpSession) {
 					defer m.Conns.Add(-1)
+					// A session whose socket broke is dropped, so the
+					// client's next packet starts a fresh one.
+					defer func() {
+						mu.Lock()
+						if sessions[client] == ss {
+							delete(sessions, client)
+						}
+						mu.Unlock()
+						up.Close()
+					}()
 					rb := make([]byte, 65535)
 					for {
 						n, err := up.Read(rb)
+						if errors.Is(err, syscall.ECONNREFUSED) {
+							continue // the service was briefly down; keep going
+						}
 						if err != nil {
 							return
 						}
 						ss.last.Store(time.Now().UnixNano())
 						pc.WriteToUDPAddrPort(rb[:n], client)
 					}
-				}(from)
+				}(from, ss)
 			}
 			mu.Unlock()
 			ss.last.Store(time.Now().UnixNano())
 			hdr := Header(2, true, from, dst)
-			ss.conn.Write(append(hdr, buf[:n]...))
+			if _, err := ss.conn.Write(append(hdr, buf[:n]...)); err != nil && !errors.Is(err, syscall.ECONNREFUSED) {
+				ss.conn.Close() // its reader ends and drops the session
+			}
 		}
 	}()
 	return &server{spec: s, close: func() {

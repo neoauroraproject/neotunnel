@@ -221,3 +221,24 @@ func TestGREToRouterIsKeyless(t *testing.T) {
 		t.Errorf("GRE between NeoTunnel servers keeps its key: %+v", ms[0])
 	}
 }
+
+func TestTCPTransport(t *testing.T) {
+	st := peerTunnel(config.KindTCP, nil)
+	if _, errs := Render(st, fixedSource("198.51.100.1")); len(errs) != 1 {
+		t.Error("a TCP tunnel without a port rendered")
+	}
+	st = peerTunnel(config.KindTCP, func(tn *config.Tunnel) { tn.Port = 31443 })
+	specs, errs := Render(st, fixedSource("198.51.100.1"))
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if s := specs[0]; !s.Userspace || s.Port != 31443 || s.Cipher != "" || s.Secret == "" || s.MTU != 1500-config.TCPOverhead {
+		t.Errorf("tcp: %+v", s)
+	}
+	// A cipher seals the stream itself: no IPsec, no ESP overhead.
+	st.Tunnels[0].Encrypt = "chacha20-poly1305"
+	specs, _ = Render(st, fixedSource("198.51.100.1"))
+	if s := specs[0]; s.Cipher != "chacha20-poly1305" || s.Encrypt != "" || s.MTU != 1500-config.TCPOverhead-config.TCPTagOverhead {
+		t.Errorf("encrypted tcp: %+v", s)
+	}
+}

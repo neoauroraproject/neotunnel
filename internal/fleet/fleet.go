@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"neotunnel/internal/agent"
@@ -152,7 +153,9 @@ func DetectAddress(target string) string {
 	return src.String()
 }
 
-// Upgrade pushes this binary to a peer.
+// Upgrade pushes this binary to a peer, then waits for the peer to restart
+// on it and records the version it reports, so the panel stops offering the
+// upgrade as soon as it took.
 func Upgrade(ctx context.Context, id *identity.Identity, st *config.State, peer string) (string, error) {
 	p, ok := st.Peer(peer)
 	if !ok {
@@ -162,5 +165,68 @@ func Upgrade(ctx context.Context, id *identity.Identity, st *config.State, peer 
 	if err != nil {
 		return "", err
 	}
-	return c.Upgrade(ctx)
+	v, err := c.Upgrade(ctx)
+	if err != nil {
+		return "", err
+	}
+	time.Sleep(time.Second) // the peer exits half a second after answering
+	for ctx.Err() == nil {
+		if s, err := Refresh(ctx, id, st, peer); err == nil {
+			return s.Version, nil
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return v, fmt.Errorf("%s accepted %s but has not come back yet; it should within a minute", peer, v)
+}
+
+// Refresh asks a peer for its status and records its version and when it
+// was last seen.
+func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer string) (agent.Status, error) {
+	p, ok := st.Peer(peer)
+	if !ok {
+		return agent.Status{}, fmt.Errorf("unknown peer %q", peer)
+	}
+	c, err := agent.ToPeer(id, *p)
+	if err != nil {
+		return agent.Status{}, err
+	}
+	sctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	s, err := c.Status(sctx)
+	if err != nil {
+		return s, err
+	}
+	config.Update(func(st *config.State) error {
+		if p, ok := st.Peer(peer); ok {
+			p.Version, p.Arch, p.LastSeen = s.Version, s.Arch, time.Now()
+			if s.Address6 != "" {
+				p.Address6 = s.Address6
+			}
+		}
+		return nil
+	})
+	return s, nil
+}
+
+// RefreshAll refreshes every paired peer at once.
+func RefreshAll(ctx context.Context, id *identity.Identity) {
+	st, err := config.Load()
+	if err != nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, p := range st.Peers {
+		if !p.Paired() {
+			continue
+		}
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			Refresh(ctx, id, st, name)
+		}(p.Name)
+	}
+	wg.Wait()
 }

@@ -184,7 +184,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 
 // LocalStatus reports this node's tunnels and counters.
 func LocalStatus(st *config.State, started time.Time) Status {
-	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch()}
+	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6()}
 	if st.Managed != nil {
 		out.Revision = st.Managed.Revision
 	}
@@ -268,6 +268,11 @@ func (s *Server) benchUp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := engine.ApplyBench(specs, time.Duration(req.TTL)*time.Second); err != nil {
+		names := make([]string, len(specs))
+		for i, s := range specs {
+			names[i] = s.Name
+		}
+		engine.RemoveBench(names) // what came up before the failure
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}

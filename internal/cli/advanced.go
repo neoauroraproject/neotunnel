@@ -22,7 +22,7 @@ func settingsFlags(f *pflag.FlagSet, s *manage.Settings) {
 	f.IntVar(&s.MTU, "mtu", 0, "MTU of the tunnel (default: computed from the overhead)")
 	f.BoolVar(&s.MTUProbe, "mtu-probe", false, "measure the path MTU to the far end and size the tunnel from it")
 	f.Uint8Var(&s.TTL, "ttl", 0, "TTL of the outer packets (default 255)")
-	f.StringVar(&s.Encrypt, "encrypt", "", "kernel IPsec on the outer packets: aes-gcm-128, aes-gcm-256, chacha20-poly1305")
+	f.StringVar(&s.Encrypt, "encrypt", "", "kernel IPsec on the outer packets (a TCP tunnel seals its stream instead): aes-gcm-128, aes-gcm-256, chacha20-poly1305")
 	f.IntVar(&s.Padding, "padding", 0, "NeoObfs: up to this many random padding bytes per packet (0-255)")
 	f.IntVar(&s.Keepalive, "keepalive", 0, "WireGuard/NeoObfs keepalive in seconds (-1 = off, default 25)")
 	f.StringVar(&s.PeerKey, "peer-key", "", "WireGuard: the far end's public key, when it doesn't run NeoTunnel")
@@ -214,6 +214,88 @@ func trafficResetCmd() *cobra.Command {
 			}
 			service.Reload()
 			success("traffic totals reset")
+			return nil
+		},
+	}
+}
+
+// limitsOf reads a tunnel's current switch and caps.
+func limitsOf(name string) (manage.Limits, error) {
+	st, err := loadNode()
+	if err != nil {
+		return manage.Limits{}, err
+	}
+	t, ok := st.Tunnel(name)
+	if !ok {
+		return manage.Limits{}, fmt.Errorf("unknown tunnel %q", name)
+	}
+	return manage.LimitsOf(*t), nil
+}
+
+func tunnelLimitCmd() *cobra.Command {
+	var rate int
+	var quota float64
+	cmd := &cobra.Command{
+		Use:   "limit <name>",
+		Short: "Set a tunnel's speed limit and monthly traffic quota (0 = none)",
+		Example: `  neotunnel tunnel limit t1 --rate 100        # 100 Mbit/s each way
+  neotunnel tunnel limit t1 --quota 500       # 500 GB a month, then down until next month
+  neotunnel tunnel limit t1 --rate 0 --quota 0`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			l, err := limitsOf(args[0])
+			if err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("rate") {
+				l.RateMbit = rate
+			}
+			if cmd.Flags().Changed("quota") {
+				l.QuotaGB = quota
+			}
+			ch, err := manage.SetLimits(args[0], l)
+			if err != nil {
+				return err
+			}
+			printChange(ch)
+			success("%s: speed limit %s, monthly quota %s", args[0],
+				orNone(l.RateMbit > 0, fmt.Sprintf("%d Mbit/s", l.RateMbit)), orNone(l.QuotaGB > 0, fmt.Sprintf("%g GB", l.QuotaGB)))
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&rate, "rate", 0, "speed limit in Mbit/s, applied on both ends (0 = none)")
+	cmd.Flags().Float64Var(&quota, "quota", 0, "monthly traffic in GB, download + upload (0 = none)")
+	return cmd
+}
+
+func orNone(set bool, s string) string {
+	if set {
+		return s
+	}
+	return "none"
+}
+
+func tunnelPowerCmd(on bool) *cobra.Command {
+	use, short := "disable <name>", "Take a tunnel down on both ends, keeping its settings"
+	if on {
+		use, short = "enable <name>", "Bring a disabled tunnel back up"
+	}
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			l, err := limitsOf(args[0])
+			if err != nil {
+				return err
+			}
+			l.Disabled = !on
+			ch, err := manage.SetLimits(args[0], l)
+			if err != nil {
+				return err
+			}
+			printChange(ch)
+			success("%s %s", args[0], map[bool]string{true: "enabled", false: "disabled"}[on])
 			return nil
 		},
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"sync"
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/pmtu"
@@ -45,10 +46,14 @@ type LinkSpec struct {
 	Side      int    `json:"side"`
 	Secret    string `json:"-"`
 	Encrypt   string `json:"encrypt,omitempty"` // IPsec cipher on the outer packets
+	Cipher    string `json:"cipher,omitempty"`  // user-space stream cipher (TCP)
 	Padding   int    `json:"padding,omitempty"`
 	Keepalive int    `json:"keepalive,omitempty"`
 	PeerKey   string `json:"peer_key,omitempty"`
 	Userspace bool   `json:"userspace,omitempty"`
+	// RateMbit shapes what this side sends (0 = no limit). It is applied
+	// in place, so it is not part of Hash.
+	RateMbit int `json:"rate_mbit,omitempty"`
 }
 
 // Hash identifies the spec's kernel-relevant settings; it is stored in the
@@ -85,7 +90,68 @@ type Resolver func(remote netip.Addr) (netip.Addr, error)
 // definition never takes the rest down.
 func Render(st *config.State, resolve Resolver) (specs []LinkSpec, errs []error) {
 	ts, _ := st.Effective()
-	return RenderTunnels(st.IsSelf, ts, resolve)
+	return RenderTunnels(st.IsSelf, Active(ts), resolve)
+}
+
+var (
+	blockedMu sync.Mutex
+	blocked   = map[string]bool{}
+)
+
+// SetBlocked sets the tunnels that are down for having used their quota.
+func SetBlocked(names map[string]bool) {
+	blockedMu.Lock()
+	defer blockedMu.Unlock()
+	blocked = names
+}
+
+// Blocked reports whether a tunnel is down for having used its quota.
+func Blocked(name string) bool {
+	blockedMu.Lock()
+	defer blockedMu.Unlock()
+	return blocked[name]
+}
+
+// Active drops disabled and over-quota tunnels, and the tunnels under them
+// that no running tunnel still needs.
+func Active(ts []config.Tunnel) []config.Tunnel {
+	off := map[string]bool{}
+	users := map[string][]string{}
+	for _, t := range ts {
+		if t.Disabled || Blocked(t.Name) {
+			off[t.Name] = true
+		}
+		if t.Over != "" {
+			users[t.Over] = append(users[t.Over], t.Name)
+		}
+	}
+	// A carrier goes when every tunnel over it went; repeat for deep stacks.
+	for changed := true; changed; {
+		changed = false
+		for _, t := range ts {
+			us := users[t.Name]
+			if off[t.Name] || len(us) == 0 {
+				continue
+			}
+			all := true
+			for _, u := range us {
+				all = all && off[u]
+			}
+			if all {
+				off[t.Name], changed = true, true
+			}
+		}
+	}
+	if len(off) == 0 {
+		return ts
+	}
+	out := make([]config.Tunnel, 0, len(ts))
+	for _, t := range ts {
+		if !off[t.Name] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func RenderTunnels(isSelf func(string) bool, ts []config.Tunnel, resolve Resolver) (specs []LinkSpec, errs []error) {
@@ -217,6 +283,7 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		Keepalive: t.Keepalive,
 		PeerKey:   t.PeerKey,
 		Userspace: ki.Userspace,
+		RateMbit:  t.RateMbit,
 	}
 	if parent != nil {
 		s.Parent = parent.Name
@@ -244,7 +311,14 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 	if t.Kind == config.KindObfs {
 		overhead += t.Padding
 	}
-	if t.Encrypt != "" {
+	if t.Kind == config.KindTCP && t.Encrypt != "" {
+		// The TCP transport seals its own frames; no IPsec underneath.
+		if _, err := config.LookupCipher(t.Encrypt); err != nil {
+			return nil, err
+		}
+		s.Cipher = t.Encrypt
+		overhead += config.TCPTagOverhead
+	} else if t.Encrypt != "" {
 		if ki.Encrypted {
 			return nil, fmt.Errorf("%s is already encrypted; IPsec is not needed", t.Kind)
 		}
@@ -284,11 +358,16 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 			return nil, fmt.Errorf("NeoObfs needs a UDP port")
 		}
 		s.Port = t.Port
+	case config.KindTCP:
+		if t.Port == 0 {
+			return nil, fmt.Errorf("a TCP tunnel needs a TCP port")
+		}
+		s.Port = t.Port
 	}
 	if ki.PortEncap {
 		s.Port = t.Port
 	}
-	if ki.Encrypted && t.Secret == "" {
+	if (ki.Encrypted || ki.NeedsPeer) && t.Secret == "" {
 		return nil, fmt.Errorf("no secret: re-create the tunnel")
 	}
 	for _, n := range []string{t.Net4, t.Net6} {
@@ -302,4 +381,24 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		s.Addrs = append(s.Addrs, p)
 	}
 	return s, nil
+}
+
+// activeForwards drops the forwards of tunnels that are turned off, which
+// are down on purpose rather than broken.
+func activeForwards(ts []config.Tunnel, fs []config.Forward) []config.Forward {
+	on := map[string]bool{}
+	for _, t := range Active(ts) {
+		on[t.Name] = true
+	}
+	out := fs[:0:0]
+	for _, f := range fs {
+		known := false
+		for _, t := range ts {
+			known = known || t.Name == f.Tunnel
+		}
+		if on[f.Tunnel] || !known {
+			out = append(out, f)
+		}
+	}
+	return out
 }

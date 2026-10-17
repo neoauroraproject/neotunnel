@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/netip"
+	"sync"
 	"time"
 
 	"neotunnel/internal/config"
@@ -12,34 +13,110 @@ import (
 	"neotunnel/internal/obfs"
 	"neotunnel/internal/pmtu"
 	"neotunnel/internal/relay"
+	"neotunnel/internal/tcptun"
 	"neotunnel/internal/traffic"
 )
 
-// dataPlane is the daemon's engine.Userspace: NeoObfs tunnels and PROXY
-// protocol relays.
+// dataPlane is the daemon's engine.Userspace: NeoObfs and TCP tunnels and
+// PROXY protocol relays.
 type dataPlane struct {
 	obfs  *obfs.Manager
+	tcp   *tcptun.Manager
 	relay *relay.Manager
+
+	benchMu sync.Mutex
+	bench   map[string]closer // temporary tunnels of speed tests
 }
 
-func newDataPlane() *dataPlane { return &dataPlane{obfs: obfs.NewManager(), relay: relay.NewManager()} }
+type closer interface{ Close() }
+
+func newDataPlane() *dataPlane {
+	return &dataPlane{obfs: obfs.NewManager(), tcp: tcptun.NewManager(), relay: relay.NewManager(), bench: map[string]closer{}}
+}
+
+// keepalive turns a spec's setting (0 default, -1 off) into a duration.
+func keepalive(s engine.LinkSpec, def time.Duration) time.Duration {
+	switch {
+	case s.Keepalive == 0:
+		return def
+	case s.Keepalive < 0:
+		return 0
+	}
+	return time.Duration(s.Keepalive) * time.Second
+}
+
+func obfsConfig(s engine.LinkSpec) obfs.Config {
+	return obfs.Config{
+		Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
+		Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
+		Padding: s.Padding, Keepalive: keepalive(s, 25*time.Second),
+	}
+}
+
+func tcpConfig(s engine.LinkSpec) tcptun.Config {
+	return tcptun.Config{
+		Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
+		Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
+		Cipher: s.Cipher, Keepalive: keepalive(s, 15*time.Second),
+	}
+}
 
 func (d *dataPlane) SyncLinks(specs []engine.LinkSpec) []error {
-	cfgs := make([]obfs.Config, 0, len(specs))
+	var oc []obfs.Config
+	var tc []tcptun.Config
 	for _, s := range specs {
-		ka := time.Duration(s.Keepalive) * time.Second
-		if s.Keepalive == 0 {
-			ka = 25 * time.Second
-		} else if s.Keepalive < 0 {
-			ka = 0
+		switch s.Kind {
+		case config.KindTCP:
+			tc = append(tc, tcpConfig(s))
+		default:
+			oc = append(oc, obfsConfig(s))
 		}
-		cfgs = append(cfgs, obfs.Config{
-			Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
-			Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
-			Padding: s.Padding, Keepalive: ka,
-		})
 	}
-	return d.obfs.Sync(cfgs)
+	return append(d.obfs.Sync(oc), d.tcp.Sync(tc)...)
+}
+
+func (d *dataPlane) StartBench(s engine.LinkSpec, expiry time.Time) error {
+	d.StopBench([]string{s.Name})
+	var l closer
+	var err error
+	if s.Kind == config.KindTCP {
+		l, err = tcptun.Start(tcpConfig(s))
+	} else {
+		l, err = obfs.Start(obfsConfig(s))
+	}
+	if err != nil {
+		return err
+	}
+	d.benchMu.Lock()
+	d.bench[s.Name] = l
+	d.benchMu.Unlock()
+	time.AfterFunc(time.Until(expiry), func() {
+		d.benchMu.Lock()
+		cur := d.bench[s.Name]
+		if cur == l {
+			delete(d.bench, s.Name)
+		}
+		d.benchMu.Unlock()
+		if cur == l {
+			l.Close()
+		}
+	})
+	return nil
+}
+
+func (d *dataPlane) StopBench(names []string) {
+	d.benchMu.Lock()
+	var stop []closer
+	for _, n := range names {
+		if l, ok := d.bench[n]; ok {
+			stop = append(stop, l)
+			delete(d.bench, n)
+		}
+	}
+	d.benchMu.Unlock()
+	for _, l := range stop {
+		l.Close()
+	}
 }
 
 func (d *dataPlane) SyncRelays(specs []relay.Spec) []error { return d.relay.Sync(specs) }
@@ -47,6 +124,8 @@ func (d *dataPlane) SyncRelays(specs []relay.Spec) []error { return d.relay.Sync
 func (d *dataPlane) Close() {
 	d.relay.Close()
 	d.obfs.Close()
+	d.tcp.Close()
+	d.StopBench(d.benchNames())
 }
 
 const (
@@ -57,7 +136,7 @@ const (
 )
 
 // account samples tunnel counters into the traffic store until ctx ends.
-func account(ctx context.Context, store *traffic.Store) {
+func account(ctx context.Context, store *traffic.Store, changed func()) {
 	t := time.NewTicker(sampleEvery)
 	defer t.Stop()
 	lastSave := time.Now()
@@ -88,6 +167,7 @@ func account(ctx context.Context, store *traffic.Store) {
 				}
 			}
 			store.Keep(names, now)
+			enforceQuotas(ts, store, now, changed)
 		}
 		if nic := engine.PublicIface(); nic != "" {
 			if ls := engine.State(nic); ls.Exists {
@@ -154,4 +234,48 @@ func probeMTUs(ctx context.Context, changed func()) {
 
 func counters(ls engine.LinkState) traffic.Pair {
 	return traffic.Pair{Rx: ls.RxBytes, Tx: ls.TxBytes, RxP: ls.RxPkts, TxP: ls.TxPkts}
+}
+
+// enforceQuotas takes down the tunnels that used their monthly quota and
+// brings them back when the month (or the quota) changes.
+func enforceQuotas(ts []config.Tunnel, store *traffic.Store, now time.Time, changed func()) {
+	var sums map[string]traffic.Summary
+	over := map[string]bool{}
+	for _, t := range ts {
+		if t.QuotaGB <= 0 {
+			continue
+		}
+		if sums == nil {
+			sums = store.Summaries(now)
+		}
+		m := sums[t.Name].Month
+		if float64(m.Rx+m.Tx) >= t.QuotaGB*(1<<30) { // the panel's GB
+			over[t.Name] = true
+		}
+	}
+	diff := false
+	for _, t := range ts {
+		if over[t.Name] != engine.Blocked(t.Name) {
+			diff = true
+			if over[t.Name] {
+				log.Printf("tunnel %s: monthly quota of %g GB used; down until next month", t.Name, t.QuotaGB)
+			} else if t.QuotaGB > 0 || engine.Blocked(t.Name) {
+				log.Printf("tunnel %s: back up, quota available", t.Name)
+			}
+		}
+	}
+	if diff {
+		engine.SetBlocked(over)
+		changed()
+	}
+}
+
+func (d *dataPlane) benchNames() []string {
+	d.benchMu.Lock()
+	defer d.benchMu.Unlock()
+	var out []string
+	for n := range d.bench {
+		out = append(out, n)
+	}
+	return out
 }

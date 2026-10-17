@@ -47,7 +47,7 @@ func (l *Live) Overview() (Overview, error) {
 	}
 	ov := Overview{
 		Node: NodeInfo{
-			Name: st.Self, Address: st.Address, Version: version.Version, Arch: version.Arch(),
+			Name: st.Self, Address: st.Address, Address6: engine.PublicIPv6(), Version: version.Version, Arch: version.Arch(),
 			Key: identity.Fingerprint(l.ID.PublicString()),
 		},
 		Revision: st.Revision,
@@ -108,6 +108,7 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 		v := TunnelView{
 			Name: t.Name, Kind: string(t.Kind), Mode: t.Mode, Over: t.Over, Carrier: carriers[t.Name],
 			Peer: far.Node, FarIP: far.Endpoint, Port: t.Port,
+			Limits: manage.LimitsOf(t), Blocked: engine.Blocked(t.Name),
 		}
 		if ki, err := config.LookupKind(t.Kind); err == nil {
 			v.Layer = ki.Layer
@@ -203,7 +204,7 @@ func peerViews(st *config.State) []PeerView {
 	out := []PeerView{}
 	for _, p := range st.Peers {
 		v := PeerView{
-			Name: p.Name, Address: p.Address, Paired: p.Paired(),
+			Name: p.Name, Address: p.Address, Address6: p.Address6, Paired: p.Paired(),
 			InSync: p.Paired() && p.AppliedRevision == st.Revision, Applied: p.AppliedRevision,
 			Version: p.Version, Arch: p.Arch,
 		}
@@ -334,6 +335,14 @@ func (l *Live) UpdateTunnel(name string, set manage.Settings, port uint16) (mana
 	return manage.UpdateTunnel(name, set, port)
 }
 
+func (l *Live) SetLimits(name string, lim manage.Limits) (manage.Change, error) {
+	ch, err := manage.SetLimits(name, lim)
+	if err == nil && l.Reconcile != nil {
+		l.Reconcile()
+	}
+	return ch, err
+}
+
 func (l *Live) RemoveTunnel(name string) (manage.Change, error) {
 	_, ch, err := manage.RemoveTunnel(name)
 	return ch, err
@@ -426,7 +435,7 @@ func (l *Live) TestTunnel(ctx context.Context, name string, progress func(string
 	return []bench.Result{r}, nil
 }
 
-func (l *Live) Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64)) ([]bench.Result, error) {
+func (l *Live) Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error) {
 	st, err := manage.Node()
 	if err != nil {
 		return nil, err
@@ -448,21 +457,37 @@ func (l *Live) Bench(ctx context.Context, peer string, only []string, progress f
 	o := bench.DefaultOptions()
 	o.Live = live
 	r := &bench.Runner{ID: l.ID, State: st, Peer: *p, Opts: o, Progress: progress}
+	var cands []bench.Candidate
+	for _, c := range bench.Candidates(st.Self, p.Name, st.Address, p.Address) {
+		if len(want) == 0 || want[c.Name] {
+			cands = append(cands, c)
+		}
+	}
+	// Show every candidate as pending right away; the direct path goes first
+	// as the reference.
+	if partial != nil {
+		for _, c := range cands {
+			partial(bench.Result{Name: c.Name, Title: c.Title, Mode: c.Mode, Port: c.Port, Status: bench.StatusPending})
+		}
+	}
 	var results []bench.Result
 	if len(want) == 0 || want["direct"] {
-		results = append(results, r.Baseline(ctx))
-	}
-	for _, c := range bench.Candidates(st.Self, p.Name, st.Address, p.Address) {
-		if len(want) > 0 && !want[c.Name] {
-			continue
+		if partial != nil {
+			partial(bench.Result{Name: "direct", Title: "Direct (no tunnel)", Status: bench.StatusMeasuring})
 		}
-		if ctx.Err() != nil {
-			return results, ctx.Err()
+		d := r.Baseline(ctx)
+		d.Status = bench.StatusDone
+		if d.Err != "" {
+			d.Status = bench.StatusFailed
 		}
-		results = append(results, r.Run(ctx, c))
+		if partial != nil {
+			partial(d)
+		}
+		results = append(results, d)
 	}
+	results = append(results, r.Compare(ctx, cands, partial)...)
 	bench.Rank(results)
-	return results, nil
+	return results, ctx.Err()
 }
 
 // ProbeMTU measures the path under a tunnel's stack, remembers the result
@@ -574,7 +599,9 @@ func stackOverhead(ts []config.Tunnel, stack []string, under6, avgPad bool) int 
 				o += t.Padding
 			}
 		}
-		if t.Encrypt != "" {
+		if t.Encrypt != "" && t.Kind == config.KindTCP {
+			o += config.TCPTagOverhead
+		} else if t.Encrypt != "" {
 			o += config.ESPOverhead
 		}
 	}
@@ -585,4 +612,54 @@ func stackOverhead(ts []config.Tunnel, stack []string, under6, avgPad bool) int 
 // encapsulation included: payload plus the per-packet overhead.
 func wire(p traffic.Pair, overhead int) uint64 {
 	return p.Rx + p.Tx + (p.RxP+p.TxP)*uint64(overhead)
+}
+
+// Check tells within seconds whether a tunnel would connect, before it is
+// created: the same stack is brought up on both ends under temporary names
+// and probed. With all set it checks every kind at once instead.
+func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all bool) ([]bench.Result, error) {
+	st, err := manage.Node()
+	if err != nil {
+		return nil, err
+	}
+	if req.Peer == "" {
+		return nil, fmt.Errorf("a quick check needs NeoTunnel on the far end")
+	}
+	p, ok := st.Peer(req.Peer)
+	if !ok {
+		return nil, fmt.Errorf("unknown server %q", req.Peer)
+	}
+	if !p.Paired() {
+		return nil, fmt.Errorf("server %s is not connected yet", req.Peer)
+	}
+	r := &bench.Runner{ID: l.ID, State: st, Peer: *p, Opts: bench.DefaultOptions(), CheckOnly: true}
+	if all {
+		return r.Compare(ctx, bench.Candidates(st.Self, p.Name, st.Address, p.Address), nil), nil
+	}
+	if req.Obfs || req.Mode == "obfs" {
+		// NeoObfs runs in the daemon, not as a temporary kernel tunnel.
+		return []bench.Result{{Name: "check", Mode: req.Mode, Status: "skipped",
+			Err: "NeoObfs is checked once created: use the tunnel's speed test"}}, nil
+	}
+	req.Name, req.Forward = "nwz", ""
+	_, defs, err := manage.PlanTunnel(st, req)
+	if err != nil {
+		return nil, err
+	}
+	for i := range defs {
+		t := &defs[i]
+		ki, _ := config.LookupKind(t.Kind)
+		if ki.Carry4 {
+			t.Net4 = fmt.Sprintf("10.79.%d.0/30", i+1)
+		}
+		if ki.Carry6 {
+			t.Net6 = fmt.Sprintf("fd4e:5700:%x::/64", i+1)
+		}
+		t.Key, t.VNI = 0x4e570000+uint32(i), 0x4e5700+uint32(i)
+		if t.NeedsSecret() && t.Secret == "" {
+			t.Secret = config.NewSecret()
+		}
+	}
+	c := bench.Candidate{Name: "check", Title: req.Mode, Mode: req.Mode, Port: defs[0].Port, Tunnels: defs}
+	return r.Compare(ctx, []bench.Candidate{c}, nil), nil
 }

@@ -13,7 +13,7 @@ import (
 
 func tunnelCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "tunnel", Short: "Add, list and remove tunnels"}
-	cmd.AddCommand(tunnelAddCmd(), tunnelSetCmd(), tunnelListCmd(), tunnelRemoveCmd(), kindsCmd())
+	cmd.AddCommand(tunnelAddCmd(), tunnelSetCmd(), tunnelLimitCmd(), tunnelPowerCmd(true), tunnelPowerCmd(false), tunnelListCmd(), tunnelRemoveCmd(), kindsCmd())
 	return cmd
 }
 
@@ -123,6 +123,15 @@ func printTunnel(st *config.State, t config.Tunnel) {
 	}
 	if t.Port != 0 {
 		extra += dim(fmt.Sprintf(" udp/%d", t.Port))
+	}
+	if t.Disabled {
+		extra += dim(" (disabled)")
+	}
+	if t.RateMbit > 0 {
+		extra += dim(fmt.Sprintf(" ≤%d Mbit/s", t.RateMbit))
+	}
+	if t.QuotaGB > 0 {
+		extra += dim(fmt.Sprintf(" quota %g GB/month", t.QuotaGB))
 	}
 	if st.Managed != nil {
 		if _, local := st.Tunnel(t.Name); !local {

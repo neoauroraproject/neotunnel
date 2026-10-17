@@ -33,7 +33,7 @@ type Options struct {
 }
 
 func DefaultOptions() Options {
-	return Options{Pings: 100, Interval: 20 * time.Millisecond, Duration: 5 * time.Second, Streams: 4}
+	return Options{Pings: 60, Interval: 15 * time.Millisecond, Duration: 4 * time.Second, Streams: 4}
 }
 
 type Result struct {
@@ -45,6 +45,8 @@ type Result struct {
 	Latency  probe.LatencyResult
 	Up, Down float64 // bits/s
 	Err      string
+	// Status is where a comparison is with this candidate (see Compare).
+	Status string
 }
 
 // MarshalJSON flattens durations to milliseconds for the panel.
@@ -63,8 +65,9 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		Up       float64 `json:"up_bps"`
 		Down     float64 `json:"down_bps"`
 		Err      string  `json:"error,omitempty"`
+		Status   string  `json:"status,omitempty"`
 	}{r.Name, r.Title, r.Mode, r.Port, r.MTU, ms(r.Latency.Avg), ms(r.Latency.Jitter), ms(r.Latency.Min), ms(r.Latency.Max),
-		r.Latency.Loss(), r.Up, r.Down, r.Err})
+		r.Latency.Loss(), r.Up, r.Down, r.Err, r.Status})
 }
 
 // Score ranks by the slower direction, discounting loss.
@@ -85,7 +88,8 @@ type Candidate struct {
 	Tunnels []config.Tunnel
 }
 
-// BenchPort is the UDP port used to test tunnels wrapped in UDP.
+// BenchPort is the port used to test tunnels wrapped in UDP (and, +3, the
+// TCP transport).
 const BenchPort = 40417
 
 // Candidates returns the tests for an IPv4 underlay between self and peer.
@@ -120,6 +124,10 @@ func Candidates(self, peer string, selfAddr, peerAddr string) []Candidate {
 		{"gretap", "GRETAP (L2)", "gretap", 0, []config.Tunnel{mk("gretap", config.KindGRETAP, "", 0)}},
 		{"vxlan", "VXLAN (L2)", "vxlan", 0, []config.Tunnel{mk("vxlan", config.KindVXLAN, "", 0)}},
 		{"geneve", "GENEVE (L2)", "geneve", 0, []config.Tunnel{mk("geneve", config.KindGENEVE, "", 0)}},
+		{"wireguard", "WireGuard", "wireguard", BenchPort + 1, []config.Tunnel{secret(mk("wg", config.KindWireGuard, "", BenchPort+1))}},
+		{"l2tpv3", "L2TPv3 (L2)", "l2tpv3", 0, []config.Tunnel{mk("l2tp", config.KindL2TPv3, "", 0)}},
+		{"l2tpv3-udp", fmt.Sprintf("L2TPv3 on UDP %d", BenchPort+2), "l2tpv3", BenchPort + 2, []config.Tunnel{mk("l2tpu", config.KindL2TPv3, "", BenchPort+2)}},
+		{"tcp", fmt.Sprintf("TCP %d", BenchPort+3), "tcp", BenchPort + 3, []config.Tunnel{secret(mk("tcp", config.KindTCP, "", BenchPort+3))}},
 	}
 }
 
@@ -133,6 +141,9 @@ type Runner struct {
 	token  probe.Token
 	// Progress receives human-readable step updates.
 	Progress func(string)
+	// CheckOnly stops after the connectivity check: a few seconds per
+	// candidate, for the tunnel wizard.
+	CheckOnly bool
 }
 
 func (r *Runner) say(f string, a ...any) {
@@ -266,6 +277,10 @@ func (r *Runner) Run(ctx context.Context, c Candidate) Result {
 		}
 		return res
 	}
+	if needsDaemon(c) {
+		res.Err = "skipped: " + engine.ErrNeedsDaemon.Error()
+		return res
+	}
 
 	up, err := r.client.BenchUp(ctx, agent.BenchUpRequest{Self: r.Peer.Name, Tunnels: c.Tunnels, TTL: 600})
 	var peerNames []string
@@ -353,7 +368,11 @@ func Table(rs []Result) string {
 	fmt.Fprintf(&b, "%-22s %6s %9s %9s %6s %13s %13s\n", "TUNNEL", "MTU", "PING", "JITTER", "LOSS", "UPLOAD", "DOWNLOAD")
 	for _, r := range rs {
 		if r.Err != "" {
-			fmt.Fprintf(&b, "%-22s  failed: %s\n", r.Title, r.Err)
+			what := "failed"
+			if r.Status == StatusSkipped {
+				what = "skipped"
+			}
+			fmt.Fprintf(&b, "%-22s  %s: %s\n", r.Title, what, strings.TrimPrefix(r.Err, "skipped: "))
 			continue
 		}
 		mtu := "-"
@@ -385,4 +404,24 @@ func (r *Runner) MeasureTunnel(ctx context.Context, tunnel string, addr netip.Ad
 		}
 	}
 	return lat, up, down, err
+}
+
+// secret gives a temporary tunnel the key material its kind needs.
+func secret(t config.Tunnel) config.Tunnel {
+	t.Secret = config.NewSecret()
+	return t
+}
+
+// needsDaemon reports whether a candidate has user-space layers (TCP,
+// NeoObfs) that only the daemon's data plane can bring up.
+func needsDaemon(c Candidate) bool {
+	if engine.InDaemon() {
+		return false
+	}
+	for _, t := range c.Tunnels {
+		if ki, err := config.LookupKind(t.Kind); err == nil && ki.Userspace {
+			return true
+		}
+	}
+	return false
 }

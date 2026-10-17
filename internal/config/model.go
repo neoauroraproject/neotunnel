@@ -85,8 +85,11 @@ type Peer struct {
 	EnrollToken   string    `json:"enroll_token,omitempty"`
 	EnrollExpires time.Time `json:"enroll_expires,omitempty"`
 
-	Version         string    `json:"version,omitempty"`
-	Arch            string    `json:"arch,omitempty"`
+	Version string `json:"version,omitempty"`
+	Arch    string `json:"arch,omitempty"`
+	// Address6 is the peer's public IPv6, as it reports it, for tunnels over
+	// an IPv6 underlay.
+	Address6        string    `json:"address6,omitempty"`
 	AppliedRevision uint64    `json:"applied_revision,omitempty"`
 	LastSeen        time.Time `json:"last_seen,omitempty"`
 }
@@ -140,6 +143,17 @@ type Tunnel struct {
 
 	// Mode labels the user-facing tunnel of a stack (e.g. "6to4").
 	Mode string `json:"mode,omitempty"`
+
+	// Disabled keeps the tunnel defined but down, with every tunnel under it
+	// that nothing else uses.
+	Disabled bool `json:"disabled,omitempty"`
+	// RateMbit caps what each side sends into the tunnel (0 = no limit), so
+	// both directions are limited.
+	RateMbit int `json:"rate_mbit,omitempty"`
+	// QuotaGB is a monthly traffic allowance (download + upload): once a
+	// side has counted this much this month, it takes the tunnel down until
+	// the month ends or the quota is raised.
+	QuotaGB float64 `json:"quota_gb,omitempty"`
 }
 
 type Side struct {

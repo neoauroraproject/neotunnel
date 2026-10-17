@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/tun"
 )
 
 // Config describes this node's end of a NeoObfs tunnel.
@@ -68,12 +69,12 @@ func Start(c Config) (*Link, error) {
 	}
 	conn.SetReadBuffer(4 << 20)
 	conn.SetWriteBuffer(4 << 20)
-	tun, err := openTUN(c.Name)
+	tf, err := tun.Open(c.Name)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-	l := &Link{cfg: c, tun: tun, conn: conn, codec: cd, done: make(chan struct{})}
+	l := &Link{cfg: c, tun: tf, conn: conn, codec: cd, done: make(chan struct{})}
 	remote := c.Remote
 	l.peer.Store(&remote)
 	l.wg.Add(2)

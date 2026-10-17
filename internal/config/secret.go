@@ -50,7 +50,7 @@ func NewSecret() string {
 // NeedsSecret reports whether the tunnel derives keys from Secret.
 func (t Tunnel) NeedsSecret() bool {
 	ki, _ := LookupKind(t.Kind)
-	return t.Encrypt != "" || ki.Encrypted
+	return t.Encrypt != "" || ki.Encrypted || ki.NeedsPeer
 }
 
 // DeriveKey expands the tunnel secret into n bytes of key material for

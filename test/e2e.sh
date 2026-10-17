@@ -183,6 +183,27 @@ ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-o1)" >/dev/null || fail "pin
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-q2)" >/dev/null || fail "ping through ipip over NeoObfs"
 pass "NeoObfs carries traffic, and kernel tunnels stack on it"
 
+# 12b. TCP transport (user space): plain and with a stream cipher, a speed
+#      test through it, recovery when the far daemon restarts, and the
+#      panel's check, which brings a temporary TCP tunnel up in both daemons.
+in_hub tunnel add c1 --kind tcp --peer edge --port 8445 >/dev/null || fail "add tcp"
+in_hub tunnel add c2 --kind tcp --peer edge --port 8446 --encrypt chacha20-poly1305 >/dev/null || fail "add encrypted tcp"
+hup 3
+for n in c1 c2; do
+  ip -n $EDGE link show nt-$n >/dev/null 2>&1 || fail "tcp interface nt-$n missing on edge"
+  ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-$n)" >/dev/null || fail "ping through tcp tunnel $n"
+done
+ip netns exec $HUB ss -Htn state established "( sport = :8446 or dport = :8446 )" | grep -q . || fail "no TCP connection on port 8446"
+in_hub test c2 --duration 2s --pings 20 | tee "$WORK/tcptest.txt"
+grep -q "Mbit/s\|Gbit/s" "$WORK/tcptest.txt" || fail "no throughput through the tcp tunnel"
+kill "$(cat "$WORK/edge.pid")"; sleep 0.5
+start_edge
+ok=
+for _ in $(seq 15); do ip netns exec $HUB ping -c 1 -W 1 "$(inner $EDGE nt-c2)" >/dev/null 2>&1 && { ok=1; break; }; done
+[ -n "$ok" ] || fail "tcp tunnel did not reconnect after the edge daemon restarted"
+api -d '{"peer":"edge","mode":"tcp","encrypt":"aes-gcm-128"}' "$base/api/check" | tee "$WORK/tcpcheck.json" | grep -q '"status":"passed"' || { cat "$WORK/tcpcheck.json"; fail "panel check of a tcp tunnel"; }
+pass "TCP transport carries ping and bandwidth, reconnects, and passes the panel check"
+
 # 13. L2TPv3, where the kernel has it.
 if out=$(in_hub tunnel add l1 --kind l2tpv3 --peer edge 2>&1) && ip -n $HUB link show nt-l1 >/dev/null 2>&1; then
   ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-l1)" >/dev/null || fail "ping through l2tpv3"

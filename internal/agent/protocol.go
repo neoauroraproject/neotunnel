@@ -43,6 +43,7 @@ type TunnelStatus struct {
 
 type Status struct {
 	Name     string         `json:"name"`
+	Address6 string         `json:"address6,omitempty"`
 	Version  string         `json:"version"`
 	Arch     string         `json:"arch"`
 	Revision uint64         `json:"revision"`

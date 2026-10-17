@@ -29,6 +29,10 @@ func (stub) CreateTunnel(manage.TunnelRequest) (manage.Change, error)   { return
 func (stub) RemoveTunnel(string) (manage.Change, error)                 { return manage.Change{}, nil }
 func (stub) AddForward(manage.ForwardRequest) (manage.Change, error)    { return manage.Change{}, nil }
 func (stub) UpdateForward(manage.ForwardRequest) (manage.Change, error) { return manage.Change{}, nil }
+func (stub) SetLimits(string, manage.Limits) (manage.Change, error)     { return manage.Change{}, nil }
+
+func (stub) Check(context.Context, manage.TunnelRequest, bool) ([]bench.Result, error) { return nil, nil }
+
 func (stub) UpdateTunnel(string, manage.Settings, uint16) (manage.Change, error) {
 	return manage.Change{}, nil
 }
@@ -47,7 +51,7 @@ func (stub) SetNode(string, string) error                        { return nil }
 func (stub) TestTunnel(context.Context, string, func(string), func(string, float64)) ([]bench.Result, error) {
 	return nil, nil
 }
-func (stub) Bench(context.Context, string, []string, func(string), func(string, float64)) ([]bench.Result, error) {
+func (stub) Bench(context.Context, string, []string, func(string), func(string, float64), func(bench.Result)) ([]bench.Result, error) {
 	return nil, nil
 }
 func (stub) Login(user, pass string) bool        { return user == "admin" && pass == "right-password" }

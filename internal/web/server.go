@@ -37,6 +37,7 @@ type Server struct {
 	sessions map[string]time.Time
 	failures map[string]*failure
 	jobs     *jobs
+	checking sync.Mutex // one quick check at a time
 }
 
 type failure struct {

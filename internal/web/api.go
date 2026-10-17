@@ -98,6 +98,15 @@ func (s *Server) routes(m *http.ServeMux) {
 		ch, err := b.UpdateTunnel(r.PathValue("name"), req.Settings, req.Port)
 		reply(w, ch, err)
 	}))
+	m.HandleFunc("POST /api/tunnels/{name}/limits", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req manage.Limits
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		ch, err := b.SetLimits(r.PathValue("name"), req)
+		reply(w, ch, err)
+	}))
 	m.HandleFunc("POST /api/tunnels/{name}/mtu", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
@@ -173,6 +182,25 @@ func (s *Server) routes(m *http.ServeMux) {
 		reply(w, ch, err)
 	}))
 
+	m.HandleFunc("POST /api/check", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			manage.TunnelRequest
+			All bool `json:"all"`
+		}
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		if s.jobs.running() || !s.checking.TryLock() {
+			fail(w, http.StatusConflict, "یک تست دیگر در حال اجراست؛ چند ثانیه بعد دوباره امتحان کنید")
+			return
+		}
+		defer s.checking.Unlock()
+		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		defer cancel()
+		res, err := b.Check(ctx, req.TunnelRequest, req.All)
+		reply(w, res, err)
+	}))
 	m.HandleFunc("POST /api/jobs", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Kind, Target string
@@ -182,11 +210,11 @@ func (s *Server) routes(m *http.ServeMux) {
 			fail(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		j, err := s.jobs.start(req.Kind, req.Target, func(ctx context.Context, log func(string), live func(string, float64)) ([]bench.Result, error) {
+		j, err := s.jobs.start(req.Kind, req.Target, func(ctx context.Context, log func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error) {
 			if req.Kind == "test" {
 				return b.TestTunnel(ctx, req.Target, log, live)
 			}
-			return b.Bench(ctx, req.Target, req.Only, log, live)
+			return b.Bench(ctx, req.Target, req.Only, log, live, partial)
 		})
 		if err != nil {
 			fail(w, http.StatusConflict, err.Error())

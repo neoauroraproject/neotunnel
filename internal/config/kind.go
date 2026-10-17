@@ -18,6 +18,7 @@ const (
 	KindL2TPv3    Kind = "l2tpv3"    // L2 pseudowire over IP (proto 115) or UDP
 	KindWireGuard Kind = "wireguard" // L3, encrypted, over UDP (kernel)
 	KindObfs      Kind = "obfs"      // L3, encrypted and obfuscated UDP (user space)
+	KindTCP       Kind = "tcp"       // L3 over a TCP connection (user space), optionally encrypted
 )
 
 // KindInfo describes what a tunnel kind carries and costs.
@@ -40,6 +41,8 @@ type KindInfo struct {
 	// UDP encapsulation when a port is set (L2TPv3).
 	UDP       bool
 	PortEncap bool
+	// TCP kinds always run on a TCP port.
+	TCP bool
 	// Encrypted kinds protect their traffic themselves.
 	Encrypted bool
 	// Userspace kinds are served by the daemon's own data plane.
@@ -63,11 +66,20 @@ var kinds = []KindInfo{
 	{Kind: KindL2TPv3, Title: "L2TPv3 (Ethernet pseudowire)", Layer: 2, UnderAny: true, Carry4: true, Carry6: true, Overhead: 38, IPProto: 115, PortEncap: true},
 	{Kind: KindWireGuard, Title: "WireGuard", Layer: 3, UnderAny: true, Carry4: true, Carry6: true, Overhead: 60, UDP: true, Encrypted: true, NeedsPeer: false},
 	{Kind: KindObfs, Title: "NeoObfs (encrypted, obfuscated UDP)", Layer: 3, UnderAny: true, Carry4: true, Carry6: true, Overhead: ObfsOverhead, UDP: true, Encrypted: true, Userspace: true, NeedsPeer: true},
+	{Kind: KindTCP, Title: "TCP (packets over a TCP connection)", Layer: 3, UnderAny: true, Carry4: true, Carry6: true, Overhead: TCPOverhead, TCP: true, Userspace: true, NeedsPeer: true},
 }
 
 // ObfsOverhead is NeoObfs' per-packet cost over IPv4 without padding:
 // IP 20 + UDP 8 + nonce 24 + tag 16 + header 14.
 const ObfsOverhead = 82
+
+// TCPOverhead is the TCP transport's cost per packet over IPv4: IP 20 +
+// TCP 32 (with timestamps) + length 2, shared by the packets of a segment;
+// TCPTagOverhead is added with a cipher.
+const (
+	TCPOverhead    = 54
+	TCPTagOverhead = 16
+)
 
 func Kinds() []KindInfo { return kinds }
 
@@ -81,7 +93,7 @@ func LookupKind(k Kind) (KindInfo, error) {
 }
 
 // CanUsePort reports whether the kind can run on a chosen UDP port.
-func (ki KindInfo) CanUsePort() bool { return ki.UDP || ki.FOU || ki.PortEncap }
+func (ki KindInfo) CanUsePort() bool { return ki.UDP || ki.TCP || ki.FOU || ki.PortEncap }
 
 // IsGRE reports whether the kind carries a GRE key field.
 func (ki KindInfo) IsGRE() bool {

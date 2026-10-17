@@ -1,7 +1,9 @@
 "use strict";
 // NeoTunnel panel. No framework: views are template strings with escaping,
-// events are delegated through data-act / data-bind attributes. While a form
-// is being edited, the 3-second refresh only patches [data-live] values.
+// events are delegated through data-act / data-bind attributes, and each
+// render is patched into the page in place (morph), so only what changed is
+// touched: hover, focus, scroll and running transitions survive the
+// 3-second refresh.
 (() => {
   // ---------- templating ----------
   const RAW = Symbol("raw");
@@ -12,6 +14,62 @@
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const reduceMotion = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------- morph: patch the DOM toward new markup ----------
+  // Nodes are matched by position, or by id / data-key when they have one;
+  // a node whose tag changed is replaced. Form fields keep what the user
+  // typed unless the markup itself changed their value.
+  const tpl = document.createElement("template");
+  function morph(target, markup) {
+    tpl.innerHTML = markup;
+    morphChildren(target, tpl.content);
+  }
+  const keyOf = (n) => (n.nodeType === 1 ? n.id || n.getAttribute("data-key") || "" : "");
+  function morphChildren(from, to) {
+    const want = [...to.childNodes];
+    let cur = from.firstChild;
+    for (const next of want) {
+      const k = keyOf(next);
+      if (k && cur && keyOf(cur) !== k) {
+        // Look ahead for the keyed node and move it here.
+        let m = cur.nextSibling;
+        while (m && keyOf(m) !== k) m = m.nextSibling;
+        if (m) from.insertBefore(m, cur), (cur = m);
+      }
+      if (cur && same(cur, next)) {
+        morphNode(cur, next);
+        cur = cur.nextSibling;
+      } else {
+        from.insertBefore(next.cloneNode(true), cur);
+      }
+    }
+    while (cur) { const n = cur.nextSibling; from.removeChild(cur); cur = n; }
+  }
+  const same = (a, b) => a.nodeType === b.nodeType && a.nodeName === b.nodeName && keyOf(a) === keyOf(b);
+  function morphNode(a, b) {
+    if (a.nodeType !== 1) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return; }
+    for (const { name, value } of [...b.attributes]) {
+      if (a.getAttribute(name) === value) continue;
+      a.setAttribute(name, value);
+      if (name === "value" && "value" in a && a !== document.activeElement) a.value = value;
+      if (name === "checked") a.checked = true;
+      if (name === "open" && a.tagName === "DETAILS") a.open = true;
+    }
+    for (const { name } of [...a.attributes]) {
+      if (b.hasAttribute(name)) continue;
+      a.removeAttribute(name);
+      if (name === "checked") a.checked = false;
+      if (name === "selected") a.selected = false;
+    }
+    if (a.tagName === "SELECT") {
+      morphChildren(a, b);
+      const sel = [...b.options].find((o) => o.hasAttribute("selected"));
+      if (sel && a !== document.activeElement) a.value = sel.value;
+      return;
+    }
+    if (a.tagName === "TEXTAREA") { if (a !== document.activeElement && a.value !== b.value) a.value = b.value; return; }
+    morphChildren(a, b);
+  }
 
   // ---------- icons (stroke, 24px grid) ----------
   const svg = (d, size = 18) => raw(`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`);
@@ -39,6 +97,7 @@
     chev: (s) => svg('<path d="m6 9 6 6 6-6"/>', s),
     ruler: (s) => svg('<path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/>', s),
     upgrade: (s) => svg('<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>', s),
+    power: (s) => svg('<path d="M12 3v8"/><path d="M6.3 6.6a8 8 0 1 0 11.4 0"/>', s),
     download: (s) => svg('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>', s),
     globe: (s) => svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>', s),
   };
@@ -86,6 +145,7 @@
     sit: { t: "SIT", d: "فقط IPv6 روی IPv4. پایه‌ی 6to4؛ تنها وقتی مفید است که فقط IPv6 لازم باشد.", layer: 3, carry: "IPv6", over: 20, crypt: "ندارد (IPsec اختیاری)", mt: "بله، 6to4", best: "شبکه‌ی IPv6 بین دو سرور" },
     wireguard: { t: "WireGuard", d: "تانل رمزنگاری‌شده در خود کرنل (ChaCha20-Poly1305). کلیدها از رمز مشترک تانل ساخته می‌شوند؛ پشت NAT هم کار می‌کند.", layer: 3, carry: "IPv4 و IPv6", over: 60, crypt: "دارد، در کرنل", mt: "بله، RouterOS 7", best: "رمزنگاری سریع، اتصال به میکروتیک", udp: true },
     obfs: { t: "NeoObfs", d: "لایه‌ی رمزنگاری و مبهم‌سازی NeoTunnel: هر بسته داخل UDP با XChaCha20-Poly1305 رمز می‌شود و هیچ بایت ثابتی ندارد، پس شبیه نویز تصادفی است. اندازه‌ی بسته‌ها هم با padding تغییر می‌کند.", layer: 3, carry: "IPv4 و IPv6", over: 82, crypt: "دارد، XChaCha20", mt: "خیر؛ دو طرف NeoTunnel", best: "مسیرهایی که پروتکل‌ها را شناسایی و فیلتر می‌کنند", udp: true },
+    tcp: { t: "TCP", d: "بسته‌های IP پشت سر هم داخل یک اتصال TCP پایدار بین دو سرور می‌روند (در فضای کاربر، با TCP_NODELAY و اتصال دوباره‌ی خودکار). هر دو سر روی پورت گوش می‌دهند، پس اگر TCP فقط در یک جهت باز باشد هم وصل می‌شود. رمزنگاری اختیاری است و کلیدها از رمز مشترک تانل ساخته می‌شوند. هشدار: TCP داخل TCP در مسیرِ با افت بسته خیلی کند می‌شود، چون هر بسته‌ی گم‌شده کل جریان را نگه می‌دارد؛ فقط وقتی سراغش بروید که نه UDP رد می‌شود و نه پروتکل 41 و 47.", layer: 3, carry: "IPv4 و IPv6", over: 54, crypt: "اختیاری، AES-GCM یا ChaCha20 روی جریان", mt: "خیر؛ دو طرف NeoTunnel", best: "آخرین راه: وقتی فقط TCP بین دو سرور رد می‌شود", tcp: true },
     gretap: { t: "GRETAP", d: "لایه ۲ (Ethernet) روی GRE؛ دو سر مثل یک سوییچ مشترک رفتار می‌کنند.", layer: 2, carry: "Ethernet", over: 42, crypt: "ندارد (IPsec اختیاری)", mt: "شبیه EoIP، ولی با آن سازگار نیست", best: "بریج کردن دو شبکه" },
     vxlan: { t: "VXLAN", d: "لایه ۲ روی UDP؛ استاندارد شبکه‌های مجازی دیتاسنتر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "بله، RouterOS 7", best: "لایه ۲ روی مسیری که فقط UDP رد می‌شود", udp: true },
     geneve: { t: "GENEVE", d: "نسل جدیدتر VXLAN با هدر انعطاف‌پذیر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "خیر", best: "لایه ۲ بین سرورهای لینوکسی", udp: true },
@@ -99,6 +159,7 @@
   const BENCH = [
     ["direct", "مسیر مستقیم"], ["6to4", "6to4"], ["6to4-udp", "6to4 روی UDP"], ["6to4-gre", "6to4 + GRE6"],
     ["ipip", "IPIP"], ["gre", "GRE"], ["gretap", "GRETAP"], ["vxlan", "VXLAN"], ["geneve", "GENEVE"],
+    ["wireguard", "WireGuard"], ["l2tpv3", "L2TPv3"], ["l2tpv3-udp", "L2TPv3 روی UDP"], ["tcp", "TCP"],
   ];
   const kindTitle = (t) => { const p = PROTO[t.mode] || PROTO[t.kind]; return p ? p.t : (t.mode || t.kind).toUpperCase(); };
   const cipherTitle = (c) => ({ "aes-gcm-128": "AES-128-GCM", "aes-gcm-256": "AES-256-GCM", "chacha20-poly1305": "ChaCha20", wireguard: "WireGuard", "xchacha20-poly1305": "XChaCha20" }[c] || c);
@@ -112,7 +173,7 @@
     modal: null, wiz: null, form: {}, drawer: null,
     open: null, tset: {}, edit: false, fwdEdit: {},
     sec: store("nt-settings") || "node", defs: null,
-    jobs: [], job: null, pv: {}, prates: {}, hist: [], cat: "tunnels", speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
+    jobs: [], job: null, pv: {}, upgrading: {}, prates: {}, dtab: {}, speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
   };
   document.documentElement.dataset.theme = S.theme;
 
@@ -136,7 +197,7 @@
     el.setAttribute("role", kind === "ok" ? "status" : "alert");
     el.innerHTML = part(html`${kind === "ok" ? I.check() : I.alert()}<div>${msg}</div>`);
     $("#toasts").appendChild(el);
-    setTimeout(() => el.remove(), kind === "ok" ? 3500 : 8000);
+    setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 180); }, kind === "ok" ? 3500 : 8000);
   }
 
   async function copy(text) {
@@ -164,10 +225,6 @@
           const p = pf[fwdKey(f)];
           if (p && dt > 0 && f.rx >= p.rx && f.tx >= p.tx) S.prates[fwdKey(f)] = { rx: ((f.rx - p.rx) * 8) / dt, tx: ((f.tx - p.tx) * 8) / dt };
         }
-        // A short history of the live total, for the orb's waveform crown.
-        const tr = [...ov.tunnels].filter((t) => !t.carrier).reduce((a, t) => a + (S.rates[t.name] ? S.rates[t.name].rx + S.rates[t.name].tx : 0), 0);
-        S.hist.push(tr);
-        if (S.hist.length > 64) S.hist.shift();
       }
       S.ov = ov; S.live = true; S.authed = true;
     } catch {
@@ -189,6 +246,8 @@
   const total = () => visible().reduce((a, t) => ({ rx: a.rx + rate(t.name).rx, tx: a.tx + rate(t.name).tx }), { rx: 0, tx: 0 });
   const peer = (name) => S.ov && S.ov.peers.find((p) => p.name === name);
   const status = (t) => {
+    if (t.limits && t.limits.disabled) return ["off", "خاموش"];
+    if (t.blocked) return ["warn", "حجم ماهانه تمام شد"];
     if (t.error) return ["bad", "خطا"];
     const p = t.peer && peer(t.peer);
     if (p && !p.paired) return ["warn", "منتظر سرور مقصد"];
@@ -215,6 +274,11 @@
       case "tx": return fmtRate(r.tx);
       case "today": return t ? fmtBytes(t.today.rx + t.today.tx) : "-";
       case "total-rate": { const x = total(); return fmtRate(x.rx + x.tx); }
+      case "total-num": { const x = total(); return splitRate(x.rx + x.tx)[0]; }
+      case "total-unit": { const x = total(); return splitRate(x.rx + x.tx)[1]; }
+      case "total-rx": return fmtRate(total().rx);
+      case "total-tx": return fmtRate(total().tx);
+      case "sum": { const x = rate(name); return x.rx + x.tx > 800 ? fmtRate(x.rx + x.tx) : ""; }
     }
     return null;
   }
@@ -234,11 +298,9 @@
 
   function draw() {
     const app = $("#app");
-    if (!S.authed) { app.innerHTML = part(viewLogin()); const u = $("#login-user"); if (u) u.focus(); return; }
-    if (!S.ov) { app.innerHTML = part(html`<div class="login-wrap"><div class="muted">در حال بارگذاری…</div></div>`); return; }
-    const y = window.scrollY;
-    app.innerHTML = part(viewShell());
-    window.scrollTo(0, y);
+    if (!S.authed) { const first = !$("#login-user"); morph(app, part(viewLogin())); const u = $("#login-user"); if (u && first) u.focus(); return; }
+    if (!S.ov) { morph(app, part(html`<div class="login-wrap"><div class="muted">در حال بارگذاری…</div></div>`)); return; }
+    morph(app, part(viewShell()));
     drawModal();
     wireCharts();
   }
@@ -274,7 +336,7 @@
           </div>
         </div>
       </aside>
-      <main class="main">
+      <main class="main" data-key="page-${S.route}">
         ${S.route === "dashboard" ? "" : html`<div class="head"><div><h1>${title}</h1><div class="sub">${sub}</div></div>
           <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط با سرور"}</span>${tools}</div></div>`}
         ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:16px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => html`<div class="mono">${e}</div>`)}</div>` : ""}
@@ -296,41 +358,44 @@
     return ["", "", add];
   }
 
-  // ---------- dashboard: the orbit ----------
-  // One live scene: this server is a glowing core with a crown made of its
-  // recent traffic; a column of categories sits beside it; the chosen
-  // category fans out to an arc of real items (tunnels, servers or ports),
-  // each line and particle sized by that item's real throughput.
+  // ---------- dashboard: the instrument ----------
+  // A schematic of what is real: this server on one side, each destination
+  // on the other, every tunnel a straight bus between them carrying its live
+  // rate and ping, and each forwarded port a tick on this server's edge.
+  // Monochrome; amber marks only what is moving right now.
   function viewDashboard() {
-    const ov = S.ov, ts = visible(), up = ts.filter((t) => t.up).length;
-    const mem = ov.node.mem_total ? (ov.node.mem_used / ov.node.mem_total) * 100 : 0;
+    const ov = S.ov, ts = visible(), tr = total();
     const load = ov.node.cpus ? (ov.node.load[0] / ov.node.cpus) * 100 : 0;
-    const series = totalSeries();
+    const mem = ov.node.mem_total ? (ov.node.mem_used / ov.node.mem_total) * 100 : 0;
     const [tv, tu] = splitBytes(sumToday()), [mv, mu] = splitBytes(sumMonth());
     const nic = ov.node.nic ? ov.node.nic_month.rx + ov.node.nic_month.tx : 0;
-    return html`<div class="head">
-        <div><h1 class="greet">${greeting()}${ov.node.name ? html`<span class="greet-who">، ${ov.node.name}</span>` : ""}</h1>
-          <div class="sub"><span class="ltr faint">${ov.node.address || ""}</span>${ov.master ? html` · مدیریت از ${ov.master.name}` : ""}</div></div>
+    const ok = healthy(), bad = ts.length - ok;
+    const [rv, ru] = splitRate(tr.rx + tr.tx);
+    return html`<div class="dash">
+      <header class="dash-head">
+        <div class="id"><span class="mono up">${ov.node.name}</span><span class="mono faint">${ov.node.address || ""}</span>
+          <span class="faint">روشن ${fmtUptime(ov.node.uptime_s)}</span>${ov.master ? html`<span class="faint">مدیریت از ${ov.master.name}</span>` : ""}</div>
         <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط"}</span><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>
-      </div>
-      <div class="orbit-wrap">${orbit()}</div>
-      <div class="orbit-list stack">${orbitList()}</div>
-      <div class="kpis">
-        <div class="kpi"><div class="k">ترافیک کاربران امروز</div><div class="v">${tv}<small>${tu}</small></div>${spark(series)}<div class="f">۲۴ ساعت گذشته، هر نقطه ۵ دقیقه</div></div>
-        <div class="kpi"><div class="k">این ماه</div><div class="v">${mv}<small>${mu}</small></div>
-          <div class="f">مجموع همه‌ی تانل‌ها، با وجود ری‌استارت و ریبوت</div>
-          ${nic ? html`<div class="f">ترافیک کارت شبکه (محاسبه‌ی دیتاسنتر): <b class="ltr">${fmtBytes(nic)}</b></div>` : ""}</div>
-        <div class="kpi"><div class="k">تانل‌های سالم</div><div class="v">${healthy()}<small>از ${ts.length}</small></div>
-          <div class="f">${ts.length ? (healthy() === ts.length ? "ترافیک همه رد می‌شود" : `${ts.length - healthy()} تانل بررسی لازم دارد`) : "هنوز تانلی ساخته نشده"}</div>
-          <div class="f">${ov.peers.filter((p) => p.paired).length} سرور متصل از ${ov.peers.length}</div></div>
-        <div class="kpi"><div class="k">منابع سرور</div><div class="v">${ov.node.load[0].toFixed(2)}<small>بار روی ${ov.node.cpus} هسته</small></div>
-          <div class="meter" title="بار پردازنده"><b class="${load > 90 ? "bad" : load > 70 ? "warn" : ""}" style="width:${Math.min(100, load).toFixed(0)}%"></b></div>
-          <div class="f">حافظه ${fmtBytes(ov.node.mem_used)} از ${fmtBytes(ov.node.mem_total)} (${mem.toFixed(0)}٪)</div></div>
-      </div>
-      ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:20px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}`;
+      </header>
+      <section class="readouts">
+        <div class="ro main"><span class="k">ترافیک لحظه‌ای</span><span class="v mono"><b data-live="total-num">${rv}</b><small data-live="total-unit">${ru}</small></span>
+          <span class="f mono ltr"><i class="rx">↓</i> <span data-live="total-rx">${fmtRate(tr.rx)}</span>  <i class="tx">↑</i> <span data-live="total-tx">${fmtRate(tr.tx)}</span></span></div>
+        <div class="ro"><span class="k">امروز</span><span class="v mono"><b>${tv}</b><small>${tu}</small></span><span class="f">ترافیک کاربران، بدون تست‌ها</span></div>
+        <div class="ro"><span class="k">این ماه</span><span class="v mono"><b>${mv}</b><small>${mu}</small></span><span class="f">${nic ? html`کارت شبکه <span class="mono">${fmtBytes(nic)}</span>` : "مجموع همه‌ی تانل‌ها"}</span></div>
+        <div class="ro"><span class="k">تانل‌ها</span><span class="v mono"><b class="${bad ? "warn" : ""}">${ok}</b><small>/ ${ts.length}</small></span><span class="f">${!ts.length ? "هنوز تانلی نیست" : bad ? `${bad} تانل بررسی لازم دارد` : "ترافیک همه رد می‌شود"}</span></div>
+        <div class="ro"><span class="k">سرور</span><span class="v mono"><b class="${load > 90 ? "bad" : load > 70 ? "warn" : ""}">${load.toFixed(0)}</b><small>% CPU</small></span>
+          <span class="bar"><i style="transform:scaleX(${(Math.min(100, load) / 100).toFixed(3)})"></i></span><span class="f">حافظه <span class="mono">${mem.toFixed(0)}%</span> از ${fmtBytes(ov.node.mem_total)}</span></div>
+      </section>
+      <section class="scheme">${scheme()}</section>
+      <section class="dash-grid">
+        <div class="panel"><header><h2>۲۴ ساعت گذشته</h2><span class="aside">همه‌ی تانل‌ها، هر نقطه ۵ دقیقه</span></header><div class="in">${chart("dash", totalPairs())}</div></div>
+        <div class="panel"><header><h2>تانل‌ها</h2><a class="aside" href="#/tunnels">همه</a></header>${tunnelTable(ts)}</div>
+      </section>
+      ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:16px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}
+    </div>`;
   }
 
-  const healthy = () => visible().filter((t) => { const h = t.health; return t.up && (!h || h.passes); }).length;
+  const healthy = () => visible().filter((t) => { const h = t.health; return t.up && (!h || h.passes) && !(t.limits && t.limits.disabled); }).length;
 
   // The health of a tunnel, from real probes when available.
   function tunHealth(t) {
@@ -341,7 +406,7 @@
     return "ok";
   }
 
-  // Destinations: one node per peer or far address; each tunnel is a curve.
+  // Destinations: one per peer or far address, with their tunnels.
   function destinations() {
     const ov = S.ov, groups = new Map();
     for (const t of visible()) {
@@ -351,165 +416,109 @@
     }
     for (const p of ov.peers) {
       if (!groups.has(p.name)) groups.set(p.name, { key: p.name, name: p.name, ip: p.address, tunnels: [], paired: p.paired });
-      const g = groups.get(p.name); g.paired = p.paired; g.ip = p.address;
+      const g = groups.get(p.name); g.paired = p.paired; g.ip = p.address; g.version = p.version;
     }
     if (ov.master && !groups.size) groups.set(ov.master.name, { key: ov.master.name, name: ov.master.name, ip: ov.master.address.replace(/:\d+$/, ""), tunnels: [], paired: ov.master.paired });
     return [...groups.values()];
   }
 
-  // The items on the arc for each category, each already carrying a name, a
-  // sub-line, a status, a live rate and (for tunnels) a health chip.
-  function arcItems(cat) {
-    if (cat === "servers") {
-      return destinations().map((g) => {
-        const r = g.tunnels.reduce((a, t) => ({ rx: a.rx + rate(t.name).rx, tx: a.tx + rate(t.name).tx }), { rx: 0, tx: 0 });
-        const st = !g.paired ? "warn" : g.tunnels.some((t) => tunHealth(t) === "ok") ? "ok" : g.tunnels.length ? "bad" : "warn";
-        return { key: g.key, type: "dest", name: g.name, sub: g.ip, st, rate: r, chips: [g.tunnels.length + " تانل"] };
-      });
-    }
-    if (cat === "ports") {
-      return (S.ov.forwards || []).map((f) => ({
-        key: f.tunnel + "|" + f.ports, type: "port", name: f.ports, sub: (f.peer || f.tunnel),
-        st: tunnel(f.tunnel) ? tunHealth(tunnel(f.tunnel)) : "warn", rate: prate(f),
-        chips: [MODES_FWD[f.mode] ? MODES_FWD[f.mode][0] : "NAT", f.proto === "both" ? "TCP+UDP" : f.proto.toUpperCase()],
-      }));
-    }
-    let list = visible();
-    if (cat === "issues") list = list.filter((t) => tunHealth(t) !== "ok");
-    return list.map((t) => ({
-      key: t.name, type: "tunnel", name: t.name, sub: kindTitle(t), st: tunHealth(t), rate: rate(t.name),
-      health: t.health, chips: [t.peer || "دستگاه دیگر"],
-    }));
-  }
-
-  const CATS = [
-    ["tunnels", "تانل‌ها", I.tunnel],
-    ["servers", "سرورها", I.server],
-    ["ports", "پورت‌ها", I.ports],
-    ["issues", "نیازمند بررسی", I.alert],
-  ];
-  const catCount = (c) => c === "tunnels" ? visible().length : c === "servers" ? destinations().length : c === "ports" ? (S.ov.forwards || []).length : visible().filter((t) => tunHealth(t) !== "ok").length;
-
-  function orbit() {
-    const ov = S.ov;
-    if (!visible().length && !ov.peers.length) return html`<div class="empty">${I.globe(34)}<b>هنوز مقصدی ندارید</b>یک سرور خارج اضافه کنید یا مستقیم یک تانل بسازید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
-    let cat = S.cat;
-    if (cat === "issues" && !catCount("issues")) cat = "tunnels";
-    const items = arcItems(cat);
-    const W = 1000, H = Math.max(440, Math.min(760, 140 + items.length * 48)), cy = H / 2;
-    const core = { x: 824, y: cy, r: 92 }, colX = 548;
-    const maxRate = Math.max(8e5, ...items.map((it) => it.rate.rx + it.rate.tx), ...visible().map((t) => rate(t.name).rx + rate(t.name).tx));
-    const width = (bps) => 1 + 5.5 * Math.sqrt(Math.min(1, bps / maxRate));
-    const o = [];
-    const now = performance.now() / 1000, phase = (p) => `style="animation-delay:-${(now % p).toFixed(2)}s"`;
-    o.push(`<defs>
-      <radialGradient id="halo"><stop offset="0" stop-color="var(--accent)" stop-opacity=".18"/><stop offset=".55" stop-color="var(--accent)" stop-opacity=".05"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></radialGradient>
-      <radialGradient id="orb"><stop offset="0" stop-color="var(--orb-1)"/><stop offset=".6" stop-color="var(--orb-2)"/><stop offset="1" stop-color="var(--orb-3)"/></radialGradient>
-      <filter id="soft"><feGaussianBlur stdDeviation="2.2"/></filter></defs>`);
-
-    // Column of category cards, from the core.
-    const colY = (i, n) => cy - ((n - 1) * 74) / 2 + i * 74;
-    CATS.forEach(([id, label, icon], i) => {
-      const y = colY(i, CATS.length), on = id === cat, n = catCount(id);
-      const d = `M${core.x - core.r - 4} ${cy} C ${core.x - 190} ${cy}, ${colX + 220} ${y}, ${colX + 116} ${y}`;
-      o.push(`<path class="spoke ${on ? "on" : ""}" d="${d}"/>`);
-      o.push(`<g class="hit catcard ${on ? "on" : ""}" role="button" tabindex="0" data-act="cat" data-cat="${id}" aria-label="${esc(label)}">
-        <rect x="${colX - 116}" y="${y - 28}" width="232" height="56" rx="13"/>
-        <text class="cc-n" x="${colX + 96}" y="${y - 2}" text-anchor="end">${n}</text>
-        <text class="cc-l" x="${colX + 96}" y="${y + 17}" text-anchor="end">${esc(label)}</text>
-        <g transform="translate(${colX - 96},${y - 11})" class="cc-i">${iconMarkup(icon)}</g></g>`);
-    });
-
-    // Fan from the selected card to the arc of items.
-    const cardY = colY(CATS.findIndex(([id]) => id === cat), CATS.length);
-    const fanX = colX - 116, arcX = 150;
-    const spread = (i, n) => (n === 1 ? cy : 70 + ((H - 140) * i) / (n - 1));
-    if (!items.length) {
-      o.push(`<text class="t-faint" x="${arcX + 120}" y="${cy}" text-anchor="middle">خالی</text>`);
-    }
-    items.forEach((it, i) => {
-      const y = spread(i, items.length), r = it.rate.rx + it.rate.tx;
-      const cls = it.st === "bad" ? "down" : it.st === "warn" ? "wait" : r > 1500 ? "up hot" : "up";
-      const d = `M${fanX} ${cardY} C ${fanX - 150} ${cardY}, ${arcX + 180} ${y}, ${arcX + 14} ${y}`;
-      const sel = S.drawer && (S.drawer.name === it.key || S.drawer.key === it.key);
-      const meta = it.health && it.health.probes >= 3 ? `${it.health.passes ? ms(it.health.ping_ms) : "بدون پاسخ"}${it.health.loss >= 1 ? " · افت " + it.health.loss.toFixed(0) + "٪" : ""}`
-        : (r > 800 ? fmtRate(r) : (it.chips[0] || ""));
-      o.push(`<g class="hit arcitem ${sel ? "sel" : ""}" role="button" tabindex="0" data-act="arc" data-key="${esc(it.key)}" data-type="${it.type}" aria-label="${esc(it.name)}">
-        <rect x="0" y="${y - 20}" width="${arcX + 140}" height="40" fill="transparent"/>
-        <path d="${d}" stroke="transparent" stroke-width="16" fill="none"/>
-        <path class="line ${cls}" d="${d}" stroke-width="${width(r).toFixed(1)}"/>
-        <circle class="pin ${it.st}" cx="${arcX}" cy="${y}" r="4.5"/>
-        <text class="ai-n" x="${arcX - 16}" y="${y - 3}" text-anchor="end" direction="rtl">${esc(trim(it.name, 22))}</text>
-        <text class="ai-s" x="${arcX - 16}" y="${y + 13}" text-anchor="end" direction="rtl">${esc(meta)}</text></g>`);
-      if (!reduceMotion && cls.includes("hot")) o.push(`<path class="flow" d="${d}" ${phase(1.4)}/>`);
-    });
-
-    // The core: this server, a glowing orb crowned by its recent traffic.
-    o.push(`<circle class="halo" cx="${core.x}" cy="${core.y}" r="200"/>`);
-    o.push(crown(core, now));
-    o.push(`<circle class="orb-glow" cx="${core.x}" cy="${core.y}" r="${core.r}" filter="url(#soft)"/>`);
-    o.push(`<circle class="orb" cx="${core.x}" cy="${core.y}" r="${core.r}" fill="url(#orb)"/>`);
-    const tr = total(), [v, u] = splitRate(tr.rx + tr.tx);
-    o.push(`<text class="t-faint" x="${core.x}" y="${core.y - 30}" text-anchor="middle">${esc(ov.node.name)}</text>`);
-    o.push(`<text class="orb-num" x="${core.x}" y="${core.y + 12}" text-anchor="middle" data-live-num="1">${esc(v)}</text>`);
-    o.push(`<text class="orb-unit" x="${core.x}" y="${core.y + 34}" text-anchor="middle" direction="ltr">${esc(u)}</text>`);
-    o.push(`<text class="t-faint" x="${core.x}" y="${core.y + 56}" text-anchor="middle">ترافیک لحظه‌ای</text>`);
-    return raw(`<svg class="orbit" direction="ltr" viewBox="0 0 ${W} ${H}" role="img" aria-label="نمای زنده‌ی سرور، دسته‌ها و ${esc(cat)}">${o.join("")}</svg>`);
-  }
-
-  // crown draws a radial waveform around the orb from the recent total-rate
-  // history: each sample is a bar, mirrored so it rings the whole core.
-  function crown(core, now) {
-    const h = S.hist.length ? S.hist : [0];
-    const max = Math.max(1, ...h);
-    const n = 72, bars = [];
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 - Math.PI / 2;
-      const idx = Math.floor((Math.min(i, n - 1 - i) / (n / 2)) * (h.length - 1));
-      const lv = h[Math.max(0, idx)] / max;
-      const r0 = core.r + 10, r1 = r0 + 6 + lv * 30;
-      const x0 = core.x + r0 * Math.cos(a), y0 = core.y + r0 * Math.sin(a);
-      const x1 = core.x + r1 * Math.cos(a), y1 = core.y + r1 * Math.sin(a);
-      bars.push(`<line class="cr" x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" opacity="${(0.25 + 0.6 * lv).toFixed(2)}"/>`);
-    }
-    const rot = (now * 2) % 360;
-    return `<g class="crown" transform="rotate(${rot.toFixed(1)} ${core.x} ${core.y})">${bars.join("")}</g>`;
-  }
-
   const trim = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s);
-  // Pull the path data out of an icon() SVG so it can be placed in the stage.
-  function iconMarkup(icon) { const m = part(icon(16)).match(/<svg[^>]*>([\s\S]*)<\/svg>/); return raw(m ? m[1] : ""); }
 
-  // Phone layout: the same information as a tap-through list.
-  function orbitList() {
-    const tr = total(), cat = (S.cat === "issues" && !catCount("issues")) ? "tunnels" : S.cat, items = arcItems(cat);
-    return html`<div class="panel"><div class="in" style="text-align:center"><div class="faint small">ترافیک لحظه‌ای</div>
-        <div style="font-size:42px;font-weight:200;direction:ltr" data-live="total-rate">${fmtRate(tr.rx + tr.tx)}</div></div></div>
-      <div class="catrow">${CATS.map(([id, label]) => html`<button class="catchip ${id === cat ? "on" : ""}" data-act="cat" data-cat="${id}">${label}<b>${catCount(id)}</b></button>`)}</div>
-      ${items.length ? html`<div class="panel"><div class="list">${items.map((it) => html`<button class="item" style="all:unset;display:block;border-bottom:1px solid var(--line);cursor:pointer" data-act="arc" data-key="${it.key}" data-type="${it.type}">
-        <div style="display:flex;gap:12px;align-items:center;padding:12px 16px"><i class="dot ${it.st}"></i>
-          <div class="grow"><b>${it.name}</b><div class="faint small">${it.sub || ""}</div></div>
-          <div class="small muted ltr">${it.rate.rx + it.rate.tx > 800 ? fmtRate(it.rate.rx + it.rate.tx) : (it.health && it.health.probes >= 3 ? (it.health.passes ? ms(it.health.ping_ms) : "—") : "")}</div></div></button>`)}</div></div>`
-        : html`<div class="empty"><b>خالی</b></div>`}`;
+  function scheme() {
+    const ov = S.ov, groups = destinations();
+    if (!groups.length) return html`<div class="empty">${I.globe(34)}<b>هنوز مقصدی ندارید</b>یک سرور خارج اضافه کنید یا مستقیم یک تانل بسازید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
+    const rows = [];
+    for (const g of groups) {
+      const first = rows.length;
+      if (g.tunnels.length) g.tunnels.forEach((t) => rows.push({ g, t }));
+      else rows.push({ g, t: null });
+      g.first = first; g.last = rows.length - 1;
+    }
+    const W = 1000, top = 46, rowH = 62, H = Math.max(280, top * 2 + rows.length * rowH);
+    const y = (i) => top + rowH / 2 + i * rowH;
+    const nodeX = 744, nodeW = 196, peerX = 60, peerW = 196, busL = peerX + peerW, busR = nodeX;
+    const now = performance.now() / 1000, phase = (p) => `style="animation-delay:-${(now % p).toFixed(2)}s"`;
+    const o = [];
+    o.push(`<defs><pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".9" class="gd"/></pattern></defs>`);
+    o.push(`<rect width="${W}" height="${H}" fill="url(#grid)"/>`);
+    const corners = (x, y0, w, h) => {
+      const c = 10;
+      return `<path class="brk" d="M${x} ${y0 + c}V${y0}H${x + c}M${x + w - c} ${y0}H${x + w}V${y0 + c}M${x + w} ${y0 + h - c}V${y0 + h}H${x + w - c}M${x + c} ${y0 + h}H${x}V${y0 + h - c}"/>`;
+    };
+
+    // Buses: one per tunnel, straight across.
+    rows.forEach((r, i) => {
+      const yy = y(i);
+      if (!r.t) {
+        o.push(`<line class="bus none" x1="${busL}" y1="${yy}" x2="${busL + 120}" y2="${yy}"/>`);
+        o.push(`<text class="lbl faint" x="${busL + 132}" y="${yy + 4}">${r.g.paired ? "بدون تانل" : "منتظر اتصال"}</text>`);
+        return;
+      }
+      const t = r.t, rt = rate(t.name), bps = rt.rx + rt.tx, st = tunHealth(t), off = t.limits && t.limits.disabled;
+      const cls = off ? "off" : st === "bad" ? "down" : st === "warn" ? "wait" : bps > 1500 ? "hot" : "idle";
+      const sel = S.drawer && S.drawer.name === t.name;
+      const mid = (busL + busR) / 2, h = t.health;
+      const ping = off ? "خاموش" : h && h.probes >= 3 ? (h.passes ? ms(h.ping_ms) + (h.loss >= 1 ? ` · ${h.loss.toFixed(0)}%` : "") : "بدون پاسخ") : "";
+      o.push(`<g class="hit row ${cls} ${sel ? "sel" : ""}" role="button" tabindex="0" data-act="arc" data-key="${esc(t.name)}" data-type="tunnel" aria-label="${esc(t.name)}">
+        <rect x="${busL}" y="${yy - rowH / 2}" width="${busR - busL}" height="${rowH}" fill="transparent"/>
+        <line class="bus" x1="${busL}" y1="${yy}" x2="${busR}" y2="${yy}"/>
+        ${cls === "hot" && !reduceMotion ? `<line class="flow" x1="${busR}" y1="${yy}" x2="${busL}" y2="${yy}" ${phase(1.2)}/>` : ""}
+        <circle class="term" cx="${busL}" cy="${yy}" r="3.5"/><circle class="term" cx="${busR}" cy="${yy}" r="3.5"/>
+        <rect class="chip" x="${mid - 74}" y="${yy - 13}" width="148" height="26" rx="4"/>
+        <text class="chip-t" x="${mid}" y="${yy + 4.5}" text-anchor="middle">${esc(trim(t.name, 10))} · ${esc(trim(kindTitle(t), 12))}${t.encrypt || t.obfs ? " ◆" : ""}</text>
+        <text class="rate" x="${busR - 12}" y="${yy - 9}" text-anchor="end" data-live="sum:${esc(t.name)}">${bps > 800 ? fmtRate(bps) : ""}</text>
+        <text class="ping" x="${busL + 12}" y="${yy - 9}">${esc(ping)}</text></g>`);
+    });
+
+    // Destinations, each spanning its tunnels' rows.
+    for (const g of groups) {
+      const y0 = y(g.first) - rowH / 2 + 8, h = (g.last - g.first + 1) * rowH - 16;
+      const st = !g.paired ? "warn" : g.tunnels.some((t) => tunHealth(t) === "ok") ? "ok" : g.tunnels.length ? "bad" : "idle";
+      const cy = y0 + h / 2;
+      o.push(`<g class="hit dest" role="button" tabindex="0" data-act="arc" data-key="${esc(g.key)}" data-type="dest" aria-label="${esc(g.name)}">
+        <rect class="blk" x="${peerX}" y="${y0}" width="${peerW}" height="${h}" rx="3"/>${corners(peerX, y0, peerW, h)}
+        <circle class="led ${st}" cx="${peerX + 18}" cy="${cy - (h > 40 ? 8 : 0)}" r="3.5"/>
+        <text class="nm" x="${peerX + 30}" y="${cy - (h > 40 ? 3 : -4)}">${esc(trim(g.name, 18))}</text>
+        ${h > 40 ? `<text class="ip" x="${peerX + 30}" y="${cy + 15}">${esc(g.ip || "")}</text>` : ""}</g>`);
+    }
+
+    // This server, spanning every row, with its ports as ticks on the edge.
+    const ny = top - 6, nh = H - 2 * top + 12, tr = total(), [v, u] = splitRate(tr.rx + tr.tx), ncy = ny + nh / 2;
+    o.push(`<rect class="blk me" x="${nodeX}" y="${ny}" width="${nodeW}" height="${nh}" rx="3"/>${corners(nodeX, ny, nodeW, nh)}`);
+    o.push(`<text class="nm" x="${nodeX + 18}" y="${ncy - 24}">${esc(trim(ov.node.name, 18))}</text>`);
+    o.push(`<text class="big" x="${nodeX + 18}" y="${ncy + 12}"><tspan data-live="total-num">${esc(v)}</tspan><tspan class="unit" dx="6" data-live="total-unit">${esc(u)}</tspan></text>`);
+    o.push(`<text class="ip" x="${nodeX + 18}" y="${ncy + 32}">${esc(ov.node.address || "")}</text>`);
+    const fs = ov.forwards || [];
+    fs.slice(0, 12).forEach((f, i) => {
+      const py = ny + 18 + (fs.length === 1 ? nh / 2 - 18 : ((nh - 36) * i) / Math.max(1, Math.min(fs.length, 12) - 1));
+      const pr = prate(f), on = pr.rx + pr.tx > 800;
+      o.push(`<g class="port ${on ? "hot" : ""}"><line x1="${nodeX + nodeW}" y1="${py}" x2="${nodeX + nodeW + 14}" y2="${py}"/>
+        <text x="${nodeX + nodeW + 20}" y="${py + 4}">${esc(trim(f.ports, 11))}</text></g>`);
+    });
+    return raw(`<svg class="schematic" viewBox="0 0 ${W} ${H}" role="img" aria-label="نمای زنده‌ی تانل‌ها">${o.join("")}</svg>`);
   }
-  // Sum of every visible tunnel's 5-minute buckets, as bits/s.
-  function totalSeries() {
-    const out = new Array(288).fill(0);
+
+  // Every visible tunnel's 5-minute buckets, summed.
+  function totalPairs() {
+    const out = Array.from({ length: 288 }, () => ({ rx: 0, tx: 0 }));
     for (const t of visible()) {
       const s = S.traffic[t.name];
       if (!s || !s.series) continue;
-      s.series.forEach((p, i) => { out[i] += ((p.rx + p.tx) * 8) / 300; });
+      s.series.forEach((p, i) => { if (out[i]) { out[i].rx += p.rx; out[i].tx += p.tx; } });
     }
     return out;
   }
 
-  function spark(vals) {
-    if (!vals.some((v) => v > 0)) return html`<svg class="spark" viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true"><path class="l" d="M0 33H200"/></svg>`;
-    const max = Math.max(...vals), n = vals.length;
-    const pts = vals.map((v, i) => [(i / (n - 1)) * 200, 32 - (v / max) * 28]);
-    const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join("");
-    const last = pts[n - 1];
-    return raw(`<svg class="spark" viewBox="-4 0 208 36" preserveAspectRatio="none" role="img" aria-label="ترافیک ۲۴ ساعت گذشته"><path class="a" d="${d}L200 34L0 34Z"/><path class="l" d="${d}"/><circle cx="${last[0]}" cy="${last[1]}" r="3"/></svg>`);
+  function tunnelTable(ts) {
+    if (!ts.length) return html`<div class="empty" style="padding:28px">هنوز تانلی ساخته نشده</div>`;
+    return html`<table class="t inst"><thead><tr><th>تانل</th><th class="hide-sm">مقصد</th><th>پینگ</th><th class="num">↓</th><th class="num">↑</th><th class="num hide-sm">امروز</th></tr></thead><tbody>
+      ${ts.map((t) => { const r = rate(t.name), h = t.health; return html`<tr class="hit" data-act="arc" data-key="${t.name}" data-type="tunnel">
+        <td><span class="state"><i class="dot ${tunHealth(t)}"></i><b>${t.name}</b></span> <span class="faint small">${kindTitle(t)}</span></td>
+        <td class="hide-sm">${t.peer || html`<span class="mono small">${t.far_ip}</span>`}</td>
+        <td class="mono small">${t.limits && t.limits.disabled ? "خاموش" : h && h.probes >= 3 ? (h.passes ? ms(h.ping_ms) : "—") : ""}</td>
+        <td class="num mono small" data-live="rx:${t.name}">${fmtRate(r.rx)}</td><td class="num mono small faint" data-live="tx:${t.name}">${fmtRate(r.tx)}</td>
+        <td class="num mono small hide-sm" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</td></tr>`; })}
+    </tbody></table>`;
   }
 
   // ---------- drawer ----------
@@ -579,22 +588,29 @@
     const line = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("");
     const area = (vals) => `${line(vals)}L${x(n - 1)} ${y(0)}L${x(0)} ${y(0)}Z`;
     let grid = "";
-    for (const f of [0, 0.5, 1]) grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(nice * f)}" y2="${y(nice * f)}"/><text class="axis" x="${W - P.r + 6}" y="${y(nice * f) + 4}" text-anchor="start" direction="ltr">${fmtRate(nice * f)}</text>`;
-    grid += `<text class="axis" x="${x(0)}" y="${H - 4}" text-anchor="start">۲۴ ساعت پیش</text><text class="axis" x="${x(n - 1)}" y="${H - 4}" text-anchor="end">اکنون</text>`;
+    // Lines in the SVG; labels in HTML so they never stretch with it.
+    let labels = "";
+    for (const f of [0, 0.5, 1]) {
+      grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(nice * f)}" y2="${y(nice * f)}" vector-effect="non-scaling-stroke"/>`;
+      labels += `<span class="ya" style="top:${((y(nice * f) / H) * 100).toFixed(2)}%">${fmtRate(nice * f)}</span>`;
+    }
+    labels += `<span class="xa s">۲۴ ساعت پیش</span><span class="xa e">اکنون</span>`;
     CHARTS[id] = { rx, tx, n, x, y, W, H };
     return html`<div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span></div>
       <div class="chart" data-chart="${id}">${raw(`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="نمودار ترافیک ۲۴ ساعت" style="direction:ltr">${grid}
-        <path class="area rx" d="${area(rx)}"/><path class="area tx" d="${area(tx)}"/><path class="line rx" d="${line(rx)}"/><path class="line tx" d="${line(tx)}"/>
-        <g class="hover" style="display:none"><line class="cross" y1="${P.t}" y2="${H - P.b}"/><circle class="mark rx" r="4"/><circle class="mark tx" r="4"/></g></svg>`)}<div class="tip" hidden></div></div>`;
+        <path class="area rx" d="${area(rx)}"/><path class="area tx" d="${area(tx)}"/><path class="line rx" d="${line(rx)}" vector-effect="non-scaling-stroke"/><path class="line tx" d="${line(tx)}" vector-effect="non-scaling-stroke"/>
+        <g class="hover" style="display:none"><line class="cross" y1="${P.t}" y2="${H - P.b}" vector-effect="non-scaling-stroke"/><circle class="mark rx" r="4"/><circle class="mark tx" r="4"/></g></svg>`)}${raw(labels)}<div class="tip" hidden></div></div>`;
   }
   const CHARTS = {};
   const niceMax = (v) => { const e = 10 ** Math.floor(Math.log10(v)), m = v / e; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * e; };
 
   function wireCharts() {
     for (const el of $$("[data-chart]")) {
-      const c = CHARTS[el.dataset.chart]; if (!c) continue;
+      if (el._wired || !CHARTS[el.dataset.chart]) continue;
+      el._wired = true;
       const svgEl = $("svg", el), g = $(".hover", el), tip = $(".tip", el);
       const move = (e) => {
+        const c = CHARTS[el.dataset.chart]; if (!c) return;
         const box = svgEl.getBoundingClientRect();
         const px = ((e.clientX - box.left) / box.width) * c.W;
         let i = Math.round(((px - c.x(0)) / (c.x(c.n - 1) - c.x(0))) * (c.n - 1));
@@ -640,12 +656,24 @@
   }
 
   function tunnelDetail(t) {
-    const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { noDF: !!t.settings.no_df, mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto" }));
+    const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { noDF: !!t.settings.no_df, mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto", rate: t.limits.rate_mbit || "", quota: t.limits.quota_gb || "" }));
     const base = (t.stack && t.stack[0]) || { kind: t.kind };
     const crypto = ["wireguard", "obfs"].includes(base.kind);
     const m = S.mtu[t.name];
+    const tab = t.managed ? "overview" : (S.dtab[t.name] || "overview");
+    const tabs = [["overview", "نمای کلی"], ["limits", "محدودیت‌ها"], ["settings", "تنظیمات"]];
     return html`<div class="detail">
-      <div class="stack">
+        <div class="row dbar">
+          <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
+          ${t.managed ? "" : html`<button class="btn sm" data-act="mtu" data-name="${t.name}">${I.ruler(15)} بهترین MTU</button>`}
+          <button class="btn sm" data-act="drawer" data-type="tunnel" data-name="${t.name}">نمودار</button>
+          ${t.peer && peer(t.peer) ? html`<button class="btn sm ghost" data-act="setup" data-name="${t.peer}">${I.term(15)} دستور اتصال</button>` : ""}
+          <span class="grow"></span>
+          ${t.managed ? "" : html`<button class="btn sm ${t.limits.disabled ? "primary" : "ghost"}" data-act="tunnel-power" data-name="${t.name}">${I.power(15)} ${t.limits.disabled ? "روشن کردن" : "خاموش کردن"}</button>`}
+          ${t.managed ? "" : html`<button class="btn sm danger" data-act="del-tunnel" data-name="${t.name}">${I.trash(15)} حذف</button>`}
+        </div>
+      ${t.managed ? "" : html`<div class="seg dtabs" role="tablist">${tabs.map(([id, l]) => html`<button type="button" role="tab" aria-selected="${tab === id}" class="${tab === id ? "on" : ""}" data-act="dtab" data-name="${t.name}" data-tab="${id}">${l}</button>`)}</div>`}
+      ${tab === "overview" ? html`<div class="dpane stack" data-key="ov-${t.name}">
         <div class="figs">
           <div><div class="k">امروز</div><div class="v ltr" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</div></div>
           <div><div class="k">این ماه</div><div class="v ltr">${fmtBytes(t.month.rx + t.month.tx)}</div></div>
@@ -660,42 +688,55 @@
         </dl>
         ${m ? html`<div class="note ok">مسیر تا <span class="ltr">${m.remote}</span> بسته‌های <b>${m.path_mtu}</b> بایتی را بدون شکستن رد می‌کند. با ${m.overhead} بایت سربار لایه‌ها، بهترین MTU این تانل <b>${m.best}</b> است${m.probing ? " و تانل خودکار با آن تنظیم می‌شود." : "."}</div>` : ""}
         ${t.error ? html`<div class="note bad"><div class="mono">${t.error}</div></div>` : ""}
-        <div class="row">
-          <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
-          ${t.managed ? "" : html`<button class="btn sm" data-act="mtu" data-name="${t.name}">${I.ruler(15)} پیدا کردن بهترین MTU</button>`}
-          <button class="btn sm" data-act="drawer" data-type="tunnel" data-name="${t.name}">نمودار و جزئیات</button>
-          ${t.peer && peer(t.peer) ? html`<button class="btn sm ghost" data-act="setup" data-name="${t.peer}">${I.term(15)} دستور اتصال</button>` : ""}
-          <span class="grow"></span>
-          ${t.managed ? "" : html`<button class="btn sm danger" data-act="del-tunnel" data-name="${t.name}">${I.trash(15)} حذف</button>`}
-        </div>
-      </div>
+      </div>` : ""}
+      ${tab === "limits" ? html`<div class="dpane" data-key="lim-${t.name}">${limitsBlock(t, st)}</div>` : ""}
+      ${tab === "settings" || t.managed ? html`<div class="dpane" data-key="set-${t.name}">
       ${t.managed ? html`<div class="note">این تانل را سرور اصلی (${S.ov.master ? S.ov.master.name : ""}) تعریف کرده؛ تنظیماتش را از همان‌جا تغییر دهید.</div>` : html`<form class="stack" data-form="tunnel-settings" data-name="${t.name}">
         <div class="field"><span class="lbl">رمزنگاری</span>
           ${crypto ? html`<div class="help">${PROTO[base.kind === "obfs" ? "obfs" : "wireguard"].t} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.</div>`
+            : base.kind === "tcp" ? html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>
+            <span class="help">هر قاب روی جریان TCP با کلیدهای تازه‌ی همان اتصال مهر می‌شود؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ۱۶ بایت در هر بسته.</span>`
             : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}</select>
             <span class="help">IPsec در کرنل روی بسته‌های بیرونی همین تانل؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ${38} بایت از MTU.</span>`}</div>
         <details class="adv" ${S.tset[t.name].adv ? "open" : ""} data-act="adv-toggle" data-name="${t.name}">
-          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
+          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard", "tcp"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
           <div class="in">${advancedFields(`tset.${t.name}`, st, base.kind, true)}</div>
         </details>
         <div class="form-foot"><button class="btn primary" type="submit">ذخیره‌ی تنظیمات</button><button class="btn ghost" type="button" data-act="reset-tset" data-name="${t.name}">بازگردانی</button></div>
       </form>`}
+      </div>` : ""}
+    </div>`;
+  }
+
+  // Speed limit and monthly quota, with how much of the quota is used.
+  function limitsBlock(t, st) {
+    const used = t.month.rx + t.month.tx, q = t.limits.quota_gb * 2 ** 30, f = q ? Math.min(1, used / q) : 0;
+    return html`<div class="limits">
+      <div class="grid2">
+        <div class="field"><label>سقف سرعت (Mbps)</label><input class="input ltr" type="number" min="0" max="100000" data-bind="tset.${t.name}.rate" value="${st.rate}" placeholder="بدون محدودیت">
+          <span class="help">هر دو سر همین سقف را روی ارسال خود می‌گذارند، پس دانلود و آپلود هر دو محدود می‌شوند.</span></div>
+        <div class="field"><label>حجم ماهانه (GB)</label><input class="input ltr" type="number" min="0" step="any" data-bind="tset.${t.name}.quota" value="${st.quota}" placeholder="نامحدود">
+          <span class="help">دانلود + آپلود این ماه. وقتی پر شد تانل تا اول ماه بعد خاموش می‌شود.</span></div>
+      </div>
+      ${q ? html`<div class="quota ${t.blocked ? "full" : f > 0.85 ? "near" : ""}"><div class="pl"><span>${fmtBytes(used)} از ${fmtBytes(q)}</span><span class="faint">${(f * 100).toFixed(0)}٪</span></div><div class="pbar"><i style="transform:scaleX(${f.toFixed(3)})"></i></div></div>` : ""}
+      <div class="row"><button class="btn sm primary" type="button" data-act="save-limits" data-name="${t.name}">ذخیره‌ی محدودیت‌ها</button></div>
     </div>`;
   }
 
   // The advanced options, shared by the wizard and the tunnel editor.
-  function advancedFields(path, st, kind, editing) {
+  function advancedFields(path, st, kind, editing, noPort) {
     const mm = st.mtuMode || "auto";
     return html`<div class="field"><span class="lbl">MTU</span>
         <div class="seg" role="radiogroup">${[["auto", "خودکار"], ["probe", "اندازه‌گیری مسیر"], ["manual", "دستی"]].map(([v, l]) => html`<button type="button" role="radio" aria-checked="${mm === v}" class="${mm === v ? "on" : ""}" data-act="set" data-path="${path}.mtuMode" data-value="${v}">${l}</button>`)}</div>
         ${mm === "manual" ? html`<input class="input ltr" type="number" min="576" max="9000" data-bind="${path}.mtu" value="${st.mtu || ""}" placeholder="1400" aria-label="MTU">` : ""}
         <span class="help">${mm === "auto" ? "از ۱۵۰۰ و سربار همه‌ی لایه‌ها حساب می‌شود." : mm === "probe" ? "NeoTunnel با بسته‌های بدون شکستن، MTU واقعی مسیر تا مقصد را پیدا می‌کند، هر ۳۰ دقیقه دوباره می‌سنجد و تانل را با آن تنظیم می‌کند." : "فقط وقتی مقدار درست را می‌دانید."}</span></div>
       <div class="grid2">
-        <div class="field"><label>پورت UDP${editing ? "" : " (اختیاری)"}</label><input class="input ltr" type="number" min="1" max="65535" data-bind="${path}.port" value="${st.port || ""}" placeholder="${["obfs", "wireguard"].includes(kind) ? "خودکار" : "پروتکل خام"}">
-          <span class="help">${PROTO[kind] && PROTO[kind].udp || kind === "obfs" || kind === "wireguard" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی = پروتکل خام (سریع‌ترین). با پورت، تانل داخل UDP می‌رود؛ وقتی مسیر پروتکل 41 یا 47 را می‌بندد."}</span></div>
+        ${noPort ? "" : html`<div class="field"><label>پورت ${kind === "tcp" ? "TCP" : "UDP"}${editing ? "" : " (اختیاری)"}</label><input class="input ltr" type="number" min="1" max="65535" data-bind="${path}.port" value="${st.port || ""}" placeholder="${["obfs", "wireguard", "tcp"].includes(kind) ? "خودکار" : "پروتکل خام"}">
+          <span class="help">${PROTO[kind] && (PROTO[kind].udp || PROTO[kind].tcp) || kind === "obfs" || kind === "wireguard" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی = پروتکل خام (سریع‌ترین). با پورت، تانل داخل UDP می‌رود؛ وقتی مسیر پروتکل 41 یا 47 را می‌بندد."}</span></div>`}
         <div class="field"><label>TTL</label><input class="input ltr" type="number" min="1" max="255" data-bind="${path}.ttl" value="${st.ttl || ""}" placeholder="255"><span class="help">TTL بسته‌های بیرونی.</span></div>
         ${kind === "obfs" ? html`<div class="field"><label>Padding (بایت)</label><input class="input ltr" type="number" min="0" max="255" data-bind="${path}.padding" value="${st.padding || ""}" placeholder="0"><span class="help">تا این تعداد بایت تصادفی به هر بسته اضافه می‌شود تا اندازه‌ها چیزی را لو ندهند. هزینه‌اش همین مقدار از MTU است.</span></div>` : ""}
         ${["obfs", "wireguard"].includes(kind) ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="25"><span class="help">نگه‌داشتن مسیر NAT باز؛ ‎-1 یعنی خاموش.</span></div>` : ""}
+        ${kind === "tcp" ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="15"><span class="help">اتصالی که سه برابر این مدت ساکت بماند قطع و دوباره برقرار می‌شود؛ ‎-1 یعنی فقط keepalive خود TCP.</span></div>` : ""}
         ${kind === "wireguard" ? html`<div class="field full"><label>کلید عمومی طرف مقابل</label><input class="input ltr" data-bind="${path}.peer_key" value="${st.peer_key || ""}" placeholder="فقط وقتی آن طرف NeoTunnel ندارد"><span class="help">برای میکروتیک یا هر WireGuard دیگر؛ بین دو سرور NeoTunnel کلیدها خودکار ساخته می‌شوند.</span></div>` : ""}
         <div class="field"><label>DSCP بسته‌های بیرونی</label><input class="input ltr" type="number" min="0" max="63" data-bind="${path}.dscp" value="${st.dscp || ""}" placeholder="ارث‌بری"><span class="help">کلاس کیفیت سرویس؛ خالی = همان کلاس بسته‌ی داخلی. فقط تانل‌های کرنلی.</span></div>
         <div class="field full"><label class="switch"><input type="checkbox" data-act="st-check" data-path="${path}.noDF" ${st.noDF ? "checked" : ""}>اجازه‌ی تکه‌تکه شدن بسته‌ها در مسیر</label><span class="help">پیش‌فرض خاموش است (بیت Don't-Fragment روشن): سریع‌تر، ولی به MTU درست نیاز دارد. روشنش کنید اگر مسیر MTU کوچکی دارد و تانل بسته‌های بزرگ را می‌اندازد.</span></div>
@@ -714,18 +755,38 @@
     const ov = S.ov;
     const master = ov.master ? html`<div class="note ${ov.master.paired ? "ok" : "warn"}" style="margin-bottom:16px">این سرور توسط <b>${ov.master.name}</b> (<span class="ltr">${ov.master.address}</span>) مدیریت می‌شود ${ov.master.paired ? "و به آن متصل است." : "ولی هنوز به آن نرسیده؛ سرویس مدام تلاش می‌کند."} تانل‌های آن فقط از پنل سرور اصلی تغییر می‌کنند.</div>` : "";
     if (!ov.peers.length) return html`${master}<div class="panel"><div class="empty">${I.server(32)}<b>هنوز سروری اضافه نشده</b>سرور خارج را با نام و IP اضافه کنید؛ پنل دستور یک‌خطی نصب و اتصال را برای همان سرور می‌سازد.<br><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button></div></div>`;
-    return html`${master}<div class="panel"><table class="t"><thead><tr><th>سرور</th><th>وضعیت</th><th class="hide-sm">تانل‌ها</th><th class="hide-sm">نسخه</th><th class="hide-sm">آخرین ارتباط</th><th></th></tr></thead><tbody>
-      ${ov.peers.map((p) => html`<tr>
-        <td><b>${p.name}</b><div class="faint small ltr">${p.address}</div></td>
-        <td>${!p.paired ? html`<span class="state"><i class="dot warn"></i>منتظر اتصال</span>` : p.in_sync ? html`<span class="state"><i class="dot ok"></i>متصل و همگام</span>` : html`<span class="state"><i class="dot warn"></i>عقب از تغییرات</span>`}</td>
-        <td class="hide-sm">${p.tunnels}</td><td class="hide-sm ltr small">${p.version || "-"} ${p.arch || ""}</td><td class="hide-sm small">${ago(p.last_seen)}</td>
-        <td><div class="row" style="justify-content:flex-end;flex-wrap:nowrap">
-          <button class="btn sm ${p.paired ? "" : "primary"}" data-act="setup" data-name="${p.name}">${I.term(15)} دستور اتصال</button>
-          ${p.paired ? html`<button class="btn sm icon" data-act="bench" data-name="${p.name}" title="مقایسه‌ی سرعت انواع تانل" aria-label="مقایسه‌ی سرعت">${I.gauge(15)}</button>
-          <button class="btn sm icon" data-act="sync" data-name="${p.name}" title="همگام‌سازی" aria-label="همگام‌سازی">${I.sync(15)}</button>
-          <button class="btn sm icon" data-act="upgrade" data-name="${p.name}" title="ارتقا به نسخه‌ی همین سرور" aria-label="ارتقا">${I.upgrade(15)}</button>` : ""}
-          <button class="btn sm danger icon" data-act="del-server" data-name="${p.name}" title="حذف سرور" aria-label="حذف سرور">${I.trash(15)}</button></div></td></tr>`)}
-    </tbody></table></div>`;
+    const old = ov.peers.filter((p) => p.paired && p.version && p.version !== ov.node.version);
+    return html`${master}
+      ${old.length ? html`<div class="note warn" style="margin-bottom:16px">${old.length} سرور نسخه‌ی قدیمی‌تری از این سرور (<span class="ltr">${ov.node.version}</span>) دارد. برای اینکه همه‌ی قابلیت‌ها کار کنند ارتقا دهید.</div>` : ""}
+      <div class="peers">${ov.peers.map(peerCard)}</div>`;
+  }
+
+  // A peer: reachability, version and what to do next, at a glance.
+  function peerCard(p) {
+    const ov = S.ov, up = S.upgrading[p.name];
+    const stale = p.paired && p.last_seen && Date.now() / 1000 - p.last_seen > 180;
+    const outdated = p.paired && p.version && p.version !== ov.node.version;
+    const [cls, label] = up ? ["busy", "در حال ارتقا…"]
+      : !p.paired ? ["warn", "منتظر اتصال"]
+      : stale ? ["bad", "در دسترس نیست"]
+      : p.in_sync ? ["ok", "متصل و همگام"] : ["warn", "عقب از تغییرات"];
+    return html`<article class="peer ${up ? "busy" : ""}">
+      <header><div><b>${p.name}</b><span class="ltr faint small">${p.address}</span></div><span class="state"><i class="dot ${cls}"></i>${label}</span></header>
+      <dl>
+        <div><dt>نسخه</dt><dd class="ltr">${p.version || "-"} ${outdated && !up ? html`<span class="tag warn">قدیمی</span>` : p.paired && p.version ? html`<span class="tag">به‌روز</span>` : ""}</dd></div>
+        <div><dt>تانل‌ها</dt><dd>${p.tunnels}</dd></div>
+        <div><dt>آخرین ارتباط</dt><dd>${ago(p.last_seen)}</dd></div>
+      </dl>
+      <footer>
+        ${!p.paired ? html`<button class="btn sm primary" data-act="setup" data-name="${p.name}">${I.term(15)} دستور اتصال</button>`
+          : html`${outdated || up ? html`<button class="btn sm primary" data-act="upgrade" data-name="${p.name}" ${up ? "disabled" : ""}>${I.upgrade(15)} ${up ? "در حال ارتقا…" : `ارتقا به ${ov.node.version}`}</button>` : ""}
+            <button class="btn sm" data-act="bench" data-name="${p.name}" title="مقایسه‌ی سرعت انواع تانل">${I.gauge(15)} مقایسه</button>
+            <button class="btn sm icon" data-act="sync" data-name="${p.name}" title="همگام‌سازی" aria-label="همگام‌سازی">${I.sync(15)}</button>
+            <button class="btn sm icon" data-act="setup" data-name="${p.name}" title="دستور اتصال" aria-label="دستور اتصال">${I.term(15)}</button>`}
+        <span class="grow"></span>
+        <button class="btn sm danger icon" data-act="del-server" data-name="${p.name}" title="حذف سرور" aria-label="حذف سرور">${I.trash(15)}</button>
+      </footer>
+    </article>`;
   }
 
   // ---------- ports ----------
@@ -752,6 +813,15 @@
   }
 
   // ---------- speed ----------
+  // The page is rendered only when results change. Between renders a frame
+  // loop eases the gauge toward the latest sample, so the needle and the
+  // trace move continuously although samples arrive five times a second.
+  const G = { v: 0, to: 0, phase: "", seq: -1, hist: [], raf: 0, at: 0, sig: "", seen: {} };
+  const GR = { cx: 160, cy: 160, R: 120, start: 135, sweep: 270 };
+  GR.len = (Math.PI * GR.R * GR.sweep) / 180;
+  const gfrac = (bps) => Math.max(0, Math.min(1, Math.log10(1 + bps / 1e6) / Math.log10(1001)));
+  const isBwPhase = (p) => p === "upload" || p === "download";
+
   function viewSpeed() {
     const ts = visible(), ps = S.ov.peers.filter((p) => p.paired), sp = S.speed;
     if (!sp.tunnel && ts.length) sp.tunnel = ts[0].name;
@@ -763,12 +833,12 @@
         <div class="panel"><header><h2>تست یک تانل</h2></header><div class="in">
           ${ts.length ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" data-bind="speed.tunnel" aria-label="تانل">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${t.name}، ${kindTitle(t)} به ${t.peer || t.far_ip}</option>`)}</select>
             <button class="btn primary" data-act="run-test" ${running ? "disabled" : ""}>${I.play(15)} شروع</button></div>
-            <p class="help">۱۰۰ بسته برای پینگ، جیتر و افت؛ بعد ۵ ثانیه آپلود و ۵ ثانیه دانلود با ۴ اتصال هم‌زمان.</p>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
+            <p class="help">پینگ، جیتر و افت؛ بعد ۴ ثانیه آپلود و ۴ ثانیه دانلود با ۴ اتصال هم‌زمان.</p>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
         </div></div>
         <div class="panel"><header><h2>مقایسه‌ی انواع تانل</h2><span class="aside">بهترین را برای این مسیر پیدا کنید</span></header><div class="in">
           ${ps.length ? html`<div class="field"><label for="bench-peer">سرور مقصد</label><select id="bench-peer" class="input" data-bind="speed.peer">${ps.map((p) => html`<option value="${p.name}" ${sp.peer === p.name ? "selected" : ""}>${p.name} (${p.address})</option>`)}</select></div>
             <div class="row" style="margin-top:12px">${BENCH.map(([id, label]) => html`<label class="switch"><input type="checkbox" data-act="bench-only" value="${id}" ${sp.only.includes(id) ? "checked" : ""}>${label}</label>`)}</div>
-            <div class="row" style="margin-top:14px"><button class="btn primary" data-act="run-bench" ${running ? "disabled" : ""}>${I.play(15)} شروع مقایسه</button><span class="help">تانل‌های موقت ساخته، اندازه‌گیری و پاک می‌شوند؛ تانل‌های فعلی دست نمی‌خورند.</span></div>`
+            <div class="row" style="margin-top:14px"><button class="btn primary" data-act="run-bench" ${running ? "disabled" : ""}>${I.play(15)} شروع مقایسه</button><span class="help">اول اتصال همه با هم چند ثانیه بررسی می‌شود، بعد سرعت فقط برای آن‌هایی که وصل شدند. تانل‌های فعلی دست نمی‌خورند.</span></div>`
             : html`<div class="muted">برای مقایسه، سرور مقصد باید متصل باشد.</div>`}
         </div></div>
         ${j ? jobResults(j) : ""}
@@ -776,86 +846,177 @@
     </div>`;
   }
 
-  // The gauge: a 270° arc on a log scale up to 1 Gbps, with the three phases.
+  // The gauge: a 270° arc on a log scale up to 1 Gbps, a live trace of the
+  // current measurement under it, and the three phases.
   function gauge(j) {
-    const live = (j && j.live) || {}, running = j && j.status === "running";
-    const cx = 160, cy = 160, R = 120, start = 135, sweep = 270;
+    const { cx, cy, R, start, sweep, len } = GR;
     const pt = (deg, r = R) => { const a = (deg * Math.PI) / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
     const arc = (a0, a1, r = R) => { const [x0, y0] = pt(a0, r), [x1, y1] = pt(a1, r); return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`; };
-    const frac = (bps) => Math.max(0, Math.min(1, Math.log10(1 + bps / 1e6) / Math.log10(1001)));
-    const isBw = running && (live.phase === "upload" || live.phase === "download");
-    const f = isBw ? frac(live.value) : 0, len = (Math.PI * R * sweep) / 180;
     let ticks = "";
     for (const mbps of [0, 1, 10, 50, 100, 250, 500, 1000]) {
-      const a = start + sweep * frac(mbps * 1e6), [x0, y0] = pt(a, R + 12), [x1, y1] = pt(a, R + 18), [tx, ty] = pt(a, R + 32);
+      const a = start + sweep * gfrac(mbps * 1e6), [x0, y0] = pt(a, R + 12), [x1, y1] = pt(a, R + 18), [tx, ty] = pt(a, R + 32);
       ticks += `<line class="tick" x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}"/><text x="${tx}" y="${ty + 4}" text-anchor="middle">${mbps >= 1000 ? "1G" : mbps}</text>`;
     }
-    let big = "-", unit = "", what = "آماده";
-    const res = j && j.kind === "test" && j.results && j.results[0];
-    if (running) {
-      what = live.step || "در حال آماده‌سازی";
-      if (live.phase === "ping") { big = live.value ? live.value.toFixed(1) : "…"; unit = "ms"; what = "پینگ"; }
-      else if (isBw) { [big, unit] = splitRate(live.value); what = live.phase === "upload" ? "آپلود" : "دانلود"; }
-      else big = "…";
-    } else if (res && !res.error) { [big, unit] = splitRate(res.down_bps); what = "دانلود، آخرین تست"; }
-    const phase = (k, label, val) => html`<div class="phase ${running && live.phase === k ? "now" : ""}"><b>${val}</b>${label}</div>`;
-    const seen = (k) => (S.pv[k] ? (k === "ping" ? ms(S.pv[k]) : fmtRate(S.pv[k])) : "…");
-    const done = (k) => (res && !res.error ? (k === "ping" ? ms(res.ping_ms) : fmtRate(k === "upload" ? res.up_bps : res.down_bps)) : "-");
-    return html`<div class="gauge-box">
+    const running = j && j.status === "running", res = j && j.kind === "test" && j.results && j.results[0];
+    if (!running) { G.to = res && !res.error ? res.down_bps : 0; if (!G.raf) G.v = G.to; }
+    const [big, unit, what] = gaugeText(j);
+    const ph = (k, label) => html`<div class="phase ${running && G.phase === k ? "now" : ""}" data-ph="${k}"><b>${phaseValue(j, k)}</b>${label}</div>`;
+    return html`<div class="gauge-box ${running ? "running" : ""}">
       ${raw(`<svg class="gauge" viewBox="0 0 320 290" role="img" aria-label="سرعت لحظه‌ای">${ticks}
         <path class="track" d="${arc(start, start + sweep)}"/>
-        <path class="fill ${live.phase === "upload" ? "tx" : ""}" d="${arc(start, start + sweep)}" stroke-dasharray="${len.toFixed(1)}" stroke-dashoffset="${(len * (1 - f)).toFixed(1)}"/>
-        <text class="big" x="${cx}" y="${cy + 12}" text-anchor="middle" direction="ltr">${esc(big)}</text>
-        <text class="unit" x="${cx}" y="${cy + 40}" text-anchor="middle" direction="ltr">${esc(unit)}</text>
-        <text class="what" x="${cx}" y="${cy + 92}" text-anchor="middle">${esc(what.length > 40 ? what.slice(0, 40) + "…" : what)}</text></svg>`)}
-      <div class="phases">${phase("ping", "پینگ", running ? seen("ping") : done("ping"))}
-        ${phase("upload", "آپلود", running ? seen("upload") : done("upload"))}
-        ${phase("download", "دانلود", running ? seen("download") : done("download"))}</div>
+        <path id="g-fill" class="fill ${G.phase === "upload" ? "tx" : ""}" d="${arc(start, start + sweep)}" stroke-dasharray="${len.toFixed(1)}" stroke-dashoffset="${(len * (1 - gfrac(G.v))).toFixed(1)}"/>
+        <text id="g-big" class="big" x="${cx}" y="${cy + 12}" text-anchor="middle" direction="ltr">${esc(big)}</text>
+        <text id="g-unit" class="unit" x="${cx}" y="${cy + 40}" text-anchor="middle" direction="ltr">${esc(unit)}</text>
+        <text id="g-what" class="what" x="${cx}" y="${cy + 92}" text-anchor="middle">${esc(what)}</text></svg>`)}
+      ${raw(`<svg class="gtrace" viewBox="0 0 300 48" preserveAspectRatio="none" aria-hidden="true"><path id="g-area" class="area ${G.phase === "upload" ? "tx" : ""}" d="${sparkPath(true)}"/><path id="g-line" class="line ${G.phase === "upload" ? "tx" : ""}" d="${sparkPath(false)}"/></svg>`)}
+      <div class="phases">${ph("ping", "پینگ")}${ph("upload", "آپلود")}${ph("download", "دانلود")}</div>
       ${running ? html`<button class="btn sm danger" style="margin-top:16px" data-act="cancel-job">توقف تست</button>` : ""}
     </div>`;
   }
 
+  function gaugeText(j) {
+    const running = j && j.status === "running", live = (j && j.live) || {};
+    const res = j && j.kind === "test" && j.results && j.results[0];
+    const clip = (s) => (s.length > 40 ? s.slice(0, 40) + "…" : s);
+    if (running) {
+      if (live.phase === "ping" && live.value) return [live.value.toFixed(1), "ms", "پینگ"];
+      if (isBwPhase(G.phase)) { const [b, u] = splitRate(G.v); return [b, u, G.phase === "upload" ? "آپلود" : "دانلود"]; }
+      return ["…", "", clip(live.step || "در حال آماده‌سازی")];
+    }
+    if (res && !res.error) { const [b, u] = splitRate(res.down_bps); return [b, u, "دانلود، آخرین تست"]; }
+    return ["-", "", "آماده"];
+  }
+
+  function phaseValue(j, k) {
+    const running = j && j.status === "running", res = j && j.kind === "test" && j.results && j.results[0];
+    if (running) return S.pv[k] ? (k === "ping" ? ms(S.pv[k]) : fmtRate(S.pv[k])) : "…";
+    if (res && !res.error) return k === "ping" ? ms(res.ping_ms) : fmtRate(k === "upload" ? res.up_bps : res.down_bps);
+    return "-";
+  }
+
+  // The trace: recent samples of this measurement, scaled to their peak.
+  function sparkPath(area) {
+    const h = G.hist;
+    if (h.length < 2) return area ? "" : "M0 47 L300 47";
+    const n = 60, max = Math.max(1, ...h), step = 300 / (n - 1), off = (n - h.length) * step;
+    const y = (v) => (46 - (v / max) * 40).toFixed(1);
+    let d = h.map((v, i) => `${i ? "L" : "M"}${(off + i * step).toFixed(1)} ${y(v)}`).join(" ");
+    if (area) d += ` L300 48 L${off.toFixed(1)} 48 Z`;
+    return d;
+  }
+
+  // One frame: ease the shown value toward the latest sample.
+  function gaugeFrame(now) {
+    const dt = Math.min(100, now - (G.at || now));
+    G.at = now;
+    const k = reduceMotion ? 1 : 1 - Math.exp(-dt / 260);
+    G.v += (G.to - G.v) * k;
+    if (Math.abs(G.to - G.v) < Math.max(1, G.to * 0.001)) G.v = G.to;
+    const fill = $("#g-fill");
+    if (fill) fill.setAttribute("stroke-dashoffset", (GR.len * (1 - (isBwPhase(G.phase) ? gfrac(G.v) : 0))).toFixed(1));
+    const running = S.job && S.job.status === "running";
+    if (running && isBwPhase(G.phase)) {
+      const [b, u] = splitRate(G.v), bg = $("#g-big"), un = $("#g-unit");
+      if (bg && bg.textContent !== b) bg.textContent = b;
+      if (un && un.textContent !== u) un.textContent = u;
+    }
+    if (G.v !== G.to || running) G.raf = requestAnimationFrame(gaugeFrame);
+    else { G.raf = 0; G.at = 0; }
+  }
+  const kickGauge = () => { if (!G.raf) G.raf = requestAnimationFrame(gaugeFrame); };
+
+  // Patch what changes between renders: the phase marks, texts and trace.
+  function patchGauge() {
+    const j = S.job, box = $(".gauge-box");
+    if (!box) return;
+    const [big, unit, what] = gaugeText(j);
+    if (!isBwPhase(G.phase)) { $("#g-big").textContent = big; $("#g-unit").textContent = unit; }
+    $("#g-what").textContent = what;
+    for (const el of $$(".phase[data-ph]", box)) {
+      el.classList.toggle("now", G.phase === el.dataset.ph);
+      el.querySelector("b").textContent = phaseValue(j, el.dataset.ph);
+    }
+    for (const id of ["#g-fill", "#g-area", "#g-line"]) { const el = $(id); if (el) el.classList.toggle("tx", G.phase === "upload"); }
+    $("#g-area").setAttribute("d", sparkPath(true));
+    $("#g-line").setAttribute("d", sparkPath(false));
+  }
+
+  const ST = {
+    pending: ["در صف", "wait"], checking: ["بررسی اتصال…", "busy"], passed: ["وصل شد، منتظر تست سرعت", "ok"],
+    measuring: ["اندازه‌گیری سرعت…", "busy"], done: ["", "done"], failed: ["وصل نشد", "bad"], skipped: ["تست نشد", "wait"],
+  };
+  const rstatus = (r) => r.status || (r.error ? "failed" : "done");
+
   function jobResults(j) {
-    const results = (j.results || []).filter((r) => !r.error), failed = (j.results || []).filter((r) => r.error);
-    const best = j.kind === "bench" ? results.find((r) => r.name !== "direct") : null;
-    const max = Math.max(1, ...results.map((r) => Math.max(r.down_bps, r.up_bps)));
+    const all = j.results || [], running = j.status === "running";
+    const done = all.filter((r) => rstatus(r) === "done");
+    const best = j.kind === "bench" && !running ? done.find((r) => r.name !== "direct") : null;
+    const max = Math.max(1, ...done.map((r) => Math.max(r.down_bps, r.up_bps)));
     const st = { running: "در حال اجرا", done: "تمام شد", failed: "ناموفق", cancelled: "متوقف شد" }[j.status];
+    const n = (s) => all.filter((r) => rstatus(r) === s).length;
+    const finished = n("done") + n("failed") + n("skipped"), reached = all.length - n("pending") - n("checking") - n("failed") - n("skipped");
+    const fresh = (r) => { const s = rstatus(r), was = G.seen[r.name]; G.seen[r.name] = s; return was !== undefined && was !== s; };
+    const row = (r) => {
+      const s = rstatus(r), [label, cls] = ST[s] || ST.done;
+      const meta = s === "failed" || s === "skipped" ? html`<span class="ltr err" title="${r.error || ""}">${r.error || ""}</span>`
+        : r.ping_ms ? html`پینگ ${ms(r.ping_ms)}، جیتر ${ms(r.jitter_ms)}، افت ${r.loss.toFixed(0)}٪${r.mtu ? `، MTU ${r.mtu}` : ""}` : "";
+      const bars = s === "done"
+        ? html`<div class="bars"><div class="bar" style="width:${((r.down_bps / max) * 100).toFixed(1)}%" title="دانلود ${fmtRate(r.down_bps)}"></div><div class="bar tx" style="width:${((r.up_bps / max) * 100).toFixed(1)}%" title="آپلود ${fmtRate(r.up_bps)}"></div></div>`
+        : html`<div class="bars"><div class="lane ${cls}"><i></i></div></div>`;
+      const right = s === "done" ? html`${fmtRate(r.down_bps)}<br><span class="faint">${fmtRate(r.up_bps)}</span>` : html`<span class="st ${cls}">${label}</span>`;
+      return html`<div class="r ${best && r.name === best.name ? "best" : ""} ${fresh(r) ? "fresh" : ""}" data-st="${s}">
+        <div><b class="nm"><i class="sd ${cls}"></i>${resultTitle(r)}</b><div class="faint small">${meta}</div></div>
+        ${bars}<div class="small ltr" style="text-align:end">${right}</div></div>`;
+    };
     return html`<div class="panel"><header><h2>${j.kind === "bench" ? "مقایسه با " : "تست تانل "}${j.target}</h2><span class="aside">${st}</span></header><div class="in stack">
       ${j.error ? html`<div class="note bad">${j.error}</div>` : ""}
+      ${j.kind === "bench" && all.length ? html`<div class="progress"><div class="pl"><span>${running ? (n("checking") ? "بررسی اتصال همه با هم" : n("measuring") ? "اندازه‌گیری سرعت" : "در حال آماده‌سازی") : "نتیجه"}</span>
+          <span class="faint">${reached} از ${all.length} وصل شد · ${n("done")} اندازه‌گیری شد</span></div>
+        <div class="pbar"><i style="transform:scaleX(${(finished / all.length).toFixed(3)})"></i></div></div>` : ""}
       ${best ? html`<div class="note ok">سریع‌ترین گزینه تا <b>${j.target}</b>: <b>${resultTitle(best)}</b>، دانلود ${fmtRate(best.down_bps)} و پینگ ${ms(best.ping_ms)}.
         ${best.mode ? html` <button class="btn sm primary" data-act="wizard" data-peer="${j.target}" data-mode="${best.mode}" data-port="${best.port || ""}">ساخت همین تانل</button>` : ""}</div>` : ""}
-      ${results.length ? html`<div><div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span></div><div class="rank">${results.map((r) => html`<div class="r ${best && r.name === best.name ? "best" : ""}">
-          <div><b class="nm">${resultTitle(r)}</b><div class="faint small">پینگ ${ms(r.ping_ms)}، جیتر ${ms(r.jitter_ms)}، افت ${r.loss.toFixed(0)}٪${r.mtu ? `، MTU ${r.mtu}` : ""}</div></div>
-          <div class="bars"><div class="bar" style="width:${((r.down_bps / max) * 100).toFixed(1)}%" title="دانلود ${fmtRate(r.down_bps)}"></div><div class="bar tx" style="width:${((r.up_bps / max) * 100).toFixed(1)}%" title="آپلود ${fmtRate(r.up_bps)}"></div></div>
-          <div class="small ltr" style="text-align:end">${fmtRate(r.down_bps)}<br><span class="faint">${fmtRate(r.up_bps)}</span></div></div>`)}</div></div>` : ""}
-      ${failed.map((r) => html`<div class="small"><b>${resultTitle(r)}</b> <span class="faint ltr">${r.error}</span></div>`)}
-      <details class="adv" ${S.logOpen || j.status === "running" ? "open" : ""} data-act="log-toggle"><summary>گزارش کامل ${I.chev(16)}</summary><div class="in"><div class="console" id="console">${(j.log || []).map((l) => html`<div>${l}</div>`)}</div></div></details>
+      ${all.length ? html`<div><div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span></div><div class="rank">${all.map(row)}</div></div>` : ""}
+      <details class="adv" ${S.logOpen ? "open" : ""} data-act="log-toggle"><summary>گزارش کامل ${I.chev(16)}</summary><div class="in"><div class="console" id="console">${(j.log || []).map((l) => html`<div>${l}</div>`)}</div></div></details>
     </div></div>`;
   }
 
   const resultTitle = (r) => {
     const b = BENCH.find(([id]) => id === r.name);
     if (!b) return r.title;
-    return r.name === "6to4-udp" && r.port ? `6to4 روی UDP ${r.port}` : b[1];
+    return /-udp$/.test(r.name) && r.port ? `${b[1].replace(" روی UDP", "")} روی UDP ${r.port}` : b[1];
   };
 
   async function startJob(kind, target, only) {
     try {
       S.job = await api("POST", "jobs", { kind, target, only });
-      S.pv = {};
+      S.pv = {}; G.v = G.to = 0; G.phase = ""; G.seq = -1; G.hist = []; G.sig = ""; G.seen = {};
       if (S.drawer) S.drawer = null;
       location.hash = "#/speed";
       draw(); pollJob();
     } catch (e) { toast(e.message, "bad"); }
   }
 
+  // What needs a full render: the status and the rows, not the live sample.
+  const jobSig = (j) => j.status + "|" + (j.log || []).length + "|" + (j.results || []).map((r) => r.name + rstatus(r) + (r.ping_ms || 0) + (r.down_bps || 0)).join(",");
+
   async function pollJob() {
     if (!S.job || S.job.status !== "running") return;
     try { S.job = await api("GET", "jobs/" + S.job.id); } catch { /* retry */ }
     const lv = S.job.live || {};
-    if (lv.phase && lv.value) { if (S.pv.seq !== lv.seq) S.pv = { seq: lv.seq }; S.pv[lv.phase] = lv.value; }
-    if (S.route === "speed" && !S.modal && !S.edit) { draw(); const c = $("#console"); if (c) c.scrollTop = c.scrollHeight; }
-    if (S.job.status === "running") setTimeout(pollJob, 500);
+    if (lv.seq !== G.seq) { G.seq = lv.seq; G.hist = []; S.pv = {}; G.to = 0; }
+    if (lv.phase) {
+      if (lv.phase !== G.phase) { G.phase = lv.phase; G.hist = []; }
+      if (lv.value) { S.pv[lv.phase] = lv.value; if (isBwPhase(lv.phase)) { G.to = lv.value; G.hist.push(lv.value); if (G.hist.length > 60) G.hist.shift(); } }
+    }
+    if (S.route === "speed" && !S.modal) {
+      const sig = jobSig(S.job);
+      if (sig !== G.sig && !S.edit) {
+        G.sig = sig; draw();
+        const c = $("#console"); if (c) c.scrollTop = c.scrollHeight;
+      } else patchGauge();
+      kickGauge();
+    }
+    if (S.job.status === "running") setTimeout(pollJob, 200);
     else toast(S.job.status === "done" ? "تست تمام شد" : S.job.error || "تست متوقف شد", S.job.status === "done" ? "ok" : "bad");
   }
 
@@ -974,11 +1135,19 @@
   // ---------- modals ----------
   function drawModal() {
     const root = $("#modal-root");
-    if (!S.modal) { root.innerHTML = ""; return; }
-    const focused = document.activeElement && document.activeElement.closest(".modal") ? document.activeElement.dataset.bind : null;
-    root.innerHTML = part(html`<div class="overlay" data-act="close-overlay"><div class="modal" role="dialog" aria-modal="true">${S.modal.view()}</div></div>`);
-    const f = (focused && $(`.modal [data-bind="${focused}"]`)) || $(".modal input, .modal select, .modal button.primary");
-    if (f) f.focus();
+    const open = $(".overlay", root);
+    if (!S.modal) {
+      // Leave the way it came, quickly; then drop it.
+      if (open && !open.classList.contains("closing")) {
+        open.classList.add("closing");
+        setTimeout(() => { if (!S.modal) root.textContent = ""; }, reduceMotion ? 0 : 140);
+      }
+      return;
+    }
+    if (open && open.classList.contains("closing")) root.textContent = "";
+    const first = !$(".overlay", root);
+    morph(root, part(html`<div class="overlay" data-act="close-overlay"><div class="modal" role="dialog" aria-modal="true">${S.modal.view()}</div></div>`));
+    if (first) { const f = $(".modal input, .modal select, .modal button.primary"); if (f) f.focus(); }
   }
   const openModal = (view, opts = {}) => { S.modal = Object.assign({ view }, opts); drawModal(); };
   const closeModal = () => { S.modal = null; S.wiz = null; drawModal(); draw(); };
@@ -1017,78 +1186,242 @@
     if (okMsg) toast(okMsg);
   }
 
-  // Tunnel wizard: destination → protocol → protection, ports and forwarding.
+  // Tunnel wizard: destination → protocol → protection → ports and create.
+  // With a connected server every choice is checked live: the same stack is
+  // brought up on both ends for a few seconds to see that traffic passes.
+  const WIZ_STEPS = ["مقصد", "پروتکل", "امنیت و پورت", "فوروارد و ساخت"];
+  const SIT_MODES = ["6to4", "6to4-gre"];
+
   function wizardView() {
-    const w = S.wiz, ov = S.ov;
-    const steps = html`<div class="steps" aria-label="مرحله ${w.step} از ۳">${[1, 2, 3].map((i) => html`<i class="${w.step >= i ? "on" : ""}"></i>`)}</div>`;
-    let body;
-    if (w.step === 1) {
-      body = html`<div class="field"><span class="lbl">تانل به کجا برود؟</span><div class="choices">
-          ${ov.peers.map((p) => html`<button type="button" class="choice ${w.dest === "peer" && w.peer === p.name ? "on" : ""}" data-act="wiz-dest" data-dest="peer" data-name="${p.name}">
-            <b>${I.server(16)} ${p.name}</b><span class="ltr">${p.address}</span><span>${p.paired ? "متصل" : "منتظر اتصال"}</span></button>`)}
-          <button type="button" class="choice ${w.dest === "new" ? "on" : ""}" data-act="wiz-dest" data-dest="new"><b>${I.plus(16)} سرور جدید</b><span>سرور خارج که NeoTunnel روی آن نصب می‌شود</span></button>
-          <button type="button" class="choice ${w.dest === "remote" ? "on" : ""}" data-act="wiz-dest" data-dest="remote"><b>${I.globe(16)} دستگاه دیگر</b><span>مثلاً میکروتیک؛ فقط این طرف ساخته می‌شود</span></button>
-        </div></div>
-        ${w.dest === "new" ? html`<div class="grid2"><div class="field"><label for="w-nn">نام سرور</label><input id="w-nn" class="input ltr" data-bind="wiz.newName" value="${w.newName}" placeholder="germany"><span class="help">حروف کوچک انگلیسی، عدد و خط تیره</span></div>
-          <div class="field"><label for="w-ip">IP عمومی سرور</label><input id="w-ip" class="input ltr" data-bind="wiz.newIP" value="${w.newIP}" placeholder="203.0.113.10"></div></div>` : ""}
-        ${w.dest === "remote" ? html`<div class="field"><label for="w-rm">IP دستگاه مقابل</label><input id="w-rm" class="input ltr" data-bind="wiz.remote" value="${w.remote}" placeholder="203.0.113.10"><span class="help">آن طرف را خودتان (مثلاً روی میکروتیک) با همان نوع تانل تنظیم کنید.</span></div>` : ""}`;
-    } else if (w.step === 2) {
-      const p = PROTO[w.mode] || {};
-      const remoteOK = (m) => !(w.dest === "remote" && m.peer);
-      body = html`<div class="field"><span class="lbl">پروتکل</span><div class="choices">
-          ${ov.modes.filter(remoteOK).map((m) => { const pi = PROTO[m.name] || {}; return html`<button type="button" class="choice ${w.mode === m.name ? "on" : ""}" data-act="wiz-mode" data-mode="${m.name}">
-            <b>${pi.t || m.title}${pi.rec ? html` <span class="tag lock">پیشنهادی</span>` : ""}${m.crypt ? html` <span class="tag lock">${I.lock(11)}</span>` : ""}</b>
-            <span>${pi.best || ""}</span><span class="facts"><span class="tag">لایه ${m.layer}</span><span class="tag">سربار ${pi.over || "?"} بایت</span>${m.udp ? html`<span class="tag">UDP</span>` : ""}</span></button>`; })}
-        </div></div>
-        ${p.t ? html`<div class="stack" style="gap:10px"><p style="margin:0">${p.d}</p><div class="proto-info">
-          <div><span class="k">لایه و محتوا</span>لایه ${p.layer}، ${p.carry}</div><div><span class="k">سربار (روی IPv4)</span>${p.over} بایت</div>
-          <div><span class="k">رمزنگاری</span>${p.crypt}</div><div><span class="k">میکروتیک</span>${p.mt}</div></div></div>` : ""}
-        <div class="field"><label for="w-name">نام تانل (اختیاری)</label><input id="w-name" class="input ltr" data-bind="wiz.name" value="${w.name}" placeholder="t1" maxlength="8" style="max-width:220px"><span class="help">خالی بگذارید تا خودکار انتخاب شود.</span></div>`;
-    } else {
-      const mode = ov.modes.find((m) => m.name === w.mode) || {};
-      const canProtect = !mode.crypt && w.dest !== "remote";
-      body = html`${canProtect ? html`<div class="field"><span class="lbl">محافظت</span><div class="choices">
-            <button type="button" class="choice ${w.protect === "none" ? "on" : ""}" data-act="set" data-path="wiz.protect" data-value="none"><b>بدون رمزنگاری</b><span>سریع‌ترین؛ برای ترافیکی که خودش رمز شده (TLS، Xray).</span></button>
-            <button type="button" class="choice ${w.protect === "ipsec" ? "on" : ""}" data-act="set" data-path="wiz.protect" data-value="ipsec"><b>${I.lock(15)} IPsec در کرنل</b><span>رمزنگاری AES-GCM با سرعت کرنل؛ ۳۸ بایت سربار.</span></button>
-            <button type="button" class="choice ${w.protect === "obfs" ? "on" : ""}" data-act="set" data-path="wiz.protect" data-value="obfs"><b>${I.mask(15)} NeoObfs</b><span>رمز و مبهم: بسته‌ها شبیه نویز تصادفی UDP؛ کندتر از کرنل.</span></button>
-          </div>
-          ${w.protect === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>` : ""}</div>` : ""}
-        <div class="grid2">
-          <div class="field"><label for="w-fwd">فوروارد پورت‌های این سرور (اختیاری)</label><input id="w-fwd" class="input ltr" data-bind="wiz.fwd" value="${w.fwd}" placeholder="443, 8443, 2053-2096"><span class="help">ترافیک این پورت‌ها از داخل تانل به مقصد می‌رود.</span></div>
-          <div class="field"><label for="w-to">پورت مقصد (اختیاری)</label><input id="w-to" class="input ltr" type="number" data-bind="wiz.fwdTo" value="${w.fwdTo}" placeholder="همان پورت"><span class="help">مثلاً 2053 اینجا به 443 آن طرف.</span></div>
-          <div class="field"><span class="lbl">پروتکل فوروارد</span><div class="seg">${["both", "tcp", "udp"].map((p) => html`<button type="button" class="${w.proto === p ? "on" : ""}" data-act="set" data-path="wiz.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
-          <div class="field"><span class="lbl">IP کاربر</span><div class="seg">${Object.entries(MODES_FWD).filter(([v]) => w.dest !== "remote" || v !== "transparent").map(([v, [l]]) => html`<button type="button" class="${w.fmode === v ? "on" : ""}" data-act="set" data-path="wiz.fmode" data-value="${v}">${l}</button>`)}</div></div>
-          <div class="full help">${MODES_FWD[w.fmode][1]}</div>
-          ${w.fmode === "proxy" ? html`<div class="field"><span class="lbl">نسخه‌ی PROXY protocol</span><div class="seg">${["2", "1"].map((v) => html`<button type="button" class="${String(w.pver) === v ? "on" : ""}" data-act="set" data-path="wiz.pver" data-value="${v}">v${v}</button>`)}</div></div>` : ""}
-        </div>
-        <details class="adv" ${w.adv ? "open" : ""} data-act="adv-toggle" data-name="">
-          <summary>تنظیمات پیشرفته <span class="faint">MTU، پورت UDP، TTL${w.protect === "obfs" || w.mode === "obfs" ? "، padding" : ""}</span>${I.chev(16)}</summary>
-          <div class="in">${advancedFields("wiz", w, w.protect === "obfs" ? "obfs" : w.mode, false)}</div>
-        </details>`;
-    }
+    const w = S.wiz;
+    const anim = w.anim ? ` enter-${w.anim}` : "";
+    const stepper = html`<ol class="stepper" aria-label="مرحله ${w.step} از ${WIZ_STEPS.length}">${WIZ_STEPS.map((l, i) => html`<li class="${w.step === i + 1 ? "now" : w.step > i + 1 ? "done" : ""}"><i>${w.step > i + 1 ? I.check(12) : i + 1}</i><span>${l}</span></li>`)}</ol>`;
+    const body = [wizDest, wizProto, wizProtect, wizFinish][w.step - 1](w);
     const canNext = wizCanNext(w);
-    return html`${modalHead("تانل جدید", steps)}
-      <div class="body">${body}</div>
+    return html`${modalHead("تانل جدید")}
+      ${stepper}
+      <div class="body wiz${anim}">${body}</div>
       <footer>${w.step > 1 ? html`<button class="btn ghost" data-act="wiz-back">قبلی</button>` : ""}<span class="grow"></span>
-        ${w.step < 3 ? html`<button class="btn primary" data-act="wiz-next" ${canNext ? "" : "disabled"}>بعدی</button>`
+        ${w.step < WIZ_STEPS.length ? html`<button class="btn primary" data-act="wiz-next" ${canNext ? "" : "disabled"}>بعدی</button>`
           : html`<button class="btn primary" data-act="wiz-create" ${w.busy ? "disabled" : ""}>${w.busy ? "در حال ساخت…" : html`${I.check(16)} ساخت تانل`}</button>`}</footer>`;
+  }
+
+  // The step transition class stays until it has played, so redraws from
+  // live checks in the meantime do not cut it off.
+  function stepAnim(w, dir) {
+    w.anim = dir;
+    clearTimeout(w.animTimer);
+    w.animTimer = setTimeout(() => { w.anim = ""; }, 260);
+  }
+  const wizPeer = (w) => (w.dest === "peer" ? peer(w.peer) : null);
+  const canCheck = (w) => { const p = wizPeer(w); return !!(p && p.paired); };
+
+  function wizDest(w) {
+    const ov = S.ov;
+    return html`<p class="lead">تانل بین این سرور و کجا ساخته شود؟</p>
+      <div class="choices">
+        ${ov.peers.map((p) => html`<button type="button" class="choice ${w.dest === "peer" && w.peer === p.name ? "on" : ""}" data-act="wiz-dest" data-dest="peer" data-name="${p.name}">
+          <b>${I.server(16)} ${p.name}</b><span class="ltr">${p.address}</span><span class="state"><i class="dot ${p.paired ? "ok" : "warn"}"></i>${p.paired ? "متصل؛ هر انتخاب زنده بررسی می‌شود" : "منتظر اتصال"}</span></button>`)}
+        <button type="button" class="choice ${w.dest === "new" ? "on" : ""}" data-act="wiz-dest" data-dest="new"><b>${I.plus(16)} سرور جدید</b><span>سرور خارج که NeoTunnel روی آن نصب می‌شود</span></button>
+        <button type="button" class="choice ${w.dest === "remote" ? "on" : ""}" data-act="wiz-dest" data-dest="remote"><b>${I.globe(16)} دستگاه دیگر</b><span>مثلاً میکروتیک؛ فقط این طرف ساخته می‌شود</span></button>
+      </div>
+      ${w.dest === "new" ? html`<div class="grid2"><div class="field"><label for="w-nn">نام سرور</label><input id="w-nn" class="input ltr" data-bind="wiz.newName" value="${w.newName}" placeholder="germany"><span class="help">حروف کوچک انگلیسی، عدد و خط تیره</span></div>
+        <div class="field"><label for="w-ip">IP عمومی سرور</label><input id="w-ip" class="input ltr" data-bind="wiz.newIP" value="${w.newIP}" placeholder="203.0.113.10"></div></div>
+        <div class="note">بعد از ساخت، یک دستور یک‌خطی برای نصب روی آن سرور می‌گیرید. چون آن طرف هنوز نصب نیست، بررسی زنده‌ی اتصال در این حالت ممکن نیست.</div>` : ""}
+      ${w.dest === "remote" ? html`<div class="field"><label for="w-rm">IP دستگاه مقابل</label><input id="w-rm" class="input ltr" data-bind="wiz.remote" value="${w.remote}" placeholder="203.0.113.10"><span class="help">آن طرف را خودتان (مثلاً روی میکروتیک) با همان نوع تانل تنظیم کنید.</span></div>` : ""}`;
+  }
+
+  function wizProto(w) {
+    const ov = S.ov, v6 = w.underlay === "ipv6", p6 = wizPeer(w);
+    const ok = (m) => !(w.dest === "remote" && m.peer) && !(v6 && SIT_MODES.includes(m.name));
+    const groups = [["لایه ۳، ترافیک IP", (m) => m.layer === 3 && !m.crypt && !m.tcp], ["رمزدار", (m) => m.crypt], ["لایه ۲، Ethernet", (m) => m.layer === 2], ["آخرین راه، وقتی فقط TCP رد می‌شود", (m) => m.tcp]];
+    const card = (m) => {
+      const pi = PROTO[m.name] || {}, c = w.checks[checkKey(w, m.name, false)];
+      return html`<button type="button" class="choice ${w.mode === m.name ? "on" : ""}" data-act="wiz-mode" data-mode="${m.name}">
+        <b>${pi.t || m.title}${pi.rec && !v6 ? html` <span class="tag lock">پیشنهادی</span>` : ""}</b>
+        <span>${pi.best || ""}</span>
+        <span class="facts"><span class="tag">سربار ${pi.over || "?"} بایت</span>${m.udp ? html`<span class="tag">UDP</span>` : ""}${m.tcp ? html`<span class="tag warn">TCP · کند با افت بسته</span>` : ""}${m.crypt ? html`<span class="tag lock">${I.lock(11)} رمزدار</span>` : ""}</span>
+        ${checkChip(c)}</button>`;
+    };
+    const sel = PROTO[w.mode];
+    return html`<div class="field"><span class="lbl">بستر اتصال</span>
+        <div class="seg" role="radiogroup">${[["ipv4", "IPv4"], ["ipv6", "IPv6"]].map(([v, l]) => html`<button type="button" role="radio" aria-checked="${w.underlay === v}" class="${w.underlay === v ? "on" : ""}" data-act="wiz-underlay" data-value="${v}">${l}</button>`)}</div>
+        ${v6 ? html`<div class="grid2" style="margin-top:10px">
+            <div class="field"><label for="w-l6">IPv6 این سرور</label><input id="w-l6" class="input ltr" data-bind="wiz.local6" value="${w.local6}" placeholder="2001:db8::1"><span class="help">${ov.node.address6 ? "خودکار پیدا شد." : "این سرور IPv6 عمومی ندارد یا پیدا نشد."}</span></div>
+            <div class="field"><label for="w-r6">IPv6 مقصد</label><input id="w-r6" class="input ltr" data-bind="wiz.remote6" value="${w.remote6}" placeholder="2001:db8::2"><span class="help">${p6 && p6.address6 ? "از خود سرور مقصد گرفته شد." : "IPv6 عمومی سرور مقصد."}</span></div></div>
+          <span class="help">وقتی مسیر IPv4 شلوغ یا محدود است. GRE و IPIP به نسخه‌ی IPv6 خود تبدیل می‌شوند؛ 6to4 که خودش روی IPv4 است اینجا نیست.</span>`
+        : html`<span class="help">بیشتر سرورها فقط IPv4 دارند؛ اگر هر دو سرور IPv6 دارند، IPv6 هم امتحان کنید.</span>`}</div>
+      <div class="guide">${I.alert(15)}<div><b>چه انتخاب کنم؟</b> اگر مطمئن نیستید <b>${v6 ? "GRE" : "6to4"}</b> را انتخاب کنید. اگر وصل نشد، در مرحله‌ی بعد آن را روی یک پورت UDP اجرا کنید یا WireGuard را امتحان کنید.
+        ${canCheck(w) && !v6 ? html`<div style="margin-top:8px"><button type="button" class="btn sm" data-act="wiz-check-all" ${w.checkingAll ? "disabled" : ""}>${w.checkingAll ? html`<i class="spin"></i> در حال بررسی همه…` : html`${I.gauge(14)} بررسی سریع همه`}</button> <span class="faint small">همه با هم، حدود ۱۵ ثانیه</span></div>` : ""}</div></div>
+      ${groups.map(([title, f]) => { const ms = ov.modes.filter(ok).filter(f); return ms.length ? html`<div class="group"><span class="lbl">${title}</span><div class="choices">${ms.map(card)}</div></div>` : ""; })}
+      ${(() => { const c = w.checks[checkKey(w, w.mode, false)]; return c && c.state === "bad" ? html`<div class="note ${c.cfg ? "warn" : "bad"}"><b>${PROTO[w.mode] ? PROTO[w.mode].t : w.mode}:</b> ${c.cfg ? "" : "ترافیک از این مسیر رد نشد. "}<span class="ltr small">${c.err || ""}</span></div>` : ""; })()}
+      ${sel ? html`<div class="proto-info"><div><span class="k">لایه و محتوا</span>لایه ${sel.layer}، ${sel.carry}</div><div><span class="k">سربار</span>${sel.over} بایت</div>
+        <div><span class="k">رمزنگاری</span>${sel.crypt}</div><div><span class="k">میکروتیک</span>${sel.mt}</div></div>
+        <p class="help" style="margin:0">${sel.d}</p>` : ""}
+      ${sel && sel.tcp ? html`<div class="note warn"><b>TCP آخرین راه است.</b> ترافیک کاربران (که خودش بیشتر TCP است) داخل یک اتصال TCP دیگر می‌رود؛ با هر بسته‌ی گم‌شده کل تانل منتظر ارسال دوباره می‌ماند و سرعت در مسیرِ با افت بسته خیلی پایین می‌آید. اول 6to4، GRE یا یک پروتکل روی UDP را امتحان کنید؛ اگر هیچ‌کدام رد نشد، TCP را انتخاب کنید.</div>` : ""}
+      <div class="field"><label for="w-name">نام تانل (اختیاری)</label><input id="w-name" class="input ltr" data-bind="wiz.name" value="${w.name}" placeholder="t1" maxlength="8" style="max-width:220px"><span class="help">خالی بگذارید تا خودکار انتخاب شود.</span></div>`;
+  }
+
+  function wizProtect(w) {
+    const ov = S.ov, mode = ov.modes.find((m) => m.name === w.mode) || {};
+    const canProtect = !mode.crypt && w.dest !== "remote";
+    const pi = PROTO[w.mode] || {}, v6 = w.underlay === "ipv6";
+    const fou = !mode.udp && !mode.tcp && !["l2tpv3"].includes(w.mode);
+    if (mode.tcp) {
+      // The TCP transport seals its own frames; NeoObfs (UDP) can't go under it.
+      const p = wizProt(w, mode);
+      return html`${checkBanner(w)}
+      <div class="field"><span class="lbl">محافظت</span><div class="choices">
+          <button type="button" class="choice ${p === "none" ? "on" : ""}" data-act="wiz-protect" data-value="none"><b>بدون رمزنگاری</b><span>سریع‌ترین. اتصال با رمز مشترک تانل احراز هویت می‌شود، ولی بسته‌ها خوانا می‌روند؛ برای ترافیکی که خودش رمز شده (TLS، Xray) کافی است.</span></button>
+          <button type="button" class="choice ${p === "ipsec" ? "on" : ""}" data-act="wiz-protect" data-value="ipsec"><b>${I.lock(15)} رمزنگاری جریان</b><span>هر قاب با کلید تازه‌ی همان اتصال مهر می‌شود؛ ۱۶ بایت سربار.</span></button>
+        </div>
+        ${p === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px;margin-top:10px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>` : ""}</div>
+      <div class="field"><label for="w-port">پورت TCP</label>
+        <input id="w-port" class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="خودکار" style="max-width:220px">
+        <span class="help">هر دو سرور روی این پورت گوش می‌دهند و هر کدام که بتواند به دیگری وصل می‌شود. اگر فقط پورت‌های خاصی (مثلاً 443) بین دو سرور باز است، همان را بدهید؛ پورت نباید روی هیچ‌کدام از دو سرور در استفاده باشد.</span></div>`;
+    }
+    return html`${checkBanner(w)}
+      ${canProtect ? html`<div class="field"><span class="lbl">محافظت</span><div class="choices">
+          <button type="button" class="choice ${w.protect === "none" ? "on" : ""}" data-act="wiz-protect" data-value="none"><b>بدون رمزنگاری</b><span>سریع‌ترین. برای ترافیکی که خودش رمز شده (TLS، Xray) کافی است.</span></button>
+          <button type="button" class="choice ${w.protect === "ipsec" ? "on" : ""}" data-act="wiz-protect" data-value="ipsec"><b>${I.lock(15)} IPsec در کرنل</b><span>AES-GCM با سرعت کرنل؛ ۳۸ بایت سربار. ترافیک بین دو سرور خوانا نیست.</span></button>
+          <button type="button" class="choice ${w.protect === "obfs" ? "on" : ""}" data-act="wiz-protect" data-value="obfs"><b>${I.mask(15)} NeoObfs</b><span>رمز با XChaCha20 داخل UDP؛ کندتر از کرنل چون در فضای کاربر اجرا می‌شود.</span></button>
+        </div>
+        ${w.protect === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px;margin-top:10px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>` : ""}</div>`
+        : html`<div class="note">${mode.crypt ? `${pi.t || w.mode} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.` : "برای دستگاه دیگر، رمزنگاری را با WireGuard انجام دهید."}</div>`}
+      <div class="field"><label for="w-port">پورت UDP ${mode.udp || w.protect === "obfs" ? "" : "(اختیاری)"}</label>
+        <input id="w-port" class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="${mode.udp || w.protect === "obfs" ? "خودکار" : "خالی = پروتکل خام"}" style="max-width:220px" ${v6 && fou && w.protect !== "obfs" ? "disabled" : ""}>
+        <span class="help">${v6 && fou && w.protect !== "obfs" ? "روی IPv6، GRE و IPIP بدون پورت اجرا می‌شوند." : mode.udp || w.protect === "obfs" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی بهترین سرعت را دارد. اگر مسیر پروتکل خام را رد نمی‌کند، یک پورت UDP بدهید تا تانل داخل UDP برود."}</span></div>`;
+  }
+
+  // The protection that applies to the chosen mode: a TCP tunnel can't run
+  // over NeoObfs and encrypts its own stream instead of using IPsec.
+  function wizProt(w, mode) {
+    return mode.tcp && w.protect === "obfs" ? "none" : w.protect;
+  }
+
+  function wizFinish(w) {
+    const ov = S.ov, pi = PROTO[w.mode] || {};
+    const mode = ov.modes.find((m) => m.name === w.mode) || {};
+    const prot = { none: "بدون رمزنگاری", ipsec: mode.tcp ? cipherTitle(w.encrypt) : `IPsec ${cipherTitle(w.encrypt)}`, obfs: "NeoObfs" }[wizProt(w, mode)];
+    return html`${checkBanner(w)}
+      <dl class="summary">
+        <div><dt>مقصد</dt><dd>${w.dest === "peer" ? w.peer : w.dest === "new" ? w.newName : html`<span class="ltr">${w.remote}</span>`}</dd></div>
+        <div><dt>پروتکل</dt><dd>${pi.t || w.mode}${w.underlay === "ipv6" ? " روی IPv6" : ""}</dd></div>
+        <div><dt>محافظت</dt><dd>${mode.crypt ? "رمزنگاری خودِ پروتکل" : prot}</dd></div>
+        <div><dt>پورت</dt><dd class="ltr">${w.port ? `${mode.tcp ? "TCP" : "UDP"} ${w.port}` : mode.udp || mode.tcp ? "خودکار" : "پروتکل خام"}</dd></div>
+      </dl>
+      <div class="grid2">
+        <div class="field"><label for="w-fwd">فوروارد پورت‌های این سرور (اختیاری)</label><input id="w-fwd" class="input ltr" data-bind="wiz.fwd" value="${w.fwd}" placeholder="443, 8443, 2053-2096"><span class="help">ترافیک این پورت‌ها از داخل تانل به مقصد می‌رود.</span></div>
+        <div class="field"><label for="w-to">پورت مقصد (اختیاری)</label><input id="w-to" class="input ltr" type="number" data-bind="wiz.fwdTo" value="${w.fwdTo}" placeholder="همان پورت"><span class="help">مثلاً 2053 اینجا به 443 آن طرف.</span></div>
+        <div class="field"><span class="lbl">پروتکل فوروارد</span><div class="seg">${["both", "tcp", "udp"].map((p) => html`<button type="button" class="${w.proto === p ? "on" : ""}" data-act="set" data-path="wiz.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
+        <div class="field"><span class="lbl">IP کاربر</span><div class="seg">${Object.entries(MODES_FWD).filter(([v]) => w.dest !== "remote" || v !== "transparent").map(([v, [l]]) => html`<button type="button" class="${w.fmode === v ? "on" : ""}" data-act="set" data-path="wiz.fmode" data-value="${v}">${l}</button>`)}</div></div>
+        <div class="full help">${MODES_FWD[w.fmode][1]}</div>
+        ${w.fmode === "proxy" ? html`<div class="field"><span class="lbl">نسخه‌ی PROXY protocol</span><div class="seg">${["2", "1"].map((v) => html`<button type="button" class="${String(w.pver) === v ? "on" : ""}" data-act="set" data-path="wiz.pver" data-value="${v}">v${v}</button>`)}</div></div>` : ""}
+      </div>
+      <details class="adv" ${w.adv ? "open" : ""} data-act="adv-toggle" data-name="">
+        <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، DSCP${wizProt(w, mode) === "obfs" || w.mode === "obfs" ? "، padding" : ""}</span>${I.chev(16)}</summary>
+        <div class="in">${advancedFields("wiz", w, wizProt(w, mode) === "obfs" ? "obfs" : w.mode, false, true)}</div>
+      </details>`;
+  }
+
+  // The live check of the current choices.
+  function checkKey(w, mode, opts) {
+    const k = { mode, u: w.underlay, l6: w.underlay === "ipv6" ? w.local6 : "", r6: w.underlay === "ipv6" ? w.remote6 : "" };
+    if (opts) Object.assign(k, { p: w.protect, e: w.protect === "ipsec" ? w.encrypt : "", port: +w.port || 0 });
+    return JSON.stringify(k);
+  }
+  function checkChip(c) {
+    if (!c) return "";
+    if (c.state === "run") return html`<span class="chk run"><i class="spin"></i>بررسی اتصال…</span>`;
+    if (c.state === "skip") return html`<span class="chk run">بعد از ساخت تست می‌شود</span>`;
+    if (c.state === "ok") return html`<span class="chk ok">${I.check(12)} وصل شد · ${ms(c.ping)}</span>`;
+    return html`<span class="chk ${c.cfg ? "warn" : "bad"}" title="${c.err || ""}">${I.x(12)} ${c.cfg ? "با تنظیمات فعلی ساخته نمی‌شود" : "وصل نشد"}</span>`;
+  }
+  function checkBanner(w) {
+    if (!canCheck(w)) return "";
+    const c = w.checks[checkKey(w, w.mode, true)];
+    if (!c || c.state === "run") return html`<div class="check run"><i class="spin"></i><div><b>بررسی اتصال با این تنظیمات…</b><span>تانل چند ثانیه روی هر دو سرور بالا می‌آید و پاک می‌شود.</span></div></div>`;
+    if (c.state === "skip") return html`<div class="check">${I.mask(16)}<div><b>NeoObfs پیش از ساخت سنجیده نمی‌شود</b><span>در فضای کاربر اجرا می‌شود؛ بعد از ساخت، با «تست سرعت» همان تانل بررسی کنید.</span></div></div>`;
+    if (c.state === "ok") return html`<div class="check ok">${I.check(16)}<div><b>با این تنظیمات وصل می‌شود</b><span>پینگ ${ms(c.ping)}${c.loss ? `، افت ${c.loss.toFixed(0)}٪` : ""}${c.mtu ? `، MTU ${c.mtu}` : ""}</span></div></div>`;
+    if (c.cfg) return html`<div class="check bad">${I.alert(16)}<div><b>این ترکیب ساخته نمی‌شود</b><span class="ltr">${c.err || ""}</span></div></div>`;
+    return html`<div class="check bad">${I.alert(16)}<div><b>با این تنظیمات ترافیک رد نمی‌شود</b><span class="ltr">${c.err || ""}</span><span>${w.mode === "tcp" ? "پورت TCP دیگری بدهید که بین دو سرور باز است." : +w.port ? "پروتکل دیگری امتحان کنید یا NeoObfs را بزنید." : "یک پورت UDP بدهید یا پروتکل دیگری امتحان کنید."}</span></div></div>`;
+  }
+
+  function wizRequest(w, peerName) {
+    const set = settingsBody(w);
+    const prot = wizProt(w, S.ov.modes.find((m) => m.name === w.mode) || {});
+    const req = Object.assign(set, {
+      mode: w.mode, name: w.name.trim(), port: +w.port || 0, forward: w.fwd.trim(), forward_to: +w.fwdTo || 0, proto: w.proto,
+      forward_mode: w.fmode, proxy_version: w.fmode === "proxy" ? +w.pver : 0,
+      obfs: prot === "obfs", encrypt: prot === "ipsec" ? w.encrypt : "",
+    });
+    if (w.underlay === "ipv6") Object.assign(req, { underlay: "ipv6", local6: w.local6.trim(), remote6: w.remote6.trim() });
+    if (w.dest === "remote") req.remote = w.remote.trim(); else req.peer = peerName;
+    return req;
+  }
+
+  // Run a check unless its answer is known; repaint only the open modal.
+  async function runCheck(opts, tries = 0) {
+    const w = S.wiz;
+    if (!w || !canCheck(w) || !w.mode) return;
+    if (w.underlay === "ipv6" && (!w.local6 || !w.remote6)) return;
+    const key = checkKey(w, w.mode, opts);
+    if (w.checks[key] && w.checks[key].state !== "run") return;
+    w.checks[key] = { state: "run" }; drawModal();
+    const req = wizRequest(w, w.peer);
+    if (!opts) Object.assign(req, { obfs: false, encrypt: "", port: 0 });
+    req.forward = "";
+    try {
+      const r = ((await api("POST", "check", req)) || [])[0] || {};
+      w.checks[key] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu } : r.status === "skipped" ? (r.error && /NeoObfs/.test(r.error) ? { state: "skip" } : { state: "bad", err: r.error, cfg: true }) : { state: "bad", err: r.error };
+    } catch (e) {
+      if (/در حال اجراست/.test(e.message) && tries < 8) { setTimeout(() => runCheck(opts, tries + 1), 1500); return; }
+      w.checks[key] = { state: "bad", err: e.message, cfg: true };
+    }
+    if (S.wiz === w) drawModal();
+  }
+  let checkTimer = 0;
+  const checkSoon = (opts) => { clearTimeout(checkTimer); checkTimer = setTimeout(() => runCheck(opts), 500); };
+
+  async function checkAll() {
+    const w = S.wiz;
+    if (!w || !canCheck(w) || w.checkingAll) return;
+    w.checkingAll = true;
+    for (const m of S.ov.modes) { const k = checkKey(w, m.name, false); if (!w.checks[k]) w.checks[k] = { state: "run" }; }
+    drawModal();
+    try {
+      const rs = (await api("POST", "check", { peer: w.peer, mode: "6to4", all: true })) || [];
+      for (const r of rs) {
+        if (/-udp$/.test(r.name)) continue; // the UDP variants answer a different question
+        const k = checkKey(w, r.mode || r.name, false);
+        w.checks[k] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu } : { state: "bad", err: r.error, cfg: r.status === "skipped" };
+      }
+    } catch (e) { toast(e.message, "bad"); }
+    for (const k of Object.keys(w.checks)) if (w.checks[k].state === "run") delete w.checks[k];
+    w.checkingAll = false;
+    if (S.wiz === w) drawModal();
   }
 
   function wizCanNext(w) {
     if (w.step === 1) return !!((w.dest === "peer" && w.peer) || (w.dest === "new" && w.newName && w.newIP) || (w.dest === "remote" && w.remote));
-    return w.step === 2 ? !!w.mode : true;
+    if (w.step === 2) return !!w.mode && (w.underlay !== "ipv6" || !!(w.local6 && w.remote6));
+    return true;
   }
 
   function openWizard(preset = {}) {
     const ov = S.ov, d = ov.defaults || {};
     S.wiz = Object.assign({
       step: 1, dest: ov.peers.length ? "peer" : "new", peer: ov.peers.length ? ov.peers[0].name : "", newName: "", newIP: "", remote: "",
-      mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false,
+      mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false, anim: "",
+      underlay: "ipv4", local6: ov.node.address6 || "", remote6: "", checks: {}, checkingAll: false,
       protect: d.obfs ? "obfs" : d.encrypt ? "ipsec" : "none", encrypt: d.encrypt || "aes-gcm-128",
       fmode: d.forward_mode || "nat", pver: 2, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", dscp: "", noDF: false, padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
     }, preset);
     if (preset.peer) { S.wiz.dest = "peer"; S.wiz.step = preset.mode ? 3 : 2; }
+    const p = wizPeer(S.wiz); if (p && p.address6) S.wiz.remote6 = p.address6;
     openModal(wizardView);
+    if (S.wiz.step === 2) runCheck(false);
+    if (S.wiz.step >= 3) runCheck(true);
   }
 
   async function createTunnel() {
@@ -1100,14 +1433,7 @@
         await api("POST", "peers", { name: w.newName.trim(), address: w.newIP.trim() });
         peerName = w.newName.trim();
       }
-      const set = settingsBody(w);
-      const req = Object.assign(set, {
-        mode: w.mode, name: w.name.trim(), port: +w.port || 0, forward: w.fwd.trim(), forward_to: +w.fwdTo || 0, proto: w.proto,
-        forward_mode: w.fmode, proxy_version: w.fmode === "proxy" ? +w.pver : 0,
-        obfs: w.protect === "obfs", encrypt: w.protect === "ipsec" ? w.encrypt : "",
-      });
-      if (w.dest === "remote") req.remote = w.remote.trim(); else req.peer = peerName;
-      const ch = await api("POST", "tunnels", req);
+      const ch = await api("POST", "tunnels", wizRequest(w, peerName));
       S.modal = null; S.wiz = null;
       await refresh();
       location.hash = "#/tunnels";
@@ -1164,9 +1490,13 @@
     const b = e.target.dataset.bind;
     if (!b) { if (e.target.closest("#app form")) S.edit = true; return; }
     setPath(b, e.target.value);
-    if (!e.target.closest(".modal")) S.edit = true;
+    if (e.target.closest("form, .detail, table.t, .spane")) S.edit = true;
     const next = $('[data-act="wiz-next"]');
     if (next && S.wiz) next.disabled = !wizCanNext(S.wiz);
+    if (S.wiz) {
+      if (["wiz.port", "wiz.encrypt"].includes(b) && S.wiz.step >= 3) checkSoon(true);
+      if (["wiz.local6", "wiz.remote6"].includes(b) && S.wiz.step === 2) checkSoon(false);
+    }
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
@@ -1232,7 +1562,6 @@
       draw(); const c = $(".drawer .btn"); if (c) c.focus();
       if (el.dataset.type === "tunnel") refreshTraffic().then(() => { if (S.drawer) draw(); });
     },
-    cat(el) { S.cat = el.dataset.cat; draw(); },
     // An item on the arc: ports open their forwards page, the rest the drawer.
     arc(el) {
       const type = el.dataset.type, key = el.dataset.key;
@@ -1245,6 +1574,7 @@
     "drawer-close"() { S.drawer = null; draw(); },
     "open-tunnel"(el) { S.drawer = null; S.open = el.dataset.name; location.hash = "#/tunnels"; draw(); },
     "toggle-tunnel"(el) { const n = el.dataset.name; S.open = S.open === n ? null : n; if (S.open !== n) delete S.tset[n]; S.edit = false; draw(); },
+    dtab(el) { S.dtab[el.dataset.name] = el.dataset.tab; draw(); },
     "reset-tset"(el) { delete S.tset[el.dataset.name]; S.edit = false; draw(); },
     async mtu(el) {
       const n = el.dataset.name;
@@ -1253,10 +1583,21 @@
       catch (e) { toast(e.message, "bad"); }
     },
     wizard(el) { openWizard(el.dataset.peer ? { peer: el.dataset.peer, mode: el.dataset.mode || "", port: el.dataset.port || "" } : {}); if (el.dataset.peer && !el.dataset.mode) S.wiz.mode = "6to4"; S.drawer = null; drawModal(); },
-    "wiz-dest"(el) { Object.assign(S.wiz, { dest: el.dataset.dest, peer: el.dataset.name || S.wiz.peer }); drawModal(); },
-    "wiz-mode"(el) { S.wiz.mode = el.dataset.mode; drawModal(); },
-    "wiz-next"() { S.wiz.step++; drawModal(); },
-    "wiz-back"() { S.wiz.step--; drawModal(); },
+    "wiz-dest"(el) {
+      Object.assign(S.wiz, { dest: el.dataset.dest, peer: el.dataset.name || S.wiz.peer });
+      const p = wizPeer(S.wiz); if (p && p.address6) S.wiz.remote6 = p.address6;
+      drawModal();
+    },
+    "wiz-mode"(el) { S.wiz.mode = el.dataset.mode; drawModal(); runCheck(false); },
+    "wiz-underlay"(el) {
+      const w = S.wiz; w.underlay = el.dataset.value;
+      if (w.underlay === "ipv6" && SIT_MODES.includes(w.mode)) w.mode = "gre";
+      drawModal(); runCheck(false);
+    },
+    "wiz-protect"(el) { S.wiz.protect = el.dataset.value; drawModal(); runCheck(true); },
+    "wiz-check-all"() { checkAll(); },
+    "wiz-next"() { const w = S.wiz; w.step++; stepAnim(w, "next"); drawModal(); if (w.step === 2) runCheck(false); if (w.step === 3) runCheck(true); },
+    "wiz-back"() { S.wiz.step--; stepAnim(S.wiz, "back"); drawModal(); },
     "wiz-create"() { createTunnel(); },
     setup(el) { showSetup(el.dataset.name); },
     "add-server"() { S.form = {}; openModal(addServerView); },
@@ -1291,6 +1632,18 @@
       try { const ch = await api("POST", "forwards/remove", { tunnel: el.dataset.tunnel, ports: el.dataset.ports }); closeModal(); await refresh(); reportChange(ch, "فوروارد حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
     },
+    async "tunnel-power"(el) {
+      const t = tunnel(el.dataset.name); if (!t) return;
+      const l = Object.assign({}, t.limits, { disabled: !t.limits.disabled });
+      try { const ch = await api("POST", `tunnels/${encodeURIComponent(t.name)}/limits`, l); await refresh(); reportChange(ch, l.disabled ? "تانل خاموش شد" : "تانل روشن شد"); }
+      catch (e) { toast(e.message, "bad"); }
+    },
+    async "save-limits"(el) {
+      const t = tunnel(el.dataset.name), st = S.tset[el.dataset.name]; if (!t || !st) return;
+      const l = { disabled: t.limits.disabled, rate_mbit: Math.round(+st.rate || 0), quota_gb: +st.quota || 0 };
+      try { const ch = await api("POST", `tunnels/${encodeURIComponent(t.name)}/limits`, l); S.edit = false; await refresh(); reportChange(ch, "محدودیت‌ها ذخیره شد"); }
+      catch (e) { toast(e.message, "bad"); }
+    },
     "del-tunnel"(el) { openModal(() => confirmView("حذف تانل", html`تانل <b>${el.dataset.name}</b> با لایه‌های زیرین و فورواردهایش، روی هر دو سرور حذف شود؟`, "del-tunnel-go", { name: el.dataset.name }, "حذف تانل")); },
     async "del-tunnel-go"(el) {
       try { const ch = await api("DELETE", "tunnels/" + encodeURIComponent(el.dataset.name)); closeModal(); S.open = null; S.drawer = null; await refresh(); reportChange(ch, "تانل حذف شد"); }
@@ -1310,9 +1663,12 @@
       catch (e) { toast(e.message, "bad"); }
     },
     async upgrade(el) {
-      toast(`ارسال نسخه‌ی جدید به ${el.dataset.name}…`);
-      try { const r = await api("POST", `peers/${encodeURIComponent(el.dataset.name)}/upgrade`); toast(`${el.dataset.name} به ${r.version} ارتقا یافت`); await refresh(); }
+      const n = el.dataset.name;
+      if (S.upgrading[n]) return;
+      S.upgrading[n] = true; draw();
+      try { const r = await api("POST", `peers/${encodeURIComponent(n)}/upgrade`); toast(`${n} به ${r.version} ارتقا یافت و دوباره وصل شد`); }
       catch (e) { toast(e.message, "bad"); }
+      delete S.upgrading[n]; await refresh();
     },
     test(el) { startJob("test", el.dataset.name); },
     bench(el) { S.speed.peer = el.dataset.name; startJob("bench", el.dataset.name, S.speed.only); },

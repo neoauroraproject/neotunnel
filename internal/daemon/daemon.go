@@ -19,6 +19,7 @@ import (
 	"neotunnel/internal/agent"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/fleet"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/probe"
@@ -61,13 +62,14 @@ func Run(ctx context.Context) error {
 	defer dp.Close()
 
 	store := traffic.Open()
-	go account(ctx, store)
+	go account(ctx, store, poke)
 	go probeMTUs(ctx, poke)
 
 	tracker := health.New()
 	go monitorHealth(ctx, tracker)
 
 	startPanel(id, store, tracker, poke)
+	go watchPeers(ctx, id)
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
@@ -156,6 +158,21 @@ func startPanel(id *identity.Identity, store *traffic.Store, tracker *health.Tra
 			log.Printf("panel: %v", err)
 		}
 	}()
+}
+
+// watchPeers keeps each peer's version and last contact current, so the
+// panel can tell which servers are reachable and which need an upgrade.
+func watchPeers(ctx context.Context, id *identity.Identity) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		fleet.RefreshAll(ctx, id)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // tryRegister completes pairing for a node that received its setup key

@@ -16,6 +16,10 @@ type Needs struct {
 	UDPPorts []int    // tunnel ports (FOU, VXLAN, GENEVE)
 	Ports    []string // ufw port specs, e.g. "7710/tcp", "7711"
 	ESP      bool     // encrypted tunnels: IPsec ESP packets
+	// Peers are the far ends of tunnels that use a raw IP protocol (GRE,
+	// IPIP, SIT, L2TPv3): ufw has no rule for those protocols, so their
+	// packets are allowed by source address.
+	Peers []string
 }
 
 func (n Needs) rules() [][]string {
@@ -31,6 +35,9 @@ func (n Needs) rules() [][]string {
 	}
 	for _, p := range n.Ports {
 		out = append(out, []string{"allow", p})
+	}
+	for _, p := range n.Peers {
+		out = append(out, []string{"allow", "from", p})
 	}
 	if n.ESP {
 		out = append(out, []string{"allow", "proto", "esp", "from", "any", "to", "any"})

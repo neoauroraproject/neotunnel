@@ -56,6 +56,9 @@ func Apply(st *config.State) Result {
 			if err := adopt(s); err != nil {
 				res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: %w", s.Tunnel, err))
 			}
+			if err := shape(s.Name, s.RateMbit); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: speed limit: %w", s.Tunnel, err))
+			}
 			continue
 		}
 		created, err := ensure(s, aliasPersistent+s.Hash())
@@ -65,6 +68,9 @@ func Apply(st *config.State) Result {
 		}
 		if created {
 			res.Created = append(res.Created, s.Name)
+		}
+		if err := shape(s.Name, s.RateMbit); err != nil {
+			res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: speed limit: %w", s.Tunnel, err))
 		}
 	}
 
@@ -86,7 +92,8 @@ func Apply(st *config.State) Result {
 
 	res.Errors = append(res.Errors, syncIPsec(specs)...)
 
-	_, fs := st.Effective()
+	all, fs := st.Effective()
+	fs = activeForwards(all, fs)
 	links := make([]forward.Link, len(specs))
 	for i, s := range specs {
 		links[i] = forward.Link{Name: s.Name, Tunnel: s.Tunnel}
@@ -132,11 +139,18 @@ func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firew
 	}
 	for _, s := range specs {
 		n.Ifaces = append(n.Ifaces, s.Name)
-		if s.Port != 0 {
+		if s.Port != 0 && s.Kind == config.KindTCP {
+			n.Ports = append(n.Ports, fmt.Sprintf("%d/tcp", s.Port))
+		} else if s.Port != 0 {
 			n.UDPPorts = append(n.UDPPorts, int(s.Port))
 		}
 		if s.Encrypt != "" {
 			n.ESP = true
+		}
+		if s.Parent == "" && !s.Userspace && s.Remote.IsValid() {
+			if p, port := outerProto(s); port == 0 && p != 17 {
+				n.Peers = append(n.Peers, s.Remote.String())
+			}
 		}
 	}
 	for _, r := range rs.Relays {
@@ -190,7 +204,7 @@ func modulesFor(s LinkSpec) []string {
 		ms = []string{"l2tp_eth", "l2tp_netlink", "l2tp_ip", "l2tp_ip6"}
 	case config.KindWireGuard:
 		ms = []string{"wireguard"}
-	case config.KindObfs:
+	case config.KindObfs, config.KindTCP:
 		ms = []string{"tun"}
 	}
 	if s.FOU {
@@ -214,6 +228,12 @@ func ApplyBench(specs []LinkSpec, ttl time.Duration) error {
 	}
 	exp := expiry.Unix()
 	for _, s := range specs {
+		if s.Userspace {
+			if err := benchUserspace(s, expiry); err != nil {
+				return fmt.Errorf("%s: %w", s.Name, err)
+			}
+			continue
+		}
 		if _, err := ensure(s, fmt.Sprintf("%s%d:%s", aliasBench, exp, s.Hash())); err != nil {
 			return fmt.Errorf("%s: %w", s.Name, err)
 		}
@@ -225,6 +245,9 @@ func ApplyBench(specs []LinkSpec, ttl time.Duration) error {
 func RemoveBench(names []string) {
 	mu.Lock()
 	defer mu.Unlock()
+	if us := currentUserspace(); us != nil {
+		us.StopBench(names)
+	}
 	for i := len(names) - 1; i >= 0; i-- {
 		if l, err := netlink.LinkByName(names[i]); err == nil && strings.HasPrefix(l.Attrs().Alias, aliasBench) {
 			delLink(l)
@@ -252,4 +275,24 @@ func Down() error {
 	removeIPsec()
 	syncReturns(nil, nil)
 	return forward.Apply(forward.Ruleset{})
+}
+
+// benchUserspace has the daemon's data plane run a temporary user-space
+// tunnel, then configures its interface like adopt does.
+func benchUserspace(s LinkSpec, expiry time.Time) error {
+	us := currentUserspace()
+	if us == nil {
+		return ErrNeedsDaemon
+	}
+	if err := us.StartBench(s, expiry); err != nil {
+		return err
+	}
+	l, err := netlink.LinkByName(s.Name)
+	if err != nil {
+		return err
+	}
+	if err := netlink.LinkSetAlias(l, fmt.Sprintf("%s%d:%s", aliasBench, expiry.Unix(), s.Hash())); err != nil {
+		return err
+	}
+	return configure(l, s)
 }

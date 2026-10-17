@@ -34,6 +34,7 @@ var modeHints = map[string]string{
 	"geneve":    "layer 2 over UDP, newer than VXLAN",
 	"wireguard": "encrypted in the kernel; also talks to MikroTik v7",
 	"obfs":      "NeoObfs: encrypted UDP that looks like random noise",
+	"tcp":       "packets over TCP: a last resort when UDP and GRE/SIT are blocked",
 	"l2tpv3":    "layer 2 pseudowire over IP or UDP, MikroTik compatible",
 }
 
@@ -364,11 +365,18 @@ func (s *session) createTunnel(peer string) {
 		case d.Encrypt != "":
 			def = 1
 		}
-		c := s.choose("Create a tunnel · step 3 of 6 · protection", []item{
+		choices := []item{
 			{"None", "plain tunnel, the fastest", false},
 			{"Encrypt (IPsec)", "AES-GCM in the kernel, keys from the tunnel secret", false},
 			{"Obfuscate (NeoObfs)", "encrypted UDP that looks like random noise; needs a port", false},
-		}, def)
+		}
+		if mode.TCP {
+			// The TCP transport seals its own frames; NeoObfs is UDP.
+			choices = choices[:2]
+			choices[1] = item{"Encrypt", "AES-GCM on the TCP stream, keys from the tunnel secret", false}
+			def = min(def, 1)
+		}
+		c := s.choose("Create a tunnel · step 3 of 6 · protection", choices, def)
 		switch c {
 		case -1:
 			return
@@ -377,7 +385,11 @@ func (s *session) createTunnel(peer string) {
 			if req.Encrypt == "" {
 				req.Encrypt = "aes-gcm-128"
 			}
-			done = append(done, "protection   IPsec "+req.Encrypt)
+			if mode.TCP {
+				done = append(done, "protection   "+req.Encrypt)
+			} else {
+				done = append(done, "protection   IPsec "+req.Encrypt)
+			}
 		case 2:
 			req.Obfs, req.Padding = true, d.Padding
 			done = append(done, "protection   NeoObfs")
@@ -409,8 +421,14 @@ func (s *session) createTunnel(peer string) {
 		portQ = "UDP port for NeoObfs (empty = a free port)"
 	case mode.UDP:
 		portQ = "UDP port (empty = the standard or a free port)"
+	case mode.TCP:
+		portQ = "TCP port both servers listen on (empty = a free port)"
 	}
-	s.t.write(dim("   A UDP port helps when the path blocks protocol 41/47, and lets\n   tunnels to different servers each run on their own port.") + "\n\n")
+	if mode.TCP {
+		s.t.write(dim("   TCP inside TCP slows down a lot under packet loss: use it only when\n   neither UDP nor protocol 41/47 passes between the two servers.") + "\n\n")
+	} else {
+		s.t.write(dim("   A UDP port helps when the path blocks protocol 41/47, and lets\n   tunnels to different servers each run on their own port.") + "\n\n")
+	}
 	port, ok := s.t.input(portQ, "", validPort)
 	if !ok {
 		return
@@ -418,7 +436,13 @@ func (s *session) createTunnel(peer string) {
 	if port != "" {
 		n, _ := strconv.Atoi(port)
 		req.Port = uint16(n)
-		done = append(done, "udp port     "+port)
+		if mode.TCP {
+			done = append(done, "tcp port     "+port)
+		} else {
+			done = append(done, "udp port     "+port)
+		}
+	} else if mode.TCP {
+		done = append(done, "tcp port     automatic")
 	} else {
 		done = append(done, "udp port     none (native protocol)")
 	}

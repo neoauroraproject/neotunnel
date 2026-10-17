@@ -97,7 +97,7 @@ type jobs struct {
 
 func newJobs() *jobs { return &jobs{all: map[string]*job{}} }
 
-func (js *jobs) start(kind, target string, run func(context.Context, func(string), func(string, float64)) ([]bench.Result, error)) (*job, error) {
+func (js *jobs) start(kind, target string, run func(context.Context, func(string), func(string, float64), func(bench.Result)) ([]bench.Result, error)) (*job, error) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	if js.busy {
@@ -111,7 +111,7 @@ func (js *jobs) start(kind, target string, run func(context.Context, func(string
 	js.busy = true
 	js.prune()
 	go func() {
-		results, err := run(ctx, j.log, j.live)
+		results, err := run(ctx, j.log, j.live, j.upsert)
 		j.mu.Lock()
 		j.Results, j.Finished = results, time.Now()
 		switch {
@@ -172,4 +172,24 @@ func (js *jobs) list() []jobView {
 		out[i] = j.view()
 	}
 	return out
+}
+
+// upsert records a candidate's latest state while a comparison runs, so
+// the panel shows results as they arrive.
+func (j *job) upsert(r bench.Result) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for i := range j.Results {
+		if j.Results[i].Name == r.Name {
+			j.Results[i] = r
+			return
+		}
+	}
+	j.Results = append(j.Results, r)
+}
+
+func (js *jobs) running() bool {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return js.busy
 }
