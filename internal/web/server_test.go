@@ -31,7 +31,9 @@ func (stub) AddForward(manage.ForwardRequest) (manage.Change, error)    { return
 func (stub) UpdateForward(manage.ForwardRequest) (manage.Change, error) { return manage.Change{}, nil }
 func (stub) SetLimits(string, manage.Limits) (manage.Change, error)     { return manage.Change{}, nil }
 
-func (stub) Check(context.Context, manage.TunnelRequest, bool) ([]bench.Result, error) { return nil, nil }
+func (stub) Check(context.Context, manage.TunnelRequest, bool) ([]bench.Result, error) {
+	return nil, nil
+}
 
 func (stub) UpdateTunnel(string, manage.Settings, uint16) (manage.Change, error) {
 	return manage.Change{}, nil

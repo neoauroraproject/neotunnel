@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -26,7 +27,30 @@ func settingsFlags(f *pflag.FlagSet, s *manage.Settings) {
 	f.IntVar(&s.Padding, "padding", 0, "NeoObfs: up to this many random padding bytes per packet (0-255)")
 	f.IntVar(&s.Keepalive, "keepalive", 0, "WireGuard/NeoObfs keepalive in seconds (-1 = off, default 25)")
 	f.StringVar(&s.PeerKey, "peer-key", "", "WireGuard: the far end's public key, when it doesn't run NeoTunnel")
+	f.Var(tunnelID{&s.TunnelID}, "tunnel-id", "EoIP: the tunnel id, same as the MikroTik's tunnel-id (0-65535, 0-4095 on EoIPv6 without a port; default: from the name)")
 }
+
+// tunnelID is an optional uint16 flag: unset leaves the id derived.
+type tunnelID struct{ p **uint16 }
+
+func (v tunnelID) String() string {
+	if v.p == nil || *v.p == nil {
+		return ""
+	}
+	return strconv.Itoa(int(**v.p))
+}
+
+func (v tunnelID) Set(s string) error {
+	n, err := strconv.ParseUint(s, 10, 16)
+	if err != nil {
+		return fmt.Errorf("must be a number 0-65535")
+	}
+	id := uint16(n)
+	*v.p = &id
+	return nil
+}
+
+func (tunnelID) Type() string { return "id" }
 
 // withDefaults fills options the user didn't give from the saved defaults.
 func withDefaults(f *pflag.FlagSet, st *config.State, s *manage.Settings, obfs *bool) {
@@ -75,6 +99,7 @@ func tunnelSetCmd() *cobra.Command {
 			keep("padding", func() { s.Padding = cur.Padding })
 			keep("keepalive", func() { s.Keepalive = cur.Keepalive })
 			keep("peer-key", func() { s.PeerKey = cur.PeerKey })
+			keep("tunnel-id", func() { s.TunnelID = cur.TunnelID })
 			if f.Changed("no-encrypt") {
 				s.Encrypt = ""
 			}

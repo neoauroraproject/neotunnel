@@ -9,6 +9,7 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/eoip"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/obfs"
 	"neotunnel/internal/pmtu"
@@ -17,11 +18,12 @@ import (
 	"neotunnel/internal/traffic"
 )
 
-// dataPlane is the daemon's engine.Userspace: NeoObfs and TCP tunnels and
-// PROXY protocol relays.
+// dataPlane is the daemon's engine.Userspace: NeoObfs, TCP and EoIP tunnels
+// and PROXY protocol relays.
 type dataPlane struct {
 	obfs  *obfs.Manager
 	tcp   *tcptun.Manager
+	eoip  *eoip.Manager
 	relay *relay.Manager
 
 	benchMu sync.Mutex
@@ -31,7 +33,7 @@ type dataPlane struct {
 type closer interface{ Close() }
 
 func newDataPlane() *dataPlane {
-	return &dataPlane{obfs: obfs.NewManager(), tcp: tcptun.NewManager(), relay: relay.NewManager(), bench: map[string]closer{}}
+	return &dataPlane{obfs: obfs.NewManager(), tcp: tcptun.NewManager(), eoip: eoip.NewManager(), relay: relay.NewManager(), bench: map[string]closer{}}
 }
 
 // keepalive turns a spec's setting (0 default, -1 off) into a duration.
@@ -61,27 +63,42 @@ func tcpConfig(s engine.LinkSpec) tcptun.Config {
 	}
 }
 
+func eoipConfig(s engine.LinkSpec) eoip.Config {
+	return eoip.Config{
+		Name: s.Name, Tunnel: s.Tunnel, Side: s.Side, ID: uint16(s.Key),
+		Local: s.Local, Remote: s.Remote, Port: s.Port,
+		TTL: s.TTL, DSCP: s.DSCP, NoDF: s.NoDF, Keepalive: keepalive(s, 25*time.Second),
+	}
+}
+
 func (d *dataPlane) SyncLinks(specs []engine.LinkSpec) []error {
 	var oc []obfs.Config
 	var tc []tcptun.Config
+	var ec []eoip.Config
 	for _, s := range specs {
 		switch s.Kind {
 		case config.KindTCP:
 			tc = append(tc, tcpConfig(s))
+		case config.KindEoIP:
+			ec = append(ec, eoipConfig(s))
 		default:
 			oc = append(oc, obfsConfig(s))
 		}
 	}
-	return append(d.obfs.Sync(oc), d.tcp.Sync(tc)...)
+	errs := append(d.obfs.Sync(oc), d.tcp.Sync(tc)...)
+	return append(errs, d.eoip.Sync(ec)...)
 }
 
 func (d *dataPlane) StartBench(s engine.LinkSpec, expiry time.Time) error {
 	d.StopBench([]string{s.Name})
 	var l closer
 	var err error
-	if s.Kind == config.KindTCP {
+	switch s.Kind {
+	case config.KindTCP:
 		l, err = tcptun.Start(tcpConfig(s))
-	} else {
+	case config.KindEoIP:
+		l, err = eoip.Start(eoipConfig(s))
+	default:
 		l, err = obfs.Start(obfsConfig(s))
 	}
 	if err != nil {
@@ -123,6 +140,7 @@ func (d *dataPlane) SyncRelays(specs []relay.Spec) []error { return d.relay.Sync
 
 func (d *dataPlane) Close() {
 	d.relay.Close()
+	d.eoip.Close()
 	d.obfs.Close()
 	d.tcp.Close()
 	d.StopBench(d.benchNames())

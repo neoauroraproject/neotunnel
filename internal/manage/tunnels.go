@@ -38,6 +38,7 @@ var modes = []Mode{
 	{Name: "l2tpv3", Title: "L2TPv3 (L2)", Kinds: []config.Kind{config.KindL2TPv3}, Layer: 2, Port: true},
 	// TCP is the last resort for paths that pass neither UDP nor raw IP.
 	{Name: "tcp", Title: "TCP", Kinds: []config.Kind{config.KindTCP}, Layer: 3, Port: true, TCP: true, Peer: true},
+	{Name: "eoip", Title: "EoIP (L2)", Kinds: []config.Kind{config.KindEoIP}, Layer: 2, Port: true},
 }
 
 func Modes() []Mode { return modes }
@@ -70,6 +71,9 @@ type Settings struct {
 	Padding   int    `json:"padding,omitempty"`   // NeoObfs
 	Keepalive int    `json:"keepalive,omitempty"` // WireGuard / NeoObfs
 	PeerKey   string `json:"peer_key,omitempty"`  // WireGuard far end not run by NeoTunnel
+	// TunnelID is EoIP's tunnel id (nil = derived from the name); it must
+	// match a MikroTik far end's tunnel-id.
+	TunnelID *uint16 `json:"tunnel_id,omitempty"`
 }
 
 func (s Settings) validate() error {
@@ -299,6 +303,12 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 				t.Encrypt = req.Encrypt
 			}
 		}
+		if k == config.KindEoIP {
+			t.TunnelID = req.TunnelID
+			if err := checkTunnelID(t); err != nil {
+				return "", nil, err
+			}
+		}
 		over = n
 		defs = append(defs, t)
 	}
@@ -332,6 +342,16 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 	if set.Encrypt != "" && bottom.Sides[1].Node == "" {
 		return Change{}, fmt.Errorf("IPsec needs NeoTunnel on the far end")
 	}
+	if t.Kind == config.KindEoIP {
+		c := *t
+		c.TunnelID = set.TunnelID
+		if t.Name == bottom.Name && port != 0 {
+			c.Port = port
+		}
+		if err := checkTunnelID(c); err != nil {
+			return Change{}, err
+		}
+	}
 	if port != 0 && port != bottom.Port {
 		if !bk.CanUsePort() {
 			return Change{}, fmt.Errorf("%s cannot run on a UDP port", bottom.Kind)
@@ -356,6 +376,9 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 		b.Keepalive, b.Padding = set.Keepalive, set.Padding
 		if b.Kind == config.KindWireGuard {
 			b.PeerKey = set.PeerKey
+		}
+		if top.Kind == config.KindEoIP {
+			top.TunnelID = set.TunnelID
 		}
 		if port != 0 {
 			b.Port = port
@@ -382,7 +405,7 @@ func SettingsOf(st *config.State, name string) (Settings, uint16) {
 	}
 	top, b := find(name), find(stack[0])
 	return Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, NoDF: b.NoDF, DSCP: b.DSCP, Encrypt: b.Encrypt,
-		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey}, b.Port
+		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID}, b.Port
 }
 
 // TunnelOpts describes a single tunnel of any kind.
@@ -432,6 +455,11 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 	if ki.Encrypted {
 		t.Encrypt = ""
 	}
+	if kind == config.KindEoIP {
+		t.TunnelID = o.TunnelID
+	} else if o.TunnelID != nil {
+		return t, fmt.Errorf("a tunnel id is only for EoIP")
+	}
 	if o.Port != 0 {
 		if !ki.CanUsePort() {
 			return t, fmt.Errorf("%s cannot run on a UDP port", kind)
@@ -469,6 +497,9 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 	default:
 		return t, fmt.Errorf("choose a server or a remote IP")
 	}
+	if err := checkTunnelID(t); err != nil {
+		return t, err
+	}
 	if other := keylessConflict(st, t); other != "" {
 		return t, fmt.Errorf("tunnel %s already runs %s between these two servers and the kernel allows only one: give this one a UDP port, or pick GRE or VXLAN", other, kind)
 	}
@@ -485,6 +516,23 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		t.Encrypt, t.MTUProbe = "", false
 	}
 	return t, nil
+}
+
+// checkTunnelID rejects an EoIP tunnel id too large for raw EoIPv6's 12
+// bits, judging the underlay by the far end's address. Over another tunnel
+// the family is known only once subnets are allocated, so rendering checks.
+func checkTunnelID(t config.Tunnel) error {
+	if t.TunnelID == nil || t.Over != "" {
+		return nil
+	}
+	a, err := netip.ParseAddr(t.Sides[1].Endpoint)
+	if err != nil {
+		return nil
+	}
+	if limit := config.EoIPMaxID(a.Unmap().Is6(), t.Port != 0); *t.TunnelID > limit {
+		return fmt.Errorf("EoIPv6 without a port carries a 12-bit tunnel id: choose 0-%d", limit)
+	}
+	return nil
 }
 
 // keylessConflict reports a tunnel the kernel can't tell apart from t: SIT,

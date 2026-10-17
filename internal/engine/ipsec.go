@@ -46,7 +46,7 @@ func outerProto(s LinkSpec) (proto int, port uint16) {
 	if s.FOU || ki.UDP || (ki.PortEncap && s.Port != 0) {
 		return 17, s.Port
 	}
-	return ki.IPProto, 0
+	return ki.OuterProto(s.Remote.Is6()), 0
 }
 
 // protects lists the nftables matches that drop unencrypted packets of

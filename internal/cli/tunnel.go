@@ -77,7 +77,7 @@ func tunnelAddCmd() *cobra.Command {
 	f.StringVar(&o.Peer, "peer", "", "managed peer for the other end")
 	f.StringVar(&o.Remote, "remote", "", "remote endpoint IP when the far end is not managed by neotunnel")
 	f.StringVar(&o.Over, "over", "", "run on top of another tunnel")
-	f.Uint16Var(&o.Port, "port", 0, "UDP port the tunnel runs on (FOU for sit/ipip/gre/gretap; vxlan/geneve/wireguard/obfs port; L2TPv3 over UDP)")
+	f.Uint16Var(&o.Port, "port", 0, "UDP port the tunnel runs on (FOU for sit/ipip/gre/gretap; vxlan/geneve/wireguard/obfs port; L2TPv3 and EoIP over UDP)")
 	settingsFlags(f, &o.Settings)
 	f.Uint32Var(&o.VNI, "vni", 0, "VNI for vxlan/geneve (default: derived from name)")
 	cmd.MarkFlagRequired("kind")

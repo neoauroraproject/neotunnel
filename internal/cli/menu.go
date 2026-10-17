@@ -36,6 +36,7 @@ var modeHints = map[string]string{
 	"obfs":      "NeoObfs: encrypted UDP that looks like random noise",
 	"tcp":       "packets over TCP: a last resort when UDP and GRE/SIT are blocked",
 	"l2tpv3":    "layer 2 pseudowire over IP or UDP, MikroTik compatible",
+	"eoip":      "MikroTik EoIP / EoIPv6: layer 2 over GRE, IPv6 or UDP",
 }
 
 type session struct {
@@ -411,6 +412,27 @@ func (s *session) createTunnel(peer string) {
 		}
 		req.PeerKey = key
 		done = append(done, "peer key     "+key[:8]+"…")
+	}
+	if mode.Name == "eoip" && req.Remote != "" {
+		s.wizardScreen(3, done)
+		v, ok := s.t.input("Tunnel ID, same as the MikroTik's tunnel-id (empty = from the name)", "", func(v string) error {
+			if v == "" {
+				return nil
+			}
+			if _, err := strconv.ParseUint(v, 10, 16); err != nil {
+				return fmt.Errorf("a tunnel id is 0-65535 (0-4095 on EoIPv6 without a port)")
+			}
+			return nil
+		})
+		if !ok {
+			return
+		}
+		if v != "" {
+			n, _ := strconv.ParseUint(v, 10, 16)
+			id := uint16(n)
+			req.TunnelID = &id
+			done = append(done, "tunnel id    "+v)
+		}
 	}
 
 	// 4. Port.

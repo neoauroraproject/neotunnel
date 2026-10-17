@@ -150,6 +150,7 @@
     vxlan: { t: "VXLAN", d: "لایه ۲ روی UDP؛ استاندارد شبکه‌های مجازی دیتاسنتر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "بله، RouterOS 7", best: "لایه ۲ روی مسیری که فقط UDP رد می‌شود", udp: true },
     geneve: { t: "GENEVE", d: "نسل جدیدتر VXLAN با هدر انعطاف‌پذیر.", layer: 2, carry: "Ethernet", over: 50, crypt: "ندارد (IPsec اختیاری)", mt: "خیر", best: "لایه ۲ بین سرورهای لینوکسی", udp: true },
     l2tpv3: { t: "L2TPv3", d: "شبه‌سیم Ethernet استاندارد با شناسه‌های ایستا، روی IP (پروتکل 115) یا روی UDP اگر پورت بدهید.", layer: 2, carry: "Ethernet", over: 38, crypt: "ندارد (IPsec اختیاری)", mt: "روترهایی که L2TPv3 ایستا دارند", best: "لایه ۲ سازگار با تجهیزات شبکه" },
+    eoip: { t: "EoIP", d: "تانل لایه ۲ میکروتیک (Ethernet over IP) در لینوکس: فریم‌های Ethernet داخل GRE با شناسه‌ی تانل می‌روند؛ روی IPv6 همان EoIPv6 است. اگر مسیر پروتکل 47 را ببندد، با یک پورت داخل UDP اجرا می‌شود. در فضای کاربری NeoTunnel اجرا می‌شود و ماژول کرنلی نمی‌خواهد.", layer: 2, carry: "Ethernet", over: 42, crypt: "ندارد (IPsec اختیاری)", mt: "بله، EoIP و EoIPv6 (با شناسه‌ی تانل یکسان)", best: "بریج لایه ۲ بین دو سرور، یا اتصال به میکروتیک" },
   };
   const MODES_FWD = {
     nat: ["NAT", "سرویس مقصد آدرس داخلی تانل را می‌بیند. ساده و سازگار با همه‌چیز."],
@@ -699,8 +700,8 @@
             : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}</select>
             <span class="help">IPsec در کرنل روی بسته‌های بیرونی همین تانل؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ${38} بایت از MTU.</span>`}</div>
         <details class="adv" ${S.tset[t.name].adv ? "open" : ""} data-act="adv-toggle" data-name="${t.name}">
-          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard", "tcp"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
-          <div class="in">${advancedFields(`tset.${t.name}`, st, base.kind, true)}</div>
+          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard", "tcp", "eoip"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
+          <div class="in">${advancedFields(`tset.${t.name}`, st, base.kind, true, false, t.kind)}</div>
         </details>
         <div class="form-foot"><button class="btn primary" type="submit">ذخیره‌ی تنظیمات</button><button class="btn ghost" type="button" data-act="reset-tset" data-name="${t.name}">بازگردانی</button></div>
       </form>`}
@@ -724,7 +725,8 @@
   }
 
   // The advanced options, shared by the wizard and the tunnel editor.
-  function advancedFields(path, st, kind, editing, noPort) {
+  // kind is the bottom layer's (it owns the outer packets), top the tunnel's own.
+  function advancedFields(path, st, kind, editing, noPort, top) {
     const mm = st.mtuMode || "auto";
     return html`<div class="field"><span class="lbl">MTU</span>
         <div class="seg" role="radiogroup">${[["auto", "خودکار"], ["probe", "اندازه‌گیری مسیر"], ["manual", "دستی"]].map(([v, l]) => html`<button type="button" role="radio" aria-checked="${mm === v}" class="${mm === v ? "on" : ""}" data-act="set" data-path="${path}.mtuMode" data-value="${v}">${l}</button>`)}</div>
@@ -735,9 +737,10 @@
           <span class="help">${PROTO[kind] && (PROTO[kind].udp || PROTO[kind].tcp) || kind === "obfs" || kind === "wireguard" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی = پروتکل خام (سریع‌ترین). با پورت، تانل داخل UDP می‌رود؛ وقتی مسیر پروتکل 41 یا 47 را می‌بندد."}</span></div>`}
         <div class="field"><label>TTL</label><input class="input ltr" type="number" min="1" max="255" data-bind="${path}.ttl" value="${st.ttl || ""}" placeholder="255"><span class="help">TTL بسته‌های بیرونی.</span></div>
         ${kind === "obfs" ? html`<div class="field"><label>Padding (بایت)</label><input class="input ltr" type="number" min="0" max="255" data-bind="${path}.padding" value="${st.padding || ""}" placeholder="0"><span class="help">تا این تعداد بایت تصادفی به هر بسته اضافه می‌شود تا اندازه‌ها چیزی را لو ندهند. هزینه‌اش همین مقدار از MTU است.</span></div>` : ""}
-        ${["obfs", "wireguard"].includes(kind) ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="25"><span class="help">نگه‌داشتن مسیر NAT باز؛ ‎-1 یعنی خاموش.</span></div>` : ""}
+        ${["obfs", "wireguard", "eoip"].includes(kind) ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="25"><span class="help">نگه‌داشتن مسیر NAT باز؛ ‎-1 یعنی خاموش.</span></div>` : ""}
         ${kind === "tcp" ? html`<div class="field"><label>Keepalive (ثانیه)</label><input class="input ltr" type="number" min="-1" max="3600" data-bind="${path}.keepalive" value="${st.keepalive || ""}" placeholder="15"><span class="help">اتصالی که سه برابر این مدت ساکت بماند قطع و دوباره برقرار می‌شود؛ ‎-1 یعنی فقط keepalive خود TCP.</span></div>` : ""}
         ${kind === "wireguard" ? html`<div class="field full"><label>کلید عمومی طرف مقابل</label><input class="input ltr" data-bind="${path}.peer_key" value="${st.peer_key || ""}" placeholder="فقط وقتی آن طرف NeoTunnel ندارد"><span class="help">برای میکروتیک یا هر WireGuard دیگر؛ بین دو سرور NeoTunnel کلیدها خودکار ساخته می‌شوند.</span></div>` : ""}
+        ${top === "eoip" ? html`<div class="field"><label>شناسه‌ی تانل (Tunnel ID)</label><input class="input ltr" type="number" min="0" max="65535" data-bind="${path}.tunnel_id" value="${st.tunnel_id ?? ""}" placeholder="خودکار"><span class="help">همان tunnel-id میکروتیک؛ دو سر باید یکی باشند. ۰ تا ۶۵۵۳۵، و روی EoIPv6 بدون پورت ۰ تا ۴۰۹۵. خالی = از نام تانل ساخته می‌شود.</span></div>` : ""}
         <div class="field"><label>DSCP بسته‌های بیرونی</label><input class="input ltr" type="number" min="0" max="63" data-bind="${path}.dscp" value="${st.dscp || ""}" placeholder="ارث‌بری"><span class="help">کلاس کیفیت سرویس؛ خالی = همان کلاس بسته‌ی داخلی. فقط تانل‌های کرنلی.</span></div>
         <div class="field full"><label class="switch"><input type="checkbox" data-act="st-check" data-path="${path}.noDF" ${st.noDF ? "checked" : ""}>اجازه‌ی تکه‌تکه شدن بسته‌ها در مسیر</label><span class="help">پیش‌فرض خاموش است (بیت Don't-Fragment روشن): سریع‌تر، ولی به MTU درست نیاز دارد. روشنش کنید اگر مسیر MTU کوچکی دارد و تانل بسته‌های بزرگ را می‌اندازد.</span></div>
       </div>`;
@@ -747,6 +750,12 @@
     const out = { encrypt: st.encrypt || "", ttl: +st.ttl || 0, dscp: +st.dscp || 0, no_df: !!st.noDF, padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), mtu: 0, mtu_probe: false };
     if (st.mtuMode === "manual") out.mtu = +st.mtu || 0;
     if (st.mtuMode === "probe") out.mtu_probe = true;
+    const id = st.tunnel_id ?? "";
+    if (String(id).trim() !== "") {
+      const n = Number(id);
+      if (!Number.isInteger(n) || n < 0 || n > 65535) throw new Error("شناسه‌ی تانل باید عددی از ۰ تا ۶۵۵۳۵ باشد.");
+      out.tunnel_id = n;
+    }
     return out;
   }
 
@@ -1320,7 +1329,7 @@
       </div>
       <details class="adv" ${w.adv ? "open" : ""} data-act="adv-toggle" data-name="">
         <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، DSCP${wizProt(w, mode) === "obfs" || w.mode === "obfs" ? "، padding" : ""}</span>${I.chev(16)}</summary>
-        <div class="in">${advancedFields("wiz", w, wizProt(w, mode) === "obfs" ? "obfs" : w.mode, false, true)}</div>
+        <div class="in">${advancedFields("wiz", w, wizProt(w, mode) === "obfs" ? "obfs" : w.mode, false, true, w.mode)}</div>
       </details>`;
   }
 
@@ -1428,6 +1437,8 @@
     const w = S.wiz;
     w.busy = true; drawModal();
     try {
+      const set = settingsBody(w); // validates before anything is created
+      wizRequest(w, w.peer); // validates before anything is created
       let peerName = w.peer;
       if (w.dest === "new") {
         await api("POST", "peers", { name: w.newName.trim(), address: w.newIP.trim() });

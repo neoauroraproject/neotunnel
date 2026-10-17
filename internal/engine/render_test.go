@@ -242,3 +242,73 @@ func TestTCPTransport(t *testing.T) {
 		t.Errorf("encrypted tcp: %+v", s)
 	}
 }
+
+func TestEoIP(t *testing.T) {
+	cases := []struct {
+		local, remote string
+		port          uint16
+		mtu, proto    int
+		maxID         uint32
+	}{
+		{"198.51.100.1", "203.0.113.10", 0, 1458, 47, 0xffff},
+		{"198.51.100.1", "203.0.113.10", 4000, 1450, 17, 0xffff},
+		{"2001:db8::1", "2001:db8::2", 0, 1444, config.EtherIPProto, 0x0fff},
+		{"2001:db8::1", "2001:db8::2", 4000, 1430, 17, 0xffff},
+	}
+	for _, c := range cases {
+		st := peerTunnel(config.KindEoIP, func(tn *config.Tunnel) {
+			tn.Name, tn.Port = "eoipnamex", c.port
+			tn.Sides[0].Endpoint, tn.Sides[1].Endpoint = c.local, c.remote
+		})
+		specs, errs := Render(st, fixedSource(c.local))
+		if len(errs) > 0 {
+			t.Fatal(errs)
+		}
+		s := specs[0]
+		if !s.Userspace || s.FOU || s.Port != c.port || s.MTU != c.mtu || s.Key > c.maxID || s.Key != st.Tunnels[0].Key&c.maxID {
+			t.Errorf("eoip %s port %d: %+v", c.remote, c.port, s)
+		}
+		if p, _ := outerProto(s); p != c.proto {
+			t.Errorf("eoip %s port %d: outer proto %d, want %d", c.remote, c.port, p, c.proto)
+		}
+	}
+}
+
+// A set tunnel id (to match a MikroTik's tunnel-id) wins over the derived
+// one, 0 included, and must fit raw EoIPv6's 12 bits.
+func TestEoIPTunnelID(t *testing.T) {
+	id := func(v uint16) *uint16 { return &v }
+	cases := []struct {
+		local, remote string
+		port          uint16
+		id            *uint16
+		want          uint32
+		bad           bool
+	}{
+		{"198.51.100.1", "203.0.113.10", 0, id(0), 0, false},
+		{"198.51.100.1", "203.0.113.10", 0, id(65535), 65535, false},
+		{"198.51.100.1", "203.0.113.10", 4000, id(4096), 4096, false},
+		{"2001:db8::1", "2001:db8::2", 0, id(4095), 4095, false},
+		{"2001:db8::1", "2001:db8::2", 0, id(4096), 0, true},
+		{"2001:db8::1", "2001:db8::2", 4000, id(40000), 40000, false},
+	}
+	for _, c := range cases {
+		st := peerTunnel(config.KindEoIP, func(tn *config.Tunnel) {
+			tn.Name, tn.Port, tn.TunnelID = "eoipnamex", c.port, c.id
+			tn.Sides[0].Endpoint, tn.Sides[1].Endpoint = c.local, c.remote
+		})
+		specs, errs := Render(st, fixedSource(c.local))
+		if c.bad {
+			if len(errs) == 0 {
+				t.Errorf("eoip %s id %d: no error", c.remote, *c.id)
+			}
+			continue
+		}
+		if len(errs) > 0 {
+			t.Fatal(errs)
+		}
+		if specs[0].Key != c.want {
+			t.Errorf("eoip %s port %d id %d: key %d, want %d", c.remote, c.port, *c.id, specs[0].Key, c.want)
+		}
+	}
+}
