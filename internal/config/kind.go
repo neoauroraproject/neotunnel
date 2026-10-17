@@ -143,3 +143,12 @@ func (ki KindInfo) OuterProto(under6 bool) int {
 	}
 	return ki.IPProto
 }
+
+// EoIPMaxID is the largest EoIP tunnel id the framing carries: 16 bits in
+// EoIP's GRE header (also on a UDP port), 12 in raw EoIPv6's EtherIP header.
+func EoIPMaxID(under6, port bool) uint16 {
+	if under6 && !port {
+		return 0x0fff
+	}
+	return 0xffff
+}

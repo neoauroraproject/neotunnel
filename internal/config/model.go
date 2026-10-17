@@ -106,6 +106,9 @@ type Tunnel struct {
 
 	Key uint32 `json:"key,omitempty"` // GRE key
 	VNI uint32 `json:"vni,omitempty"` // VXLAN / GENEVE id
+	// TunnelID is EoIP's tunnel id, set to match a MikroTik far end's
+	// tunnel-id; nil derives it from Key. It must fit 12 bits on raw EoIPv6.
+	TunnelID *uint16 `json:"tunnel_id,omitempty"`
 	// Port is the UDP port the tunnel runs on: VXLAN/GENEVE always use one;
 	// SIT, IPIP, GRE and GRETAP are wrapped in UDP (FOU) when it is set.
 	Port uint16 `json:"port,omitempty"`

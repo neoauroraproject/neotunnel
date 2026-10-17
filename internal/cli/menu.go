@@ -401,6 +401,27 @@ func (s *session) createTunnel(peer string) {
 		req.PeerKey = key
 		done = append(done, "peer key     "+key[:8]+"…")
 	}
+	if mode.Name == "eoip" && req.Remote != "" {
+		s.wizardScreen(3, done)
+		v, ok := s.t.input("Tunnel ID, same as the MikroTik's tunnel-id (empty = from the name)", "", func(v string) error {
+			if v == "" {
+				return nil
+			}
+			if _, err := strconv.ParseUint(v, 10, 16); err != nil {
+				return fmt.Errorf("a tunnel id is 0-65535 (0-4095 on EoIPv6 without a port)")
+			}
+			return nil
+		})
+		if !ok {
+			return
+		}
+		if v != "" {
+			n, _ := strconv.ParseUint(v, 10, 16)
+			id := uint16(n)
+			req.TunnelID = &id
+			done = append(done, "tunnel id    "+v)
+		}
+	}
 
 	// 4. Port.
 	s.wizardScreen(4, done)
