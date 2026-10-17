@@ -625,3 +625,11 @@ main.main { animation: page-in 200ms var(--ease-out); }
 .dtabs { align-self: flex-start; }
 .dpane { animation: fade 180ms ease-out; max-width: 760px; }
 .dpane .kv { max-width: 560px; }
+
+/* A tunnel's forwards, in its overview. */
+.tfwd { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); max-width: 760px; }
+.tfwd-h, .tfwd-r { display: flex; align-items: center; gap: 10px; padding: 9px 14px; }
+.tfwd-r { border-top: 1px solid var(--line); font-size: 13px; }
+/* Servers that missed changes. */
+.note.behind { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.note.behind > svg { flex: none; color: var(--warn); }

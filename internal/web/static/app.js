@@ -91,6 +91,7 @@
     out: (s) => svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M9 8l-4 4 4 4M5 12h11"/>', s),
     check: (s) => svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>', s),
     x: (s) => svg('<path d="M6 6l12 12M18 6 6 18"/>', s),
+    edit: (s) => svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>', s),
     alert: (s) => svg('<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/>', s),
     lock: (s) => svg('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', s),
     mask: (s) => svg('<path d="M3 8c3-2 15-2 18 0-1 7-4 10-9 10S4 15 3 8z"/><path d="M8 11h2M14 11h2"/>', s),
@@ -351,10 +352,22 @@
       <main class="main" data-key="page-${S.route}">
         ${S.route === "dashboard" ? "" : html`<div class="head"><div><h1>${title}</h1><div class="sub">${sub}</div></div>
           <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط با سرور"}</span>${tools}</div></div>`}
+        ${behindNote()}
         ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:16px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => html`<div class="mono">${e}</div>`)}</div>` : ""}
         ${page()}
       </main>
     </div>${S.drawer ? viewDrawer() : ""}`;
+  }
+
+  // Servers that have not taken the latest changes, with the way to apply
+  // them by hand.
+  function behindNote() {
+    const ps = (S.ov.peers || []).filter((p) => p.paired && !p.in_sync);
+    if (!ps.length) return "";
+    return html`<div class="note warn behind">${I.alert(16)}<div class="grow">${ps.length === 1 ? html`سرور <b>${ps[0].name}</b> آخرین تغییرات را نگرفته است.` : html`${ps.length} سرور آخرین تغییرات را نگرفته‌اند: ${ps.map((p) => p.name).join("، ")}.`}
+      <span class="faint"> اگر دوباره ارسال نشد، لینک تغییرات را روی همان سرور اجرا کنید.</span></div>
+      <button class="btn sm" data-act="sync-all">${I.sync(14)} ارسال دوباره</button>
+      ${ps.map((p) => html`<button class="btn sm primary" data-act="setup" data-name="${p.name}">${I.term(14)} لینک تغییرات${ps.length > 1 ? " " + p.name : ""}</button>`)}</div>`;
   }
 
   function pageHead() {
@@ -659,7 +672,7 @@
         <i class="dot ${status(t)[0]}"></i>
         <div class="name">${t.name}<small>${kindTitle(t)}${t.base_port ? ` روی UDP ${t.base_port}` : ""}</small></div>
         <div class="muted small hide-sm">${t.peer || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
-        <div class="cell-tags hide-sm">${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}</div>
+        <div class="cell-tags hide-sm">${profileTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}</div>
         <div class="rate"><b data-live="rx:${t.name}">${fmtRate(r.rx)}</b> ↓<br><span data-live="tx:${t.name}">${fmtRate(r.tx)}</span> ↑</div>
         <span class="chev">${I.chev(16)}</span>
       </button>
@@ -700,6 +713,7 @@
           <dt>MTU فعلی</dt><dd class="ltr">${t.mtu || "-"}${t.path_mtu ? ` (path ${t.path_mtu})` : ""}</dd>
           ${t.wg_key ? html`<dt>کلید عمومی WireGuard</dt><dd class="ltr small">${t.wg_key} <button class="btn sm ghost icon" data-act="copy" data-text="${t.wg_key}" aria-label="کپی کلید">${I.copy(14)}</button></dd>` : ""}
         </dl>
+        ${tunnelForwards(t)}
         ${m ? html`<div class="note ok">مسیر تا <span class="ltr">${m.remote}</span> بسته‌های <b>${m.path_mtu}</b> بایتی را بدون شکستن رد می‌کند. با ${m.overhead} بایت سربار لایه‌ها، بهترین MTU این تانل <b>${m.best}</b> است${m.probing ? " و تانل خودکار با آن تنظیم می‌شود." : "."}</div>` : ""}
         ${t.error ? html`<div class="note bad"><div class="mono">${t.error}</div></div>` : ""}
       </div>` : ""}
@@ -722,6 +736,14 @@
       </form>`}
       </div>` : ""}
     </div>`;
+  }
+
+  // The forwards that go through a tunnel, each editable in place.
+  function tunnelForwards(t) {
+    const fs = (S.ov.forwards || []).filter((f) => f.tunnel === t.name);
+    if (t.managed) return "";
+    return html`<div class="tfwd"><div class="tfwd-h"><b>پورت‌ها</b>${fs.length ? "" : html`<span class="faint small">هنوز پورتی از این تانل فوروارد نشده</span>`}<span class="grow"></span><button class="btn sm ghost" data-act="add-forward" data-tunnel="${t.name}">${I.plus(14)} فوروارد</button></div>
+      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">→ ${f.target}:${f.to || f.ports}</span>${fwdModeLabel(f)}<span class="grow"></span><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button></div>`; })}</div>`;
   }
 
   // Speed limit and monthly quota, with how much of the quota is used.
@@ -813,6 +835,27 @@
     </article>`;
   }
 
+  // A forward's mode in words.
+  const fwdModeLabel = (f) => html`<span class="tag" title="${MODES_FWD[f.mode][1]}">${MODES_FWD[f.mode][0]}${f.mode === "proxy" ? ` v${f.proxy_version || 2}` : f.mode === "relay" && f.proxy_version ? ` + PROXY v${f.proxy_version}` : ""}</span>`;
+
+  function fwdEditView() {
+    const e = S.fwdEditor, f = S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === e.key);
+    if (!f) return html`${modalHead("ویرایش فوروارد")}<div class="body"><div class="note">این فوروارد دیگر وجود ندارد.</div></div>`;
+    const pv = e.mode === "proxy" ? [2, 1] : e.mode === "relay" ? [0, 2, 1] : [];
+    return html`${modalHead(html`ویرایش فوروارد <span class="ltr">${f.ports}</span>`)}
+      <div class="body">
+        <div class="field"><span class="lbl">حالت</span><div class="choices">${Object.entries(MODES_FWD).filter(([v]) => v !== "transparent" || f.peer).map(([v, [l, d]]) => html`<button type="button" class="choice ${e.mode === v ? "on" : ""}" data-act="fwd-mode" data-value="${v}"><b>${l}</b><span>${d}</span></button>`)}</div></div>
+        ${pv.length ? html`<div class="field"><span class="lbl">هدر PROXY protocol</span><div class="seg">${pv.map((v) => html`<button type="button" class="${+e.pv === v ? "on" : ""}" data-act="set" data-path="fwdEditor.pv" data-value="${v}">${v ? "v" + v : "بدون هدر"}</button>`)}</div>
+          <span class="help">سرویس مقصد (nginx، HAProxy، Xray…) باید proxy_protocol را بپذیرد، وگرنه اتصال‌ها خراب می‌شوند.</span></div>` : ""}
+        <div class="grid2">
+          <div class="field"><label for="fe-to">پورت مقصد</label><input id="fe-to" class="input ltr" type="number" min="1" max="65535" data-bind="fwdEditor.to" value="${e.to}" placeholder="همان ${f.ports}"></div>
+          <div class="field"><span class="lbl">پروتکل</span><div class="seg">${fwdProtos(e.mode).map((v) => html`<button type="button" class="${fwdProto(e.mode, e.proto) === v ? "on" : ""}" data-act="set" data-path="fwdEditor.proto" data-value="${v}">${v === "both" ? "TCP + UDP" : v.toUpperCase()}</button>`)}</div></div>
+        </div>
+        <div class="help">تغییر روی هر دو سرور اعمال می‌شود؛ اگر سرور مقصد در دسترس نبود، لینک تغییرات برای اجرای دستی نشان داده می‌شود.</div>
+      </div>
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="save-fwd" ${S.fwdEditor.busy ? "disabled" : ""}>${I.check(16)} ذخیره</button></footer>`;
+  }
+
   // ---------- ports ----------
   function viewPorts() {
     const fs = S.ov.forwards;
@@ -820,16 +863,13 @@
     if (!fs.length) return html`${intro}<div class="panel"><div class="empty">${I.ports(32)}<b>فورواردی تعریف نشده</b>ترافیک ورودی پورت‌های این سرور را از داخل تانل به سرور مقصد بفرستید.<br><button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button></div></div>`;
     return html`${intro}<div class="panel"><table class="t"><thead><tr><th>ورودی</th><th class="hide-sm">پروتکل</th><th>تانل و مقصد</th><th>حالت</th><th></th></tr></thead><tbody>
       ${fs.map((f) => {
-        const k = f.tunnel + "|" + f.ports, ed = S.fwdEdit[k];
+        const k = f.tunnel + "|" + f.ports;
         return html`<tr>
           <td><b class="ltr">${f.ports}</b><div class="faint small"><span class="ltr">${f.public}</span></div></td>
           <td class="hide-sm">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</td>
           <td>${f.tunnel} <span class="faint">به</span> ${f.peer || ""}<div class="faint small"><span class="ltr">${f.target}:${f.to || f.ports}</span></div></td>
-          <td>${ed ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" style="height:32px;width:auto" data-bind="fwdEdit.${k}.mode" aria-label="حالت">${Object.entries(MODES_FWD).map(([v, [l]]) => html`<option value="${v}" ${ed.mode === v ? "selected" : ""}>${l}</option>`)}</select>
-              ${ed.mode === "proxy" || ed.mode === "relay" ? html`<select class="input" style="height:32px;width:auto" data-bind="fwdEdit.${k}.proxy_version" aria-label="هدر PROXY">${(ed.mode === "relay" ? [0, 2, 1] : [2, 1]).map((v) => html`<option value="${v}" ${(+ed.proxy_version || (ed.mode === "relay" ? 0 : 2)) === v ? "selected" : ""}>${v ? "v" + v : "بدون هدر"}</option>`)}</select>` : ""}
-              <button class="btn sm primary" data-act="save-fwd" data-key="${k}">ذخیره</button><button class="btn sm ghost" data-act="cancel-fwd" data-key="${k}">انصراف</button></div>`
-            : html`<button class="btn sm ghost" data-act="edit-fwd" data-key="${k}" title="${MODES_FWD[f.mode][1]}">${MODES_FWD[f.mode][0]}${f.mode === "proxy" ? ` v${f.proxy_version || 2}` : f.mode === "relay" && f.proxy_version ? ` + PROXY v${f.proxy_version}` : ""}</button>`}</td>
-          <td style="text-align:end"><button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد">${I.trash(15)}</button></td></tr>`;
+          <td>${fwdModeLabel(f)}</td>
+          <td style="text-align:end;white-space:nowrap"><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button> <button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد">${I.trash(15)}</button></td></tr>`;
       })}
     </tbody></table></div>
     <div class="panel" style="margin-top:16px"><header><h2>حالت‌های فوروارد</h2></header><div class="in"><dl class="kv" style="grid-template-columns:auto 1fr">
@@ -855,7 +895,7 @@
       <div class="panel">${gauge(j)}</div>
       <div class="stack">
         <div class="panel"><header><h2>تست یک تانل</h2></header><div class="in">
-          ${ts.length ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" data-bind="speed.tunnel" aria-label="تانل">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${t.name}، ${kindTitle(t)} به ${t.peer || t.far_ip}</option>`)}</select>
+          ${ts.length ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" data-bind="speed.tunnel" aria-label="تانل">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${t.name}، ${kindTitle(t)} به ${t.peer || t.far_ip}، حالت ${profileName(t.settings && t.settings.profile)}</option>`)}</select>
             <button class="btn primary" data-act="run-test" ${running ? "disabled" : ""}>${I.play(15)} شروع</button></div>
             <p class="help">پینگ، جیتر و افت؛ بعد ۴ ثانیه آپلود و ۴ ثانیه دانلود با ۴ اتصال هم‌زمان.</p>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
         </div></div>
@@ -1312,6 +1352,9 @@
     ["balanced", "متعادل", "تنظیمات پیش‌فرض کرنل؛ برای بیشتر کاربردها مناسب است."],
     ["max", "حداکثر", "کار تانل روی همه‌ی هسته‌های پردازنده پخش می‌شود و صف ارسال بلندتر می‌شود؛ بیشترین خروجی برای ترافیک سنگین."],
   ];
+  const profileName = (p) => (PROFILES.find(([id]) => id === (p || "balanced")) || PROFILES[1])[1];
+  const profileTag = (t) => t.settings && t.settings.profile ? html`<span class="tag ${t.settings.profile === "max" ? "lock" : ""}">${profileName(t.settings.profile)}</span>` : "";
+
   function profileField(path, value, kind) {
     const v = value || "balanced", tcp = kind === "tcp";
     const conns = { lean: 2, balanced: 4, max: 8 };
@@ -1376,6 +1419,7 @@
         <div><dt>مقصد</dt><dd>${w.dest === "peer" ? w.peer : w.dest === "new" ? w.newName : html`<span class="ltr">${w.remote}</span>`}</dd></div>
         <div><dt>پروتکل</dt><dd>${pi.t || w.mode}${w.underlay === "ipv6" ? " روی IPv6" : ""}</dd></div>
         <div><dt>محافظت</dt><dd>${mode.crypt ? "رمزنگاری خودِ پروتکل" : prot}</dd></div>
+        <div><dt>حالت سرعت</dt><dd>${profileName(w.profile)}</dd></div>
         <div><dt>پورت</dt><dd class="ltr">${w.port ? `${mode.tcp ? "TCP" : "UDP"} ${w.port}` : mode.udp || mode.tcp ? "خودکار" : "پروتکل خام"}</dd></div>
       </dl>
       <div class="grid2">
@@ -1548,7 +1592,7 @@
   // data-bind paths: "wiz.port", "form.ports", "tset.<name>.mtu", "fwdEdit.<k>.mode", "defs.padding".
   function setPath(path, value) {
     const parts = path.split(".");
-    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs };
+    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs, fwdEditor: S.fwdEditor };
     let obj = roots[parts[0]];
     if (!obj) return;
     if (parts[0] === "fwdEdit") { obj = obj[parts.slice(1, -1).join(".")]; if (!obj) return; obj[parts[parts.length - 1]] = value; return; }
@@ -1677,7 +1721,7 @@
         await refresh(); openModal(() => setupView(s)); location.hash = "#/servers";
       } catch (e) { toast(e.message, "bad"); }
     },
-    "add-forward"() { S.form = { proto: "both", mode: (S.ov.defaults && S.ov.defaults.forward_mode) || "nat", pver: 2 }; openModal(addForwardView); },
+    "add-forward"(el) { S.form = { tunnel: (el && el.dataset.tunnel) || undefined, proto: "both", mode: (S.ov.defaults && S.ov.defaults.forward_mode) || "nat", pver: 2 }; openModal(addForwardView); },
     async "add-forward-go"() {
       const f = S.form;
       try {
@@ -1687,15 +1731,27 @@
     },
     "edit-fwd"(el) {
       const f = S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === el.dataset.key);
-      if (f) { S.fwdEdit[el.dataset.key] = { mode: f.mode, proxy_version: f.proxy_version || (f.mode === "relay" ? 0 : 2) }; S.edit = true; draw(); }
+      if (!f) return;
+      S.fwdEditor = { key: el.dataset.key, mode: f.mode, pv: f.proxy_version || (f.mode === "proxy" ? 2 : 0), to: f.to || "", proto: f.proto, busy: false };
+      openModal(fwdEditView);
+    },
+    "fwd-mode"(el) {
+      const e = S.fwdEditor; e.mode = el.dataset.value;
+      if (e.mode === "proxy" && !+e.pv) e.pv = 2;
+      if (e.mode !== "proxy" && e.mode !== "relay") e.pv = 0;
+      drawModal();
     },
     "cancel-fwd"(el) { delete S.fwdEdit[el.dataset.key]; S.edit = false; draw(); },
-    async "save-fwd"(el) {
-      const k = el.dataset.key, ed = S.fwdEdit[k], f = S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === k);
+    async "save-fwd"() {
+      const e = S.fwdEditor, f = e && S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === e.key);
+      if (!f) return;
+      e.busy = true; drawModal();
       try {
-        const ch = await api("POST", "forwards/update", { tunnel: f.tunnel, ports: f.ports, proto: fwdProto(ed.mode, f.proto), to: f.to || 0, mode: ed.mode, proxy_version: ed.mode === "proxy" ? +ed.proxy_version || 2 : ed.mode === "relay" ? +ed.proxy_version : 0 });
-        delete S.fwdEdit[k]; S.edit = false; await refresh(); reportChange(ch, "حالت فوروارد عوض شد");
-      } catch (e) { toast(e.message, "bad"); }
+        const ch = await api("POST", "forwards/update", { tunnel: f.tunnel, ports: f.ports, proto: fwdProto(e.mode, e.proto), to: +e.to || 0, mode: e.mode,
+          proxy_version: e.mode === "proxy" ? +e.pv || 2 : e.mode === "relay" ? +e.pv || 0 : 0 });
+        S.modal = null; S.fwdEditor = null; drawModal();
+        await refresh(); reportChange(ch, "فوروارد ذخیره شد");
+      } catch (err) { e.busy = false; drawModal(); toast(err.message, "bad"); }
     },
     "del-forward"(el) { openModal(() => confirmView("حذف فوروارد", html`فوروارد پورت <b class="ltr">${el.dataset.ports}</b> روی تانل <b>${el.dataset.tunnel}</b> حذف شود؟`, "del-forward-go", { tunnel: el.dataset.tunnel, ports: el.dataset.ports }, "حذف فوروارد")); },
     async "del-forward-go"(el) {
