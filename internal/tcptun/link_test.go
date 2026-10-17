@@ -270,3 +270,76 @@ func TestOneWayPath(t *testing.T) {
 	db.in <- pkt
 	expect(t, da, pkt)
 }
+
+// With several streams, side 1 opens all of them, both ends send on the
+// same set, and every flow arrives, each in order.
+func TestStreams(t *testing.T) {
+	s := config.NewSecret()
+	pa, pb := freePort(t), freePort(t)
+	lo := netip.MustParseAddr("127.0.0.1")
+	da, db := newDev(), newDev()
+	a, err := start(Config{Name: "a", Tunnel: "t1", Secret: s, Side: 0, Remote: netip.AddrPortFrom(lo, pb), Port: pa, Streams: 4}, da)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := start(Config{Name: "b", Tunnel: "t1", Secret: s, Side: 1, Remote: netip.AddrPortFrom(lo, pa), Port: pb, Streams: 4}, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for a.count() < 4 || b.count() < 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("connections: a %d, b %d", a.count(), b.count())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Eight UDP flows, three packets each.
+	pkt := func(flow, seq byte) []byte {
+		p := make([]byte, 28)
+		p[0], p[9] = 0x45, 17
+		copy(p[12:16], []byte{10, 0, 0, 1})
+		copy(p[16:20], []byte{10, 0, 0, 2})
+		p[20], p[21], p[22], p[23] = 0x30, flow, 0x01, 0xbb
+		p[27] = seq
+		return p
+	}
+	for seq := byte(0); seq < 3; seq++ {
+		for f := byte(0); f < 8; f++ {
+			da.in <- pkt(f, seq)
+		}
+	}
+	last := map[byte]int{}
+	for i := 0; i < 24; i++ {
+		select {
+		case got := <-db.got:
+			f, seq := got[21], int(got[27])
+			if prev, ok := last[f]; ok && seq != prev+1 {
+				t.Fatalf("flow %d out of order: %d after %d", f, seq, prev)
+			}
+			last[f] = seq
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only %d of 24 packets arrived", i)
+		}
+	}
+}
+
+func TestFlowHash(t *testing.T) {
+	a := []byte{0x45, 0, 0, 40, 0, 0, 0x40, 0, 64, 6, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2, 0x30, 0x39, 0x01, 0xbb}
+	b := append([]byte(nil), a...)
+	b[21] = 0x3a // another source port
+	if flowHash(a) != flowHash(append([]byte(nil), a...)) {
+		t.Error("same flow, different hash")
+	}
+	if flowHash(a) == flowHash(b) {
+		t.Error("different flows, same hash")
+	}
+	frag := append([]byte(nil), a...)
+	frag[7] = 1 // a later fragment carries no ports
+	other := append([]byte(nil), frag...)
+	other[21] = 0x3a
+	if flowHash(frag) != flowHash(other) {
+		t.Error("fragments hashed by bytes that are not ports")
+	}
+}

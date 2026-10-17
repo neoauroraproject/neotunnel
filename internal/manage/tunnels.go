@@ -277,7 +277,7 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 		default:
 			n = name + "-6" // carrier
 		}
-		opts := TunnelOpts{Kind: string(k), Peer: req.Peer, Remote: req.Remote}
+		opts := TunnelOpts{Kind: string(k), Peer: req.Peer, Remote: req.Remote, stacked: i > 0}
 		if i == 0 {
 			opts.Port = port // the port belongs to the outer tunnel
 		}
@@ -415,6 +415,9 @@ type TunnelOpts struct {
 	Port                     uint16
 	VNI                      uint32
 	Settings
+	// stacked: the tunnel will run over another one of the same request, on
+	// its inner addresses, so it cannot clash with tunnels on public ones.
+	stacked bool
 }
 
 // reservedPorts can't be used as tunnel ports.
@@ -500,8 +503,8 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 	if err := checkTunnelID(t); err != nil {
 		return t, err
 	}
-	if other := keylessConflict(st, t); other != "" {
-		return t, fmt.Errorf("tunnel %s already runs %s between these two servers and the kernel allows only one: give this one a UDP port, or pick GRE or VXLAN", other, kind)
+	if other := keylessConflict(st, t); other != "" && !o.stacked {
+		return t, fmt.Errorf("tunnel %s already runs %s between these two servers and the kernel allows only one, even on a UDP port: pick GRE, GENEVE or another kind", other, kind)
 	}
 	if o.Over != "" {
 		parent, ok := st.Tunnel(o.Over)
@@ -537,7 +540,7 @@ func checkTunnelID(t config.Tunnel) error {
 
 // keylessConflict reports a tunnel the kernel can't tell apart from t: SIT,
 // IPIP and ip6tnl tunnels have no key, so only one of each type may run
-// between the same two addresses unless one of them is on a UDP port.
+// between the same two addresses, whether or not it runs on a UDP port.
 func keylessConflict(st *config.State, t config.Tunnel) string {
 	group := func(k config.Kind) string {
 		switch k {
@@ -549,12 +552,12 @@ func keylessConflict(st *config.State, t config.Tunnel) string {
 		return ""
 	}
 	g := group(t.Kind)
-	if g == "" || t.Over != "" || t.Port != 0 {
+	if g == "" || t.Over != "" {
 		return ""
 	}
 	ts, _ := st.Effective()
 	for _, o := range ts {
-		if o.Name != t.Name && o.Over == "" && o.Port == 0 && group(o.Kind) == g &&
+		if o.Name != t.Name && o.Over == "" && group(o.Kind) == g &&
 			((o.Sides[1].Endpoint == t.Sides[1].Endpoint && o.Sides[0].Endpoint == t.Sides[0].Endpoint) ||
 				(o.Sides[0].Endpoint == t.Sides[1].Endpoint && o.Sides[1].Endpoint == t.Sides[0].Endpoint)) {
 			return o.Name

@@ -956,6 +956,20 @@
     pending: ["در صف", "wait"], checking: ["بررسی اتصال…", "busy"], passed: ["وصل شد، منتظر تست سرعت", "ok"],
     measuring: ["اندازه‌گیری سرعت…", "busy"], done: ["", "done"], failed: ["وصل نشد", "bad"], skipped: ["تست نشد", "wait"],
   };
+  // A failure in plain words; the exact error stays in the tooltip.
+  function errText(e) {
+    e = e || "";
+    if (/no traffic passes/.test(e)) return "بسته‌ها از این مسیر رد نشدند: مسیر یا فایروال ارائه‌دهنده این نوع ترافیک را نمی‌گذارد.";
+    const m = e.match(/skipped: tunnel ([\w-]+)/);
+    if (m) return `تست نشد: تانل ${m[1]} همین دو آدرس را با همین نوع گرفته و کرنل دومی را نمی‌پذیرد.`;
+    if (/already runs .* kernel allows only one/.test(e)) return "بین این دو سرور تانلی از همین نوع هست و کرنل دومی را نمی‌پذیرد؛ GRE، GENEVE یا نوع دیگری انتخاب کنید.";
+    if (/file exists/.test(e)) return "با تانل دیگری بین همین دو آدرس تداخل دارد.";
+    if (/l2tp|No such file or directory/i.test(e) && /l2tp/i.test(e)) return "کرنل یکی از سرورها L2TP ندارد.";
+    if (/not supported|unknown (link )?kind|Operation not supported/i.test(e)) return "کرنل یکی از سرورها این نوع تانل را ندارد.";
+    if (/timeout|deadline/i.test(e)) return "سرور مقصد به‌موقع جواب نداد.";
+    if (/refused/.test(e)) return "اتصال رد شد: پورت روی سرور مقابل بسته است.";
+    return e;
+  }
   const rstatus = (r) => r.status || (r.error ? "failed" : "done");
 
   function jobResults(j) {
@@ -969,7 +983,7 @@
     const fresh = (r) => { const s = rstatus(r), was = G.seen[r.name]; G.seen[r.name] = s; return was !== undefined && was !== s; };
     const row = (r) => {
       const s = rstatus(r), [label, cls] = ST[s] || ST.done;
-      const meta = s === "failed" || s === "skipped" ? html`<span class="ltr err" title="${r.error || ""}">${r.error || ""}</span>`
+      const meta = s === "failed" || s === "skipped" ? html`<span class="err" title="${r.error || ""}">${errText(r.error)}</span>`
         : r.ping_ms ? html`پینگ ${ms(r.ping_ms)}، جیتر ${ms(r.jitter_ms)}، افت ${r.loss.toFixed(0)}٪${r.mtu ? `، MTU ${r.mtu}` : ""}` : "";
       const bars = s === "done"
         ? html`<div class="bars"><div class="bar" style="width:${((r.down_bps / max) * 100).toFixed(1)}%" title="دانلود ${fmtRate(r.down_bps)}"></div><div class="bar tx" style="width:${((r.up_bps / max) * 100).toFixed(1)}%" title="آپلود ${fmtRate(r.up_bps)}"></div></div>`
@@ -1265,7 +1279,7 @@
       <div class="guide">${I.alert(15)}<div><b>چه انتخاب کنم؟</b> اگر مطمئن نیستید <b>${v6 ? "GRE" : "6to4"}</b> را انتخاب کنید. اگر وصل نشد، در مرحله‌ی بعد آن را روی یک پورت UDP اجرا کنید یا WireGuard را امتحان کنید.
         ${canCheck(w) && !v6 ? html`<div style="margin-top:8px"><button type="button" class="btn sm" data-act="wiz-check-all" ${w.checkingAll ? "disabled" : ""}>${w.checkingAll ? html`<i class="spin"></i> در حال بررسی همه…` : html`${I.gauge(14)} بررسی سریع همه`}</button> <span class="faint small">همه با هم، حدود ۱۵ ثانیه</span></div>` : ""}</div></div>
       ${groups.map(([title, f]) => { const ms = ov.modes.filter(ok).filter(f); return ms.length ? html`<div class="group"><span class="lbl">${title}</span><div class="choices">${ms.map(card)}</div></div>` : ""; })}
-      ${(() => { const c = w.checks[checkKey(w, w.mode, false)]; return c && c.state === "bad" ? html`<div class="note ${c.cfg ? "warn" : "bad"}"><b>${PROTO[w.mode] ? PROTO[w.mode].t : w.mode}:</b> ${c.cfg ? "" : "ترافیک از این مسیر رد نشد. "}<span class="ltr small">${c.err || ""}</span></div>` : ""; })()}
+      ${(() => { const c = w.checks[checkKey(w, w.mode, false)]; return c && c.state === "bad" ? html`<div class="note ${c.cfg ? "warn" : "bad"}"><b>${PROTO[w.mode] ? PROTO[w.mode].t : w.mode}:</b> <span title="${c.err || ""}">${errText(c.err)}</span></div>` : ""; })()}
       ${sel ? html`<div class="proto-info"><div><span class="k">لایه و محتوا</span>لایه ${sel.layer}، ${sel.carry}</div><div><span class="k">سربار</span>${sel.over} بایت</div>
         <div><span class="k">رمزنگاری</span>${sel.crypt}</div><div><span class="k">میکروتیک</span>${sel.mt}</div></div>
         <p class="help" style="margin:0">${sel.d}</p>` : ""}
@@ -1354,8 +1368,8 @@
     if (!c || c.state === "run") return html`<div class="check run"><i class="spin"></i><div><b>بررسی اتصال با این تنظیمات…</b><span>تانل چند ثانیه روی هر دو سرور بالا می‌آید و پاک می‌شود.</span></div></div>`;
     if (c.state === "skip") return html`<div class="check">${I.mask(16)}<div><b>NeoObfs پیش از ساخت سنجیده نمی‌شود</b><span>در فضای کاربر اجرا می‌شود؛ بعد از ساخت، با «تست سرعت» همان تانل بررسی کنید.</span></div></div>`;
     if (c.state === "ok") return html`<div class="check ok">${I.check(16)}<div><b>با این تنظیمات وصل می‌شود</b><span>پینگ ${ms(c.ping)}${c.loss ? `، افت ${c.loss.toFixed(0)}٪` : ""}${c.mtu ? `، MTU ${c.mtu}` : ""}</span></div></div>`;
-    if (c.cfg) return html`<div class="check bad">${I.alert(16)}<div><b>این ترکیب ساخته نمی‌شود</b><span class="ltr">${c.err || ""}</span></div></div>`;
-    return html`<div class="check bad">${I.alert(16)}<div><b>با این تنظیمات ترافیک رد نمی‌شود</b><span class="ltr">${c.err || ""}</span><span>${w.mode === "tcp" ? "پورت TCP دیگری بدهید که بین دو سرور باز است." : +w.port ? "پروتکل دیگری امتحان کنید یا NeoObfs را بزنید." : "یک پورت UDP بدهید یا پروتکل دیگری امتحان کنید."}</span></div></div>`;
+    if (c.cfg) return html`<div class="check bad">${I.alert(16)}<div><b>این ترکیب ساخته نمی‌شود</b><span title="${c.err || ""}">${errText(c.err)}</span></div></div>`;
+    return html`<div class="check bad">${I.alert(16)}<div><b>با این تنظیمات ترافیک رد نمی‌شود</b><span title="${c.err || ""}">${errText(c.err)}</span><span>${w.mode === "tcp" ? "پورت TCP دیگری بدهید که بین دو سرور باز است." : +w.port ? "پروتکل دیگری امتحان کنید یا NeoObfs را بزنید." : "یک پورت UDP بدهید یا پروتکل دیگری امتحان کنید."}</span></div></div>`;
   }
 
   function wizRequest(w, peerName) {

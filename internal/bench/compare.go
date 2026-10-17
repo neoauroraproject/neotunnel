@@ -29,12 +29,10 @@ const (
 )
 
 // conflictKey groups candidates the kernel can't run side by side: keyless
-// SIT/IPIP/ip6tnl tunnels between the same two addresses.
+// SIT/IPIP/ip6tnl tunnels between the same two addresses, with or without a
+// UDP (FOU) port, since the kernel tells them apart by addresses only.
 func conflictKey(c Candidate) string {
 	b := c.Tunnels[0]
-	if b.Port != 0 {
-		return ""
-	}
 	switch b.Kind {
 	case config.KindSIT, config.KindIPIP:
 		return string(b.Kind)

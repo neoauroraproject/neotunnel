@@ -207,7 +207,7 @@ sudo neotunnel bench germany                                                 # �
 <details>
 <summary><b>دومین 6to4 یا IPIP به همان سرور ساخته نمی‌شود.</b></summary>
 
-کرنل بین دو آدرس فقط یک تانل SIT یا IPIP بی‌کلید می‌پذیرد؛ برای دومی پورت UDP بدهید یا GRE/VXLAN بسازید.
+کرنل بین دو آدرس فقط یک تانل SIT یا IPIP بی‌کلید می‌پذیرد، حتی روی پورت UDP؛ برای دومی GRE، GENEVE یا نوع دیگری بسازید.
 </details>
 
 <details>

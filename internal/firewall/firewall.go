@@ -16,9 +16,9 @@ type Needs struct {
 	UDPPorts []int    // tunnel ports (FOU, VXLAN, GENEVE)
 	Ports    []string // ufw port specs, e.g. "7710/tcp", "7711"
 	ESP      bool     // encrypted tunnels: IPsec ESP packets
-	// Peers are the far ends of tunnels that use a raw IP protocol (GRE,
-	// IPIP, SIT, L2TPv3): ufw has no rule for those protocols, so their
-	// packets are allowed by source address.
+	// Peers are trusted addresses: our own servers, and the far ends of
+	// tunnels that use a raw IP protocol (GRE, IPIP, SIT, L2TPv3), which ufw
+	// has no rule for. Everything from them is allowed.
 	Peers []string
 }
 

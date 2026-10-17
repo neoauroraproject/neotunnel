@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +28,13 @@ type Config struct {
 	Port      uint16         // where this end listens
 	Cipher    string         // "" = authenticated handshake, plain frames
 	Keepalive time.Duration  // 0 = off (TCP keepalive only)
+	// Streams is how many TCP connections carry the tunnel (0 = 1). Each
+	// inner flow sticks to one of them, so packets of a flow stay in order
+	// while a loss on one connection slows only the flows on it.
+	Streams int
 }
+
+func (c Config) streams() int { return max(1, min(c.Streams, 16)) }
 
 const (
 	// dialGrace is how long side 0 waits for side 1 to connect before it
@@ -36,7 +43,7 @@ const (
 	maxBackoff = 30 * time.Second
 	// bufSize holds the largest inner MTU NeoTunnel allows (9000).
 	bufSize     = 9216
-	queueLen    = 512
+	queueLen    = 512 // packets waiting per connection
 	batchBytes  = 128 << 10
 	maxPending  = 16 // handshakes in progress
 	tcpKeepIdle = 15 * time.Second
@@ -49,17 +56,16 @@ type Link struct {
 	keys   *keys
 	dev    io.ReadWriteCloser
 	ln     net.Listener
-	out    chan []byte
 	pool   sync.Pool
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu     sync.Mutex
-	conns  map[*conn]bool
-	active atomic.Pointer[conn]
-	gone   chan struct{} // a connection closed
-	devMu  sync.Mutex    // device writes from several connections
+	mu    sync.Mutex
+	conns map[*conn]bool
+	send  atomic.Pointer[[]*conn] // connections packets go out on
+	gone  chan struct{}           // a connection closed
+	devMu sync.Mutex              // device writes from several connections
 
 	Connects       atomic.Uint64
 	BadHandshakes  atomic.Uint64
@@ -73,6 +79,8 @@ type conn struct {
 	since     time.Time
 	mu        sync.Mutex // writes
 	w         *bufio.Writer
+	q         chan []byte // packets for this connection
+	done      chan struct{}
 	sent      atomic.Int64 // unix nanos of the last flush
 	closeOnce sync.Once
 }
@@ -109,13 +117,11 @@ func start(c Config, dev io.ReadWriteCloser) (*Link, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on TCP %d: %w", c.Port, err)
 	}
-	l := &Link{cfg: c, keys: k, dev: dev, ln: ln, out: make(chan []byte, queueLen),
-		conns: map[*conn]bool{}, gone: make(chan struct{}, 1)}
+	l := &Link{cfg: c, keys: k, dev: dev, ln: ln, conns: map[*conn]bool{}, gone: make(chan struct{}, 1)}
 	l.pool.New = func() any { b := make([]byte, bufSize); return &b }
 	l.ctx, l.cancel = context.WithCancel(context.Background())
-	l.wg.Add(4)
+	l.wg.Add(3)
 	go l.fromDevice()
-	go l.toConn()
 	go l.accept()
 	go l.dial()
 	return l, nil
@@ -150,10 +156,10 @@ func (l *Link) sleep(d time.Duration) bool {
 	}
 }
 
-func (c *conn) close() { c.closeOnce.Do(func() { c.nc.Close() }) }
+func (c *conn) close() { c.closeOnce.Do(func() { c.nc.Close(); close(c.done) }) }
 
 // Connected reports whether a connection to the far end is up.
-func (l *Link) Connected() bool { return l.active.Load() != nil }
+func (l *Link) Connected() bool { s := l.send.Load(); return s != nil && len(*s) > 0 }
 
 func (l *Link) count() int {
 	l.mu.Lock()
@@ -161,16 +167,24 @@ func (l *Link) count() int {
 	return len(l.conns)
 }
 
-// elect picks the connection to send on: the one side 1 dialed when there
-// is one, so both ends agree, else the newest. Call with mu held.
+// elect picks the connections to send on: those side 1 dialed when there
+// are any, so both ends use the same ones, else all; oldest first, so the
+// flow-to-connection mapping only moves when the set changes. Call with mu
+// held.
 func (l *Link) elect() {
-	var best *conn
+	var pref, all []*conn
 	for c := range l.conns {
-		if best == nil || (c.preferred && !best.preferred) || (c.preferred == best.preferred && c.since.After(best.since)) {
-			best = c
+		all = append(all, c)
+		if c.preferred {
+			pref = append(pref, c)
 		}
 	}
-	l.active.Store(best)
+	set := all
+	if len(pref) > 0 {
+		set = pref
+	}
+	sort.Slice(set, func(i, j int) bool { return set[i].since.Before(set[j].since) })
+	l.send.Store(&set)
 }
 
 func (l *Link) add(nc net.Conn, s *session, dialed bool) {
@@ -178,8 +192,10 @@ func (l *Link) add(nc net.Conn, s *session, dialed bool) {
 		tc.SetNoDelay(true)
 		tc.SetKeepAlive(true)
 		tc.SetKeepAlivePeriod(tcpKeepIdle)
+		useBBR(tc)
 	}
 	c := &conn{nc: nc, s: s, since: time.Now(), w: bufio.NewWriterSize(nc, 64<<10),
+		q: make(chan []byte, queueLen), done: make(chan struct{}),
 		preferred: dialed == (l.cfg.Side == 1)}
 	c.sent.Store(time.Now().UnixNano())
 	l.mu.Lock()
@@ -190,7 +206,8 @@ func (l *Link) add(nc net.Conn, s *session, dialed bool) {
 	}
 	l.conns[c] = true
 	l.elect()
-	l.wg.Add(1)
+	l.wg.Add(2)
+	go l.toConn(c)
 	if l.cfg.Keepalive > 0 {
 		l.wg.Add(1)
 		go l.keepalive(c)
@@ -225,17 +242,30 @@ func (l *Link) dial() {
 	defer l.wg.Done()
 	d := net.Dialer{Timeout: handshakeTimeout, KeepAlive: tcpKeepIdle}
 	backoff, failing := time.Second, false
+	want := l.cfg.streams()
 	for {
-		for l.count() > 0 {
+		for l.count() >= want {
 			select {
 			case <-l.ctx.Done():
 				return
 			case <-l.gone:
 			}
 		}
-		if l.cfg.Side == 0 && (!l.sleep(dialGrace) || l.count() > 0) {
+		// Side 1 opens the connections; side 0 only when side 1 has not
+		// managed to within the grace period (it may not reach us).
+		if l.cfg.Side == 0 && l.count() == 0 && (!l.sleep(dialGrace) || l.count() > 0) {
 			if l.closed() {
 				return
+			}
+			continue
+		}
+		if l.cfg.Side == 0 && l.count() > 0 && !l.dialedAny() {
+			// Side 1 is connecting; let it bring the rest.
+			select {
+			case <-l.ctx.Done():
+				return
+			case <-l.gone:
+			case <-time.After(dialGrace):
 			}
 			continue
 		}
@@ -307,7 +337,6 @@ func (l *Link) accept() {
 // fromDevice queues the packets the kernel routes into the interface.
 func (l *Link) fromDevice() {
 	defer l.wg.Done()
-	defer close(l.out)
 	for {
 		bp := l.pool.Get().(*[]byte)
 		n, err := l.dev.Read(*bp)
@@ -317,12 +346,40 @@ func (l *Link) fromDevice() {
 			}
 			return
 		}
+		p := (*bp)[:n]
+		set := l.send.Load()
+		if set == nil || len(*set) == 0 {
+			l.DroppedPackets.Add(1)
+			l.put(p)
+			continue
+		}
+		c := (*set)[flowHash(p)%uint32(len(*set))]
+		if len(p) > c.s.maxPacket() {
+			l.DroppedPackets.Add(1)
+			l.put(p)
+			continue
+		}
+		// A full queue drops, like a router: the inner flow backs off
+		// without holding up the flows on other connections.
 		select {
-		case l.out <- (*bp)[:n]:
-		case <-l.ctx.Done():
-			return
+		case c.q <- p:
+		default:
+			l.DroppedPackets.Add(1)
+			l.put(p)
 		}
 	}
+}
+
+// dialedAny reports whether this end opened any of the connections.
+func (l *Link) dialedAny() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for c := range l.conns {
+		if c.preferred == (l.cfg.Side == 1) {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *Link) put(p []byte) {
@@ -330,16 +387,17 @@ func (l *Link) put(p []byte) {
 	l.pool.Put(&p)
 }
 
-// toConn writes queued packets to the elected connection, as many as are
-// waiting per flush: one write per burst instead of one per packet.
-func (l *Link) toConn() {
+// toConn writes a connection's queued packets, as many as are waiting per
+// flush: one write per burst instead of one per packet.
+func (l *Link) toConn(c *conn) {
 	defer l.wg.Done()
-	for p := range l.out {
-		c := l.active.Load()
-		if c == nil || len(p) > c.s.maxPacket() {
-			l.DroppedPackets.Add(1)
-			l.put(p)
-			continue
+	for {
+		var p []byte
+		select {
+		case p = <-c.q:
+		case <-c.done:
+			l.drain(c)
+			return
 		}
 		c.mu.Lock()
 		c.nc.SetWriteDeadline(time.Now().Add(l.writeTimeout()))
@@ -348,13 +406,8 @@ func (l *Link) toConn() {
 	batch:
 		for err == nil && c.w.Buffered() < batchBytes {
 			select {
-			case p, ok := <-l.out:
-				if !ok {
-					break batch
-				}
-				if len(p) <= c.s.maxPacket() {
-					err = c.s.writeFrame(c.w, p)
-				}
+			case p = <-c.q:
+				err = c.s.writeFrame(c.w, p)
 				l.put(p)
 			default:
 				break batch
@@ -367,6 +420,20 @@ func (l *Link) toConn() {
 		c.mu.Unlock()
 		if err != nil {
 			l.remove(c, err)
+			l.drain(c)
+			return
+		}
+	}
+}
+
+// drain returns the buffers of a closed connection's queue.
+func (l *Link) drain(c *conn) {
+	for {
+		select {
+		case p := <-c.q:
+			l.put(p)
+		default:
+			return
 		}
 	}
 }

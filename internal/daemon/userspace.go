@@ -59,7 +59,7 @@ func tcpConfig(s engine.LinkSpec) tcptun.Config {
 	return tcptun.Config{
 		Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
 		Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
-		Cipher: s.Cipher, Keepalive: keepalive(s, 15*time.Second),
+		Cipher: s.Cipher, Keepalive: keepalive(s, 15*time.Second), Streams: 4,
 	}
 }
 

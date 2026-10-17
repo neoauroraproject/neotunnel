@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"strings"
 	"sync"
@@ -156,7 +157,31 @@ func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firew
 	for _, r := range rs.Relays {
 		n.Ports = append(n.Ports, fmt.Sprintf("%d/%s", r.Port, r.Proto))
 	}
+	// Our own servers are trusted for everything: the temporary tunnels of
+	// speed tests and wizard checks use ports and protocols no saved tunnel
+	// has opened yet.
+	for _, p := range st.Peers {
+		if a := hostOnly(p.Address); a != "" {
+			n.Peers = append(n.Peers, a)
+		}
+	}
+	if m := st.Managed; m != nil {
+		if a := hostOnly(m.Master.Address); a != "" {
+			n.Peers = append(n.Peers, a)
+		}
+	}
 	return n
+}
+
+// hostOnly is the IP of an "ip" or "ip:port" address, or "".
+func hostOnly(s string) string {
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap().String()
+	}
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.Unmap().String()
+	}
+	return ""
 }
 
 var (
