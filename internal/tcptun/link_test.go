@@ -343,3 +343,41 @@ func TestFlowHash(t *testing.T) {
 		t.Error("fragments hashed by bytes that are not ports")
 	}
 }
+
+// Changing the number of streams adjusts the connections in place.
+func TestSetStreams(t *testing.T) {
+	s := config.NewSecret()
+	pa, pb := freePort(t), freePort(t)
+	lo := netip.MustParseAddr("127.0.0.1")
+	da, db := newDev(), newDev()
+	a, err := start(Config{Name: "a", Tunnel: "t1", Secret: s, Side: 0, Remote: netip.AddrPortFrom(lo, pb), Port: pa, Streams: 2}, da)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := start(Config{Name: "b", Tunnel: "t1", Secret: s, Side: 1, Remote: netip.AddrPortFrom(lo, pa), Port: pb, Streams: 2}, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	wait := func(n int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for a.count() != n || b.count() != n {
+			if time.Now().After(deadline) {
+				t.Fatalf("want %d connections: a %d, b %d", n, a.count(), b.count())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	wait(2)
+	a.SetStreams(6)
+	b.SetStreams(6)
+	wait(6)
+	a.SetStreams(3)
+	b.SetStreams(3)
+	wait(3)
+	pkt := []byte("still flowing")
+	da.in <- pkt
+	expect(t, db, pkt)
+}

@@ -27,6 +27,7 @@ func settingsFlags(f *pflag.FlagSet, s *manage.Settings) {
 	f.IntVar(&s.Padding, "padding", 0, "NeoObfs: up to this many random padding bytes per packet (0-255)")
 	f.IntVar(&s.Keepalive, "keepalive", 0, "WireGuard/NeoObfs keepalive in seconds (-1 = off, default 25)")
 	f.StringVar(&s.PeerKey, "peer-key", "", "WireGuard: the far end's public key, when it doesn't run NeoTunnel")
+	f.StringVar(&s.Profile, "profile", "", "speed profile: lean (low latency, light traffic), balanced (default) or max (heavy traffic, uses every CPU core)")
 	f.Var(tunnelID{&s.TunnelID}, "tunnel-id", "EoIP: the tunnel id, same as the MikroTik's tunnel-id (0-65535, 0-4095 on EoIPv6 without a port; default: from the name)")
 }
 
@@ -100,6 +101,7 @@ func tunnelSetCmd() *cobra.Command {
 			keep("keepalive", func() { s.Keepalive = cur.Keepalive })
 			keep("peer-key", func() { s.PeerKey = cur.PeerKey })
 			keep("tunnel-id", func() { s.TunnelID = cur.TunnelID })
+			keep("profile", func() { s.Profile = cur.Profile })
 			if f.Changed("no-encrypt") {
 				s.Encrypt = ""
 			}

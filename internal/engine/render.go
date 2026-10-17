@@ -54,6 +54,9 @@ type LinkSpec struct {
 	// RateMbit shapes what this side sends (0 = no limit). It is applied
 	// in place, so it is not part of Hash.
 	RateMbit int `json:"rate_mbit,omitempty"`
+	// Profile is the stack's speed profile (see config.ProfileMax); applied
+	// in place, so not part of Hash.
+	Profile string `json:"profile,omitempty"`
 }
 
 // Hash identifies the spec's kernel-relevant settings; it is stored in the
@@ -196,6 +199,23 @@ func RenderTunnels(isSelf func(string) bool, ts []config.Tunnel, resolve Resolve
 		if _, err := visit(t.Name, 0); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// A stack's profile is set on its top tunnel; every layer under it
+	// follows it (the fastest one wins where layers are shared).
+	profile := map[string]string{}
+	for _, t := range ts {
+		if t.Profile == "" {
+			continue
+		}
+		for n, depth := t.Name, 0; n != "" && depth < 6; depth++ {
+			if profile[n] != config.ProfileMax {
+				profile[n] = t.Profile
+			}
+			n = byName[n].Over
+		}
+	}
+	for i := range specs {
+		specs[i].Profile = profile[specs[i].Tunnel]
 	}
 	return specs, errs
 }

@@ -59,7 +59,7 @@ func tcpConfig(s engine.LinkSpec) tcptun.Config {
 	return tcptun.Config{
 		Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
 		Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
-		Cipher: s.Cipher, Keepalive: keepalive(s, 15*time.Second), Streams: 4,
+		Cipher: s.Cipher, Keepalive: keepalive(s, 15*time.Second), Streams: tcpStreams(s.Profile),
 	}
 }
 
@@ -296,4 +296,16 @@ func (d *dataPlane) benchNames() []string {
 		out = append(out, n)
 	}
 	return out
+}
+
+// tcpStreams is how many connections a TCP tunnel uses for its profile:
+// more connections carry more at once, fewer keep each flow's queue short.
+func tcpStreams(profile string) int {
+	switch profile {
+	case config.ProfileLean:
+		return 2
+	case config.ProfileMax:
+		return 8
+	}
+	return 4
 }

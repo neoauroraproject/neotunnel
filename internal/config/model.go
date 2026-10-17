@@ -157,6 +157,10 @@ type Tunnel struct {
 	// side has counted this much this month, it takes the tunnel down until
 	// the month ends or the quota is raised.
 	QuotaGB float64 `json:"quota_gb,omitempty"`
+	// Profile tunes the tunnel for its traffic: ProfileLean, ProfileMax, or
+	// "" for balanced. Set on the user-facing tunnel; it applies to every
+	// layer of its stack.
+	Profile string `json:"profile,omitempty"`
 }
 
 type Side struct {
@@ -350,4 +354,19 @@ func (s *State) ReturnPaths() []string {
 // either by our own name or by the name our master gave us.
 func (s *State) IsSelf(node string) bool {
 	return node == s.Self || (s.Managed != nil && node == s.Managed.Self)
+}
+
+// Speed profiles.
+const (
+	// ProfileLean keeps queues short and uses few connections: lowest
+	// latency and the least CPU, for light or interactive traffic.
+	ProfileLean = "lean"
+	// ProfileMax spreads the tunnel's work over every CPU core and uses the
+	// most connections: the highest throughput for heavy traffic.
+	ProfileMax = "max"
+)
+
+// ValidProfile reports whether p names a profile ("" is balanced).
+func ValidProfile(p string) bool {
+	return p == "" || p == "balanced" || p == ProfileLean || p == ProfileMax
 }

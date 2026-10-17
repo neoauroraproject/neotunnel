@@ -74,9 +74,14 @@ type Settings struct {
 	// TunnelID is EoIP's tunnel id (nil = derived from the name); it must
 	// match a MikroTik far end's tunnel-id.
 	TunnelID *uint16 `json:"tunnel_id,omitempty"`
+	// Profile: lean, balanced ("") or max; see config.ProfileMax.
+	Profile string `json:"profile,omitempty"`
 }
 
 func (s Settings) validate() error {
+	if !config.ValidProfile(s.Profile) {
+		return fmt.Errorf("profile must be lean, balanced or max")
+	}
 	if s.MTU != 0 && (s.MTU < 576 || s.MTU > 9000) {
 		return fmt.Errorf("MTU must be between 576 and 9000")
 	}
@@ -313,7 +318,7 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 		defs = append(defs, t)
 	}
 	top := &defs[len(defs)-1]
-	top.Mode, top.MTU = mode.Name, req.MTU
+	top.Mode, top.MTU, top.Profile = mode.Name, req.MTU, profileOf(req.Profile)
 	return name, defs, nil
 }
 
@@ -370,7 +375,7 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 		if top == nil || b == nil {
 			return fmt.Errorf("tunnel %q changed meanwhile", name)
 		}
-		top.MTU = set.MTU
+		top.MTU, top.Profile = set.MTU, profileOf(set.Profile)
 		b.MTUProbe, b.TTL, b.Encrypt = set.MTUProbe, set.TTL, set.Encrypt
 		b.NoDF, b.DSCP = set.NoDF, set.DSCP
 		b.Keepalive, b.Padding = set.Keepalive, set.Padding
@@ -405,7 +410,7 @@ func SettingsOf(st *config.State, name string) (Settings, uint16) {
 	}
 	top, b := find(name), find(stack[0])
 	return Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, NoDF: b.NoDF, DSCP: b.DSCP, Encrypt: b.Encrypt,
-		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID}, b.Port
+		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID, Profile: top.Profile}, b.Port
 }
 
 // TunnelOpts describes a single tunnel of any kind.
@@ -761,4 +766,12 @@ func SetLimits(name string, l Limits) (Change, error) {
 // LimitsOf returns a tunnel's switch and caps.
 func LimitsOf(t config.Tunnel) Limits {
 	return Limits{Disabled: t.Disabled, RateMbit: t.RateMbit, QuotaGB: t.QuotaGB}
+}
+
+// profileOf stores balanced as "".
+func profileOf(p string) string {
+	if p == "balanced" {
+		return ""
+	}
+	return p
 }

@@ -60,6 +60,9 @@ func Apply(st *config.State) Result {
 			if err := shape(s.Name, s.RateMbit); err != nil {
 				res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: speed limit: %w", s.Tunnel, err))
 			}
+			if err := tune(s); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: profile: %w", s.Tunnel, err))
+			}
 			continue
 		}
 		created, err := ensure(s, aliasPersistent+s.Hash())
@@ -72,6 +75,15 @@ func Apply(st *config.State) Result {
 		}
 		if err := shape(s.Name, s.RateMbit); err != nil {
 			res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: speed limit: %w", s.Tunnel, err))
+		}
+		if err := tune(s); err != nil {
+			res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: profile: %w", s.Tunnel, err))
+		}
+	}
+	for _, s := range specs {
+		if s.Profile == config.ProfileMax {
+			tuneNIC()
+			break
 		}
 	}
 

@@ -312,3 +312,31 @@ func TestEoIPTunnelID(t *testing.T) {
 		}
 	}
 }
+
+func TestCPUMask(t *testing.T) {
+	for n, want := range map[int]string{1: "00000001", 4: "0000000f", 32: "ffffffff", 33: "00000001,ffffffff"} {
+		if got := cpuMask(n); got != want {
+			t.Errorf("cpuMask(%d) = %s, want %s", n, got, want)
+		}
+	}
+	if !sameMask("00000000,0000000f\n", "0000000f") || sameMask("f", "7") {
+		t.Error("sameMask")
+	}
+}
+
+// A stack's profile reaches every layer under its top tunnel.
+func TestProfileCoversStack(t *testing.T) {
+	st := peerTunnel(config.KindSIT, func(tn *config.Tunnel) { tn.Name = "c" })
+	top := config.Tunnel{Name: "top", Kind: config.KindIPIP6, Over: "c", Net4: "10.9.0.0/30", Profile: config.ProfileMax,
+		Sides: [2]config.Side{{Node: st.Tunnels[0].Sides[0].Node}, {Node: st.Tunnels[0].Sides[1].Node}}}
+	st.Tunnels = append(st.Tunnels, top)
+	specs, errs := Render(st, fixedSource("198.51.100.1"))
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	for _, s := range specs {
+		if s.Profile != config.ProfileMax {
+			t.Errorf("%s: profile %q", s.Tunnel, s.Profile)
+		}
+	}
+}

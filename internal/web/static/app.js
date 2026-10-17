@@ -684,6 +684,7 @@
           ${t.here4 ? html`<dt>IPv4 این طرف ⇄ آن طرف</dt><dd class="ltr">${t.here4.split("/")[0]} ⇄ ${t.there4}</dd>` : ""}
           ${t.here6 ? html`<dt>IPv6</dt><dd class="ltr small">${t.here6.split("/")[0]} ⇄ ${t.there6}</dd>` : ""}
           <dt>لایه‌ها</dt><dd>${(t.stack || []).map((l) => html`<span class="tag ltr">${l.kind} · ${l.mtu || "-"}</span> `)}</dd>
+          <dt>حالت سرعت</dt><dd>${(PROFILES.find(([id]) => id === (t.settings.profile || "balanced")) || PROFILES[1])[1]}</dd>
           <dt>MTU فعلی</dt><dd class="ltr">${t.mtu || "-"}${t.path_mtu ? ` (path ${t.path_mtu})` : ""}</dd>
           ${t.wg_key ? html`<dt>کلید عمومی WireGuard</dt><dd class="ltr small">${t.wg_key} <button class="btn sm ghost icon" data-act="copy" data-text="${t.wg_key}" aria-label="کپی کلید">${I.copy(14)}</button></dd>` : ""}
         </dl>
@@ -693,6 +694,7 @@
       ${tab === "limits" ? html`<div class="dpane" data-key="lim-${t.name}">${limitsBlock(t, st)}</div>` : ""}
       ${tab === "settings" || t.managed ? html`<div class="dpane" data-key="set-${t.name}">
       ${t.managed ? html`<div class="note">این تانل را سرور اصلی (${S.ov.master ? S.ov.master.name : ""}) تعریف کرده؛ تنظیماتش را از همان‌جا تغییر دهید.</div>` : html`<form class="stack" data-form="tunnel-settings" data-name="${t.name}">
+        ${profileField(`tset.${t.name}`, st.profile, base.kind)}
         <div class="field"><span class="lbl">رمزنگاری</span>
           ${crypto ? html`<div class="help">${PROTO[base.kind === "obfs" ? "obfs" : "wireguard"].t} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.</div>`
             : base.kind === "tcp" ? html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>
@@ -747,7 +749,7 @@
   }
 
   function settingsBody(st) {
-    const out = { encrypt: st.encrypt || "", ttl: +st.ttl || 0, dscp: +st.dscp || 0, no_df: !!st.noDF, padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), mtu: 0, mtu_probe: false };
+    const out = { profile: st.profile && st.profile !== "balanced" ? st.profile : "", encrypt: st.encrypt || "", ttl: +st.ttl || 0, dscp: +st.dscp || 0, no_df: !!st.noDF, padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), mtu: 0, mtu_probe: false };
     if (st.mtuMode === "manual") out.mtu = +st.mtu || 0;
     if (st.mtuMode === "probe") out.mtu_probe = true;
     const id = st.tunnel_id ?? "";
@@ -1288,6 +1290,24 @@
   }
 
   function wizProtect(w) {
+    return html`${wizProtectBody(w)}${profileField("wiz", w.profile, w.mode)}`;
+  }
+
+  // Speed profiles: how hard the tunnel works for throughput.
+  const PROFILES = [
+    ["lean", "سبک", "صف‌های کوتاه و کمترین مصرف پردازنده؛ پینگ پایدار برای ترافیک سبک و تعاملی."],
+    ["balanced", "متعادل", "تنظیمات پیش‌فرض کرنل؛ برای بیشتر کاربردها مناسب است."],
+    ["max", "حداکثر", "کار تانل روی همه‌ی هسته‌های پردازنده پخش می‌شود و صف ارسال بلندتر می‌شود؛ بیشترین خروجی برای ترافیک سنگین."],
+  ];
+  function profileField(path, value, kind) {
+    const v = value || "balanced", tcp = kind === "tcp";
+    const conns = { lean: 2, balanced: 4, max: 8 };
+    return html`<div class="field"><span class="lbl">حالت سرعت</span>
+      <div class="seg" role="radiogroup">${PROFILES.map(([id, l]) => html`<button type="button" role="radio" aria-checked="${v === id}" class="${v === id ? "on" : ""}" data-act="set" data-path="${path}.profile" data-value="${id}">${l}</button>`)}</div>
+      <span class="help">${PROFILES.find(([id]) => id === v)[2]}${tcp ? ` تانل TCP روی ${conns[v]} اتصال هم‌زمان کار می‌کند؛ هر جریان ترافیک روی یکی از آن‌ها می‌ماند.` : ""}</span></div>`;
+  }
+
+  function wizProtectBody(w) {
     const ov = S.ov, mode = ov.modes.find((m) => m.name === w.mode) || {};
     const canProtect = !mode.crypt && w.dest !== "remote";
     const pi = PROTO[w.mode] || {}, v6 = w.underlay === "ipv6";
@@ -1440,7 +1460,7 @@
       mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false, anim: "",
       underlay: "ipv4", local6: ov.node.address6 || "", remote6: "", checks: {}, checkingAll: false,
       protect: d.obfs ? "obfs" : d.encrypt ? "ipsec" : "none", encrypt: d.encrypt || "aes-gcm-128",
-      fmode: d.forward_mode || "nat", pver: 2, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", dscp: "", noDF: false, padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
+      fmode: d.forward_mode || "nat", pver: 2, profile: "balanced", mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", dscp: "", noDF: false, padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
     }, preset);
     if (preset.peer) { S.wiz.dest = "peer"; S.wiz.step = preset.mode ? 3 : 2; }
     const p = wizPeer(S.wiz); if (p && p.address6) S.wiz.remote6 = p.address6;

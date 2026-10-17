@@ -64,6 +64,7 @@ type Link struct {
 	mu    sync.Mutex
 	conns map[*conn]bool
 	send  atomic.Pointer[[]*conn] // connections packets go out on
+	want  atomic.Int32            // connections to keep (Config.Streams, changeable)
 	gone  chan struct{}           // a connection closed
 	devMu sync.Mutex              // device writes from several connections
 
@@ -119,6 +120,7 @@ func start(c Config, dev io.ReadWriteCloser) (*Link, error) {
 	}
 	l := &Link{cfg: c, keys: k, dev: dev, ln: ln, conns: map[*conn]bool{}, gone: make(chan struct{}, 1)}
 	l.pool.New = func() any { b := make([]byte, bufSize); return &b }
+	l.want.Store(int32(c.streams()))
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	l.wg.Add(3)
 	go l.fromDevice()
@@ -242,9 +244,8 @@ func (l *Link) dial() {
 	defer l.wg.Done()
 	d := net.Dialer{Timeout: handshakeTimeout, KeepAlive: tcpKeepIdle}
 	backoff, failing := time.Second, false
-	want := l.cfg.streams()
 	for {
-		for l.count() >= want {
+		for l.count() >= int(l.want.Load()) {
 			select {
 			case <-l.ctx.Done():
 				return
@@ -367,6 +368,31 @@ func (l *Link) fromDevice() {
 			l.DroppedPackets.Add(1)
 			l.put(p)
 		}
+	}
+}
+
+// SetStreams changes how many connections carry the tunnel, without
+// interrupting it: more are opened, or the newest this end opened are
+// closed (their flows move to the others).
+func (l *Link) SetStreams(n int) {
+	n = Config{Streams: n}.streams()
+	l.want.Store(int32(n))
+	l.mu.Lock()
+	var mine []*conn
+	for c := range l.conns {
+		if c.preferred == (l.cfg.Side == 1) {
+			mine = append(mine, c)
+		}
+	}
+	extra := len(l.conns) - n
+	l.mu.Unlock()
+	sort.Slice(mine, func(i, j int) bool { return mine[i].since.After(mine[j].since) })
+	for i := 0; i < extra && i < len(mine); i++ {
+		l.remove(mine[i], errors.New("fewer streams"))
+	}
+	select {
+	case l.gone <- struct{}{}: // wake the dialer
+	default:
 	}
 }
 
@@ -508,9 +534,10 @@ func (l *Link) keepalive(c *conn) {
 type Manager struct {
 	mu    sync.Mutex
 	links map[string]*Link
+	cfgs  map[string]Config
 }
 
-func NewManager() *Manager { return &Manager{links: map[string]*Link{}} }
+func NewManager() *Manager { return &Manager{links: map[string]*Link{}, cfgs: map[string]Config{}} }
 
 // Sync starts, restarts (when changed) and stops links to match cfgs.
 func (m *Manager) Sync(cfgs []Config) []error {
@@ -521,11 +548,20 @@ func (m *Manager) Sync(cfgs []Config) []error {
 	for _, c := range cfgs {
 		want[c.Name] = true
 		if cur, ok := m.links[c.Name]; ok {
-			if cur.cfg == c {
+			old := m.cfgs[c.Name]
+			if old == c {
+				continue
+			}
+			// Only the number of connections changed: adjust in place.
+			old.Streams = c.Streams
+			if old == c {
+				cur.SetStreams(c.Streams)
+				m.cfgs[c.Name] = c
 				continue
 			}
 			cur.Close()
 			delete(m.links, c.Name)
+			delete(m.cfgs, c.Name)
 		}
 		l, err := Start(c)
 		if err != nil {
@@ -533,11 +569,13 @@ func (m *Manager) Sync(cfgs []Config) []error {
 			continue
 		}
 		m.links[c.Name] = l
+		m.cfgs[c.Name] = c
 	}
 	for name, l := range m.links {
 		if !want[name] {
 			l.Close()
 			delete(m.links, name)
+			delete(m.cfgs, name)
 		}
 	}
 	return errs
