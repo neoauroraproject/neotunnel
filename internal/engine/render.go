@@ -286,9 +286,14 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		s.Port = t.Port
 	case config.KindEoIP:
 		// The tunnel id is 16 bits in EoIP's GRE header and 12 in EoIPv6's.
-		s.Key = t.Key & 0xffff
-		if under6 && t.Port == 0 {
-			s.Key &= 0x0fff
+		limit := config.EoIPMaxID(under6, t.Port != 0)
+		if t.TunnelID != nil {
+			if *t.TunnelID > limit {
+				return nil, fmt.Errorf("EoIPv6 tunnel id must be 0-%d, got %d", limit, *t.TunnelID)
+			}
+			s.Key = uint32(*t.TunnelID)
+		} else {
+			s.Key = t.Key & uint32(limit)
 		}
 	}
 	if ki.PortEncap {
