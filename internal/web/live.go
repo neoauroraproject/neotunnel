@@ -621,7 +621,7 @@ func wire(p traffic.Pair, overhead int) uint64 {
 // Check tells within seconds whether a tunnel would connect, before it is
 // created: the same stack is brought up on both ends under temporary names
 // and probed. With all set it checks every kind at once instead.
-func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all bool) ([]bench.Result, error) {
+func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all, speed bool) ([]bench.Result, error) {
 	st, err := manage.Node()
 	if err != nil {
 		return nil, err
@@ -636,7 +636,9 @@ func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all bool) ([
 	if !p.Paired() {
 		return nil, fmt.Errorf("server %s is not connected yet", req.Peer)
 	}
-	r := &bench.Runner{ID: l.ID, State: st, Peer: *p, Opts: bench.DefaultOptions(), CheckOnly: true}
+	opts := bench.DefaultOptions()
+	opts.Duration = 3 * time.Second
+	r := &bench.Runner{ID: l.ID, State: st, Peer: *p, Opts: opts, CheckOnly: !speed || all}
 	if all {
 		return r.Compare(ctx, bench.Candidates(st.Self, p.Name, st.Address, p.Address), nil), nil
 	}

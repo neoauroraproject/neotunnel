@@ -33,6 +33,12 @@ func streamRelays(st *config.State, f config.Forward, t config.Tunnel, byName ma
 		pool = 8
 	}
 	via := relay.Via{Tunnel: t.Name, Secret: t.Secret, Side: me, Exit: netip.AddrPortFrom(exit, relay.RelayPort), Cipher: cipher, Pool: pool}
+	for _, n := range []string{t.Net4, t.Net6} {
+		if far, ok := config.Inner(n, 1-me); ok && n != "" {
+			via.Inside = netip.AddrPortFrom(far.Addr(), relay.RelayPort)
+			break
+		}
+	}
 	var out []relay.Spec
 	for _, port := range ports {
 		to := uint16(port)

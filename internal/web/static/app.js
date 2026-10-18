@@ -860,7 +860,7 @@
     const pv = e.mode === "proxy" ? [2, 1] : e.mode === "relay" ? [0, 2, 1] : [];
     return html`${modalHead(html`ویرایش فوروارد <span class="ltr">${f.ports}</span>`)}
       <div class="body">
-        <div class="field"><span class="lbl">حالت</span><div class="choices">${Object.entries(MODES_FWD).filter(([v]) => v !== "transparent" || f.peer).map(([v, [l, d]]) => html`<button type="button" class="choice ${e.mode === v ? "on" : ""}" data-act="fwd-mode" data-value="${v}"><b>${l}</b><span>${d}</span></button>`)}</div></div>
+        <div class="field"><span class="lbl">حالت</span><div class="choices">${Object.entries(MODES_FWD).filter(([v]) => f.peer || (v !== "transparent" && v !== "relay")).map(([v, [l, d]]) => html`<button type="button" class="choice ${e.mode === v ? "on" : ""}" data-act="fwd-mode" data-value="${v}"><b>${l}</b><span>${d}</span></button>`)}</div></div>
         ${pv.length ? html`<div class="field"><span class="lbl">هدر PROXY protocol</span><div class="seg">${pv.map((v) => html`<button type="button" class="${+e.pv === v ? "on" : ""}" data-act="set" data-path="fwdEditor.pv" data-value="${v}">${v ? "v" + v : "بدون هدر"}</button>`)}</div>
           <span class="help">سرویس مقصد (nginx، HAProxy، Xray…) باید proxy_protocol را بپذیرد، وگرنه اتصال‌ها خراب می‌شوند.</span></div>` : ""}
         <div class="grid2">
@@ -1364,9 +1364,9 @@
 
   // Speed profiles: how hard the tunnel works for throughput.
   const PROFILES = [
-    ["lean", "سبک", "صف‌های کوتاه و کمترین مصرف پردازنده؛ پینگ پایدار برای ترافیک سبک و تعاملی."],
-    ["balanced", "متعادل", "تنظیمات پیش‌فرض کرنل؛ برای بیشتر کاربردها مناسب است."],
-    ["max", "حداکثر", "کار تانل روی همه‌ی هسته‌های پردازنده پخش می‌شود و صف ارسال بلندتر می‌شود؛ بیشترین خروجی برای ترافیک سنگین."],
+    ["lean", "کم‌تأخیر", "پینگ‌محور: صف‌های کوتاه و کمترین مصرف پردازنده؛ برای بازی، تماس و ترافیک سبک."],
+    ["balanced", "متعادل", "پیش‌فرض: تنظیمات معمول کرنل؛ برای بیشتر کاربردها."],
+    ["max", "پرسرعت", "سرعت‌محور: کار تانل روی همه‌ی هسته‌های پردازنده پخش می‌شود و صف ارسال بلندتر است؛ برای دانلود و ترافیک سنگین."],
   ];
   const profileName = (p) => (PROFILES.find(([id]) => id === (p || "balanced")) || PROFILES[1])[1];
   const profileTag = (t) => t.settings && t.settings.profile ? html`<span class="tag ${t.settings.profile === "max" ? "lock" : ""}">${profileName(t.settings.profile)}</span>` : "";
@@ -1374,8 +1374,10 @@
   function profileField(path, value, kind) {
     const v = value || "balanced", tcp = kind === "tcp";
     const conns = { lean: 2, balanced: 4, max: 8 };
-    return html`<div class="field"><span class="lbl">حالت سرعت</span>
-      <div class="seg" role="radiogroup">${PROFILES.map(([id, l]) => html`<button type="button" role="radio" aria-checked="${v === id}" class="${v === id ? "on" : ""}" data-act="set" data-path="${path}.profile" data-value="${id}">${l}</button>`)}</div>
+    const w = path === "wiz" ? S.wiz : null, live = w && canCheck(w);
+    return html`<div class="field"><span class="lbl">حالت سرعت ${live ? html`<span class="faint small">· با انتخاب هر حالت، سرعت همان ترکیب اندازه گرفته می‌شود</span>` : ""}</span>
+      <div class="profiles" role="radiogroup">${PROFILES.map(([id, l, d]) => html`<button type="button" role="radio" aria-checked="${v === id}" class="profile ${v === id ? "on" : ""}" data-act="set" data-path="${path}.profile" data-value="${id}">
+        <b>${l}</b><span>${d.split(":")[0]}${tcp ? ` · ${conns[id]} اتصال` : ""}</span>${live ? speedChip(w.speeds[speedKey(w, id)]) : ""}</button>`)}</div>
       <span class="help">${PROFILES.find(([id]) => id === v)[2]}${tcp ? ` تانل TCP روی ${conns[v]} اتصال هم‌زمان کار می‌کند؛ هر جریان ترافیک روی یکی از آن‌ها می‌ماند.` : ""}</span></div>`;
   }
 
@@ -1507,7 +1509,36 @@
       w.checks[key] = { state: "bad", err: e.message, cfg: true };
     }
     if (S.wiz === w) drawModal();
+    if (opts) runSpeed();
   }
+  // Speed of the current combination under one profile, measured with a
+  // temporary tunnel; the wizard keeps all three so they can be compared.
+  const speedKey = (w, profile) => checkKey(w, w.mode, true) + "|" + profile;
+  function speedChip(r) {
+    if (!r) return html`<i class="sp faint">اندازه گرفته نشده</i>`;
+    if (r.state === "run") return html`<i class="sp"><i class="spin"></i> در حال اندازه‌گیری…</i>`;
+    if (r.state === "bad") return html`<i class="sp bad" title="${r.err || ""}">اندازه‌گیری نشد</i>`;
+    return html`<i class="sp ok ltr">↓ ${fmtRate(r.down)} · ↑ ${fmtRate(r.up)}</i>`;
+  }
+  async function runSpeed(tries = 0) {
+    const w = S.wiz;
+    if (!w || !canCheck(w) || w.step < 3 || w.protect === "obfs" || w.mode === "obfs") return;
+    const c = w.checks[checkKey(w, w.mode, true)];
+    if (!c || c.state !== "ok") return; // only once it connects
+    const profile = w.profile || "balanced", key = speedKey(w, profile);
+    if (w.speeds[key] && w.speeds[key].state !== "run") return;
+    w.speeds[key] = { state: "run" }; drawModal();
+    const req = Object.assign(wizRequest(w, w.peer), { forward: "", speed: true });
+    try {
+      const r = ((await api("POST", "check", req)) || [])[0] || {};
+      w.speeds[key] = r.status === "done" ? { state: "ok", up: r.up_bps, down: r.down_bps } : { state: "bad", err: r.error };
+    } catch (e) {
+      if (/در حال اجراست/.test(e.message) && tries < 15) { setTimeout(() => runSpeed(tries + 1), 1500); return; }
+      w.speeds[key] = { state: "bad", err: e.message };
+    }
+    if (S.wiz === w) drawModal();
+  }
+
   let checkTimer = 0;
   const checkSoon = (opts) => { clearTimeout(checkTimer); checkTimer = setTimeout(() => runCheck(opts), 500); };
 
@@ -1541,7 +1572,7 @@
     S.wiz = Object.assign({
       step: 1, dest: ov.peers.length ? "peer" : "new", peer: ov.peers.length ? ov.peers[0].name : "", newName: "", newIP: "", remote: "",
       mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false, anim: "",
-      underlay: "ipv4", local6: ov.node.address6 || "", remote6: "", checks: {}, checkingAll: false,
+      underlay: "ipv4", local6: ov.node.address6 || "", remote6: "", checks: {}, speeds: {}, checkingAll: false,
       protect: d.obfs ? "obfs" : d.encrypt ? "ipsec" : "none", encrypt: d.encrypt || "aes-gcm-128",
       fmode: d.forward_mode || "nat", pver: 2, profile: "balanced", lanes: 1, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", dscp: "", noDF: false, padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
     }, preset);
@@ -1684,6 +1715,7 @@
     "close-overlay"(el, e) { if (e.target === el) closeModal(); },
     set(el) {
       setPath(el.dataset.path, el.dataset.value);
+      if (el.dataset.path === "wiz.profile") setTimeout(() => runSpeed(), 0);
       if (el.closest(".modal")) drawModal(); else { S.edit = el.dataset.path.startsWith("tset") || el.dataset.path.startsWith("defs") ? true : S.edit; draw(); }
     },
     drawer(el) {

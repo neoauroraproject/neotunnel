@@ -59,8 +59,12 @@ type Via struct {
 	Secret string
 	Side   int            // the entry's side of the tunnel
 	Exit   netip.AddrPort // the exit node's relay listener
-	Cipher string         // "" = authenticated, not encrypted
-	Pool   int            // connections kept ready
+	// Inside is the same listener at the far node's address inside the
+	// tunnel: used when the public one can't be reached (a port filtered
+	// between the servers).
+	Inside netip.AddrPort
+	Cipher string // "" = authenticated, not encrypted
+	Pool   int    // connections kept ready
 }
 
 // Exit is a tunnel whose relay forwards end on this node.
@@ -91,11 +95,12 @@ type pool struct {
 	via  Via
 	keys *tcptun.StreamKeys
 
-	mu   sync.Mutex
-	idle []*pooled
-	wake chan struct{}
-	stop chan struct{}
-	once sync.Once
+	mu     sync.Mutex
+	idle   []*pooled
+	inside atomic.Bool // the public listener failed; use the tunnel's
+	wake   chan struct{}
+	stop   chan struct{}
+	once   sync.Once
 }
 
 func newPool(v Via) (*pool, error) {
@@ -189,9 +194,27 @@ func (p *pool) fill() {
 }
 
 func (p *pool) dial() (net.Conn, *net.TCPConn, error) {
-	d := net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
-	c, err := d.Dial("tcp", p.via.Exit.String())
-	if err != nil {
+	// The way that worked last goes first; the other is the fallback.
+	ways := []netip.AddrPort{p.via.Exit, p.via.Inside}
+	if p.inside.Load() {
+		ways[0], ways[1] = ways[1], ways[0]
+	}
+	var c net.Conn
+	var err error
+	for i, to := range ways {
+		if !to.IsValid() {
+			continue
+		}
+		d := net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
+		if i == 0 && ways[1].IsValid() {
+			d.Timeout = 3 * time.Second
+		}
+		if c, err = d.Dial("tcp", to.String()); err == nil {
+			p.inside.Store(to == p.via.Inside)
+			break
+		}
+	}
+	if c == nil {
 		return nil, nil, err
 	}
 	raw := c.(*net.TCPConn)

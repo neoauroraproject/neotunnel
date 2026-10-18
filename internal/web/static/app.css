@@ -660,3 +660,15 @@ main.main { animation: page-in 200ms var(--ease-out); }
 .tdetail > header { padding-bottom: 6px; }
 .tdetail .detail { display: flex; flex-direction: column; gap: 16px; padding: 10px 20px 22px; }
 @media (prefers-reduced-motion: reduce) { .tdetail { animation: fade 160ms ease; } }
+
+/* Speed profile cards, with each one's measured speed in the wizard. */
+.profiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.profile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 11px 13px; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--surface-2); color: var(--ink); text-align: start; cursor: pointer; font: inherit; transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease, transform 160ms var(--ease-out); }
+.profile b { font-size: 14px; }
+.profile > span { color: var(--ink-3); font-size: 12px; }
+.profile.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface-2)); }
+.profile:active { transform: scale(.985); }
+.profile .sp { font-style: normal; font-size: 12px; margin-top: 2px; display: inline-flex; align-items: center; gap: 5px; }
+.profile .sp.ok { color: var(--ok); font-family: var(--mono); }
+.profile .sp.bad { color: var(--warn); }
+@media (max-width: 560px) { .profiles { grid-template-columns: 1fr; } }

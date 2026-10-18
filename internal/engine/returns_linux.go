@@ -18,14 +18,19 @@ import (
 // tunnel are marked (by the nft table; TCP sockets inherit the mark of their
 // SYN), and two routing rules per mark do what wg-quick does:
 //
+//	7698  fwmark M to <far server> lookup main          the tunnel's own packets
 //	7699  fwmark M lookup main suppress_prefixlength 0   specific routes win
 //	7700  fwmark M lookup M                             else: the tunnel
 //
-// so a container network or a LAN behind this server keeps working.
+// so a container network or a LAN behind this server keeps working. 7698
+// matters for tunnels in UDP (GENEVE, VXLAN): the kernel copies a reply's
+// mark onto the outer packet it wraps it in, and without the rule that
+// packet, bound for the far server, would be routed back into the tunnel.
 
 const (
 	returnRulePriority = 7700
 	mainRulePriority   = 7699
+	outerRulePriority  = 7698
 	mainTable          = 254
 )
 
@@ -48,6 +53,22 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 	}
 	lanes, _ := lanesOf(specs)
 	wanted := map[want]bool{}
+	// The far servers each mark's tunnel sends its outer packets to.
+	type outer struct {
+		mark uint32
+		to   netip.Addr
+	}
+	outers := map[outer]bool{}
+	bottom := func(s LinkSpec) LinkSpec {
+		for i := 0; i < 8 && s.Parent != ""; i++ {
+			p, ok := byIface[s.Parent]
+			if !ok {
+				break
+			}
+			s = p
+		}
+		return s
+	}
 	for _, r := range rs {
 		s, ok := byIface[r.Iface]
 		if !ok {
@@ -80,6 +101,9 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 			}
 			wanted[want{r.Mark, fam}] = true
 		}
+		if b := bottom(s); b.Remote.IsValid() {
+			outers[outer{r.Mark, b.Remote.Unmap()}] = true
+		}
 	}
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 		rules, err := netlink.RuleList(fam)
@@ -87,7 +111,18 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 			continue
 		}
 		have := map[int]map[uint32]bool{mainRulePriority: {}, returnRulePriority: {}}
+		haveOuter := map[outer]bool{}
 		for _, r := range rules {
+			if r.Priority == outerRulePriority && ours(r.Mark) && r.Dst != nil {
+				a, _ := netip.AddrFromSlice(r.Dst.IP)
+				o := outer{r.Mark, a.Unmap()}
+				if outers[o] {
+					haveOuter[o] = true
+				} else {
+					netlink.RuleDel(&r)
+				}
+				continue
+			}
 			if (r.Priority != returnRulePriority && r.Priority != mainRulePriority) || !ours(r.Mark) {
 				continue
 			}
@@ -99,6 +134,16 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 				continue
 			}
 			have[r.Priority][r.Mark] = true
+		}
+		for o := range outers {
+			if haveOuter[o] || o.to.Is4() != (fam == netlink.FAMILY_V4) {
+				continue
+			}
+			r := markRule(fam, outerRulePriority, mainTable, o.mark)
+			r.Dst = &net.IPNet{IP: o.to.AsSlice(), Mask: net.CIDRMask(o.to.BitLen(), o.to.BitLen())}
+			if err := netlink.RuleAdd(r); err != nil {
+				errs = append(errs, fmt.Errorf("return path rule: %w", err))
+			}
 		}
 		for w := range wanted {
 			if w.fam != fam {

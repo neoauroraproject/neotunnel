@@ -31,7 +31,10 @@ func TestRelayModeEntryAndExit(t *testing.T) {
 	if got.Exit.String() != "203.0.113.9:7712" || r.Port != 8443 || r.Target.Port() != 8080 || r.Version != 0 {
 		t.Errorf("relay %+v", r)
 	}
-	got.Exit = want.Exit
+	if got.Inside.String() != "10.77.0.2:7712" {
+		t.Errorf("fallback inside the tunnel: %v", got.Inside)
+	}
+	got.Exit, got.Inside = want.Exit, want.Inside
 	if got != want {
 		t.Errorf("via %+v", r.Via)
 	}

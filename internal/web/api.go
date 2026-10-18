@@ -190,7 +190,8 @@ func (s *Server) routes(m *http.ServeMux) {
 	m.HandleFunc("POST /api/check", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			manage.TunnelRequest
-			All bool `json:"all"`
+			All   bool `json:"all"`
+			Speed bool `json:"speed"`
 		}
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
@@ -203,7 +204,7 @@ func (s *Server) routes(m *http.ServeMux) {
 		defer s.checking.Unlock()
 		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 		defer cancel()
-		res, err := b.Check(ctx, req.TunnelRequest, req.All)
+		res, err := b.Check(ctx, req.TunnelRequest, req.All, req.Speed)
 		reply(w, res, err)
 	}))
 	m.HandleFunc("POST /api/jobs", s.authed(func(w http.ResponseWriter, r *http.Request) {

@@ -33,7 +33,7 @@ func (stub) RestartTunnel(context.Context, string) error                { return
 
 func (stub) SetLimits(string, manage.Limits) (manage.Change, error) { return manage.Change{}, nil }
 
-func (stub) Check(context.Context, manage.TunnelRequest, bool) ([]bench.Result, error) {
+func (stub) Check(context.Context, manage.TunnelRequest, bool, bool) ([]bench.Result, error) {
 	return nil, nil
 }
 

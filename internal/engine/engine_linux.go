@@ -285,6 +285,7 @@ func ApplyBench(specs []LinkSpec, ttl time.Duration) error {
 		if _, err := ensure(s, fmt.Sprintf("%s%d:%s", aliasBench, exp, s.Hash())); err != nil {
 			return fmt.Errorf("%s: %w", s.Name, err)
 		}
+		tune(s) // so a test measures the profile it will run with
 	}
 	return nil
 }

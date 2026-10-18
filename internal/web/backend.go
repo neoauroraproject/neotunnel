@@ -34,7 +34,8 @@ type Backend interface {
 	Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error)
 	// Check brings a would-be tunnel up for a few seconds and reports whether
 	// traffic passes (all: every kind at once).
-	Check(ctx context.Context, req manage.TunnelRequest, all bool) ([]bench.Result, error)
+	// With speed it also measures bandwidth, a few seconds each way.
+	Check(ctx context.Context, req manage.TunnelRequest, all, speed bool) ([]bench.Result, error)
 	// ProbeMTU measures the path MTU under a tunnel and remembers it.
 	ProbeMTU(ctx context.Context, name string) (MTUReport, error)
 	Traffic() map[string]traffic.Summary
