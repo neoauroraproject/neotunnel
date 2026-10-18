@@ -24,6 +24,14 @@
 //	D→L  HMAC(auth, "D" side_D nonceD nonceL)
 //
 // Frame: length(2) | packet (sealed when encrypted). Length 0 is a keepalive.
+//
+// GSO: an end whose interface hands out super-packets (up to 64 KiB, with
+// the kernel's virtio-net header in front) says so in its first frame, a
+// control frame no IP packet looks like ("\x00NTG"); an old NeoTunnel
+// writes it to its interface, which drops it. An end that gets it and has
+// super-packets to send answers "\x00NTS", and every frame it sends after
+// that has a 4-byte length and carries header and packet. So each
+// direction switches on its own, and only when both ends are new.
 package tcptun
 
 import (
@@ -38,6 +46,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -51,6 +60,9 @@ const (
 	macSize   = sha256.Size
 	tagSize   = 16
 	maxFrame  = 65535
+	// maxBig is the largest frame after the switch: a virtio-net header,
+	// a 64 KiB super-packet and a tag.
+	maxBig = vnetLen + 65535 + tagSize
 
 	handshakeTimeout = 10 * time.Second
 )
@@ -126,9 +138,13 @@ func mac(key []byte, parts ...[]byte) []byte {
 type session struct {
 	seal, open   cipher.AEAD // nil without a cipher
 	sendN, recvN uint64
-	hdr          [2]byte
-	nonce        [12]byte
-	scratch      []byte
+	hdr          [4]byte
+	// txBig and rxBig: frames in that direction have a 4-byte length (GSO,
+	// see the package comment). rxBig belongs to the reader.
+	txBig   atomic.Bool
+	rxBig   bool
+	nonce   [12]byte
+	scratch []byte
 }
 
 // session derives the connection's keys: both ends hash their direction's
@@ -147,7 +163,7 @@ func (k *keys) session(nd, nl []byte) (*session, error) {
 	if s.open, err = newAEAD(k.cipher, mac(k.recv, nd, nl)[:n]); err != nil {
 		return nil, err
 	}
-	s.scratch = make([]byte, maxFrame)
+	s.scratch = make([]byte, maxBig)
 	return s, nil
 }
 
@@ -207,10 +223,14 @@ func acceptHandshake(c net.Conn, k *keys) (*session, error) {
 
 // maxPacket is the largest packet one frame carries.
 func (s *session) maxPacket() int {
-	if s.seal != nil {
-		return maxFrame - tagSize
+	n := maxFrame
+	if s.txBig.Load() {
+		n = maxBig
 	}
-	return maxFrame
+	if s.seal != nil {
+		n -= tagSize
+	}
+	return n
 }
 
 func (s *session) nextNonce(n *uint64) []byte {
@@ -225,22 +245,39 @@ func (s *session) writeFrame(w *bufio.Writer, pkt []byte) error {
 	if len(pkt) > 0 && s.seal != nil {
 		pkt = s.seal.Seal(s.scratch[:0], s.nextNonce(&s.sendN), pkt, nil)
 	}
-	binary.BigEndian.PutUint16(s.hdr[:], uint16(len(pkt)))
-	if _, err := w.Write(s.hdr[:]); err != nil {
+	hdr := s.hdr[:2]
+	if s.txBig.Load() {
+		hdr = s.hdr[:4]
+		binary.BigEndian.PutUint32(hdr, uint32(len(pkt)))
+	} else {
+		binary.BigEndian.PutUint16(hdr, uint16(len(pkt)))
+	}
+	if _, err := w.Write(hdr); err != nil {
 		return err
 	}
 	_, err := w.Write(pkt)
 	return err
 }
 
-// readFrame reads the next frame into buf (len maxFrame) and returns the
-// packet it carries, empty for a keepalive.
+// readFrame reads the next frame into buf (len maxFrame, maxBig once rxBig)
+// and returns the packet it carries, empty for a keepalive.
 func (s *session) readFrame(r *bufio.Reader, buf []byte) ([]byte, error) {
-	var hdr [2]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, err
+	var hdr [4]byte
+	var n int
+	if s.rxBig {
+		if _, err := io.ReadFull(r, hdr[:4]); err != nil {
+			return nil, err
+		}
+		n = int(binary.BigEndian.Uint32(hdr[:4]))
+	} else {
+		if _, err := io.ReadFull(r, hdr[:2]); err != nil {
+			return nil, err
+		}
+		n = int(binary.BigEndian.Uint16(hdr[:2]))
 	}
-	n := int(binary.BigEndian.Uint16(hdr[:]))
+	if n > len(buf) {
+		return nil, fmt.Errorf("a frame of %d bytes is too large", n)
+	}
 	if _, err := io.ReadFull(r, buf[:n]); err != nil {
 		return nil, err
 	}

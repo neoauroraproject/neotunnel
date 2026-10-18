@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -42,35 +43,50 @@ const (
 	dialGrace  = 3 * time.Second
 	maxBackoff = 30 * time.Second
 	// bufSize holds the largest inner MTU NeoTunnel allows (9000).
-	bufSize     = 9216
-	queueLen    = 512 // packets waiting per connection
-	batchBytes  = 128 << 10
-	maxPending  = 16 // handshakes in progress
+	bufSize    = 9216
+	queueLen   = 512     // packets waiting per connection
+	queueBytes = 1 << 20 // and their bytes (a super-packet is up to 64 KiB)
+	batchBytes = 128 << 10
+	maxPending = 16 // handshakes in progress
+	vnetLen    = tun.VnetHdrLen
+	// bigRead holds a virtio-net header and a 64 KiB super-packet.
+	bigRead     = vnetLen + 65535
 	tcpKeepIdle = 15 * time.Second
 )
 
 // Link is a running tunnel end: a TUN interface, a listener and the
 // connections to the far end.
 type Link struct {
-	cfg    Config
-	keys   *keys
-	dev    io.ReadWriteCloser
-	ln     net.Listener
-	pool   sync.Pool
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cfg  Config
+	keys *keys
+	// devs are the interface's queues: one reader each, and each connection
+	// writes to one (the kernel spreads flows over them, so several CPUs
+	// move packets at once).
+	devs []io.ReadWriteCloser
+	ln   net.Listener
+	pool sync.Pool // packet buffers (bufSize, plus a header with vnet)
+	big  sync.Pool // super-packet buffers (bigRead)
+	// vnet: the interface puts a virtio-net header in front of packets, so
+	// it can hand out super-packets once offload is on (see the package
+	// comment); offload turns that on and off, nil on a test device.
+	vnet    bool
+	offload func(on bool) error
+	offOn   bool // under mu
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 
 	mu    sync.Mutex
 	conns map[*conn]bool
 	send  atomic.Pointer[[]*conn] // connections packets go out on
 	want  atomic.Int32            // connections to keep (Config.Streams, changeable)
 	gone  chan struct{}           // a connection closed
-	devMu sync.Mutex              // device writes from several connections
+	nextQ int                     // queue for the next connection
 
 	Connects       atomic.Uint64
 	BadHandshakes  atomic.Uint64
 	DroppedPackets atomic.Uint64 // no connection, or too large
+	SuperPackets   atomic.Uint64 // super-packets sent whole
 }
 
 type conn struct {
@@ -80,7 +96,9 @@ type conn struct {
 	since     time.Time
 	mu        sync.Mutex // writes
 	w         *bufio.Writer
+	dev       io.Writer   // interface queue its packets go to
 	q         chan []byte // packets for this connection
+	qBytes    atomic.Int64
 	done      chan struct{}
 	sent      atomic.Int64 // unix nanos of the last flush
 	closeOnce sync.Once
@@ -90,6 +108,21 @@ type conn struct {
 func Start(c Config) (*Link, error) {
 	if _, err := deriveKeys(c); err != nil {
 		return nil, err
+	}
+	// With a virtio-net header when the kernel has it (all current ones),
+	// for super-packets; plain otherwise.
+	if qs, err := tun.OpenQueues(c.Name, queues()); err == nil {
+		devs := make([]io.ReadWriteCloser, len(qs))
+		for i, q := range qs {
+			devs[i] = q
+		}
+		l, err := startDev(c, devs, true, func(on bool) error { return tun.SetOffload(qs[0], on) })
+		if err != nil {
+			for _, q := range qs {
+				q.Close()
+			}
+		}
+		return l, err
 	}
 	dev, err := tun.Open(c.Name)
 	if err != nil {
@@ -109,7 +142,14 @@ func (c Config) network() string {
 	return "tcp4"
 }
 
+// queues is how many interface queues a link opens: one per CPU, up to 8.
+func queues() int { return max(1, min(runtime.NumCPU(), 8)) }
+
 func start(c Config, dev io.ReadWriteCloser) (*Link, error) {
+	return startDev(c, []io.ReadWriteCloser{dev}, false, nil)
+}
+
+func startDev(c Config, devs []io.ReadWriteCloser, vnet bool, offload func(bool) error) (*Link, error) {
 	k, err := deriveKeys(c)
 	if err != nil {
 		return nil, err
@@ -118,12 +158,19 @@ func start(c Config, dev io.ReadWriteCloser) (*Link, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on TCP %d: %w", c.Port, err)
 	}
-	l := &Link{cfg: c, keys: k, dev: dev, ln: ln, conns: map[*conn]bool{}, gone: make(chan struct{}, 1)}
-	l.pool.New = func() any { b := make([]byte, bufSize); return &b }
+	l := &Link{cfg: c, keys: k, devs: devs, ln: ln, conns: map[*conn]bool{}, gone: make(chan struct{}, 1), vnet: vnet, offload: offload}
+	small := bufSize
+	if vnet {
+		small += vnetLen
+	}
+	l.pool.New = func() any { b := make([]byte, small); return &b }
+	l.big.New = func() any { b := make([]byte, bigRead); return &b }
 	l.want.Store(int32(c.streams()))
 	l.ctx, l.cancel = context.WithCancel(context.Background())
-	l.wg.Add(3)
-	go l.fromDevice()
+	l.wg.Add(2 + len(devs))
+	for _, d := range devs {
+		go l.fromDevice(d)
+	}
 	go l.accept()
 	go l.dial()
 	return l, nil
@@ -136,7 +183,9 @@ func (l *Link) Close() {
 	}
 	l.cancel()
 	l.ln.Close()
-	l.dev.Close()
+	for _, d := range l.devs {
+		d.Close()
+	}
 	l.mu.Lock()
 	for c := range l.conns {
 		c.close()
@@ -187,6 +236,29 @@ func (l *Link) elect() {
 	}
 	sort.Slice(set, func(i, j int) bool { return set[i].since.Before(set[j].since) })
 	l.send.Store(&set)
+	l.updateOffload()
+}
+
+// updateOffload has the interface hand out super-packets while every
+// connection packets go out on takes them, and ordinary packets otherwise.
+// Call with mu held.
+func (l *Link) updateOffload() {
+	if l.offload == nil || l.closed() {
+		return
+	}
+	set := *l.send.Load()
+	on := len(set) > 0
+	for _, c := range set {
+		on = on && c.s.txBig.Load()
+	}
+	if on == l.offOn {
+		return
+	}
+	if err := l.offload(on); err != nil {
+		log.Printf("tcp %s: offload: %v", l.cfg.Name, err)
+		return
+	}
+	l.offOn = on
 }
 
 func (l *Link) add(nc net.Conn, s *session, dialed bool) {
@@ -206,6 +278,8 @@ func (l *Link) add(nc net.Conn, s *session, dialed bool) {
 		nc.Close()
 		return
 	}
+	c.dev = l.devs[l.nextQ%len(l.devs)]
+	l.nextQ++
 	l.conns[c] = true
 	l.elect()
 	l.wg.Add(2)
@@ -336,11 +410,21 @@ func (l *Link) accept() {
 }
 
 // fromDevice queues the packets the kernel routes into the interface.
-func (l *Link) fromDevice() {
+func (l *Link) fromDevice(dev io.Reader) {
 	defer l.wg.Done()
+	// With vnet a read may bring a super-packet, so it goes into a 64 KiB
+	// buffer; an ordinary packet is copied out to a small one so queued
+	// packets don't each hold 64 KiB.
+	var rb *[]byte
+	if l.vnet {
+		rb = l.big.Get().(*[]byte)
+	}
 	for {
-		bp := l.pool.Get().(*[]byte)
-		n, err := l.dev.Read(*bp)
+		bp := rb
+		if !l.vnet {
+			bp = l.pool.Get().(*[]byte)
+		}
+		n, err := dev.Read(*bp)
 		if err != nil {
 			if !l.closed() && !errors.Is(err, os.ErrClosed) {
 				log.Printf("tcp %s: read: %v", l.cfg.Name, err)
@@ -348,22 +432,35 @@ func (l *Link) fromDevice() {
 			return
 		}
 		p := (*bp)[:n]
+		if l.vnet {
+			if n <= bufSize+vnetLen {
+				sp := l.pool.Get().(*[]byte)
+				p = (*sp)[:copy(*sp, p)]
+			} else {
+				rb = l.big.Get().(*[]byte)
+			}
+		}
 		set := l.send.Load()
 		if set == nil || len(*set) == 0 {
 			l.DroppedPackets.Add(1)
 			l.put(p)
 			continue
 		}
-		c := (*set)[flowHash(p)%uint32(len(*set))]
-		if len(p) > c.s.maxPacket() {
+		ip := p
+		if l.vnet {
+			ip = p[vnetLen:]
+		}
+		c := (*set)[flowHash(ip)%uint32(len(*set))]
+		// A full queue drops, like a router: the inner flow backs off
+		// without holding up the flows on other connections.
+		if c.qBytes.Load()+int64(len(p)) > queueBytes {
 			l.DroppedPackets.Add(1)
 			l.put(p)
 			continue
 		}
-		// A full queue drops, like a router: the inner flow backs off
-		// without holding up the flows on other connections.
 		select {
 		case c.q <- p:
+			c.qBytes.Add(int64(len(p)))
 		default:
 			l.DroppedPackets.Add(1)
 			l.put(p)
@@ -410,13 +507,94 @@ func (l *Link) dialedAny() bool {
 
 func (l *Link) put(p []byte) {
 	p = p[:cap(p)]
+	if cap(p) >= bigRead {
+		l.big.Put(&p)
+		return
+	}
 	l.pool.Put(&p)
+}
+
+// Control frames (see the package comment).
+var (
+	ctlGSO    = []byte("\x00NTG")
+	ctlSwitch = []byte("\x00NTS")
+)
+
+// writePacket buffers one queued packet the way the connection takes it:
+// with its virtio-net header after the switch, without it before (a
+// super-packet that can't go is dropped; that only happens while offload
+// is turning off). Call with c.mu held.
+func (l *Link) writePacket(c *conn, p []byte) error {
+	if l.vnet {
+		if c.s.txBig.Load() {
+			if p[1] != 0 { // gso_type
+				l.SuperPackets.Add(1)
+			}
+		} else {
+			if p[0]&1 != 0 || p[1] != 0 { // checksum left to do, or GSO
+				l.DroppedPackets.Add(1)
+				return nil
+			}
+			p = p[vnetLen:]
+		}
+	}
+	if len(p) > c.s.maxPacket() {
+		l.DroppedPackets.Add(1)
+		return nil
+	}
+	return c.s.writeFrame(c.w, p)
+}
+
+func (l *Link) dequeued(c *conn, p []byte) {
+	c.qBytes.Add(-int64(len(p)))
+	l.put(p)
+}
+
+// control handles a control frame from the far end.
+func (l *Link) control(c *conn, msg []byte) {
+	switch string(msg) {
+	case string(ctlGSO):
+		if !l.vnet || c.s.txBig.Load() {
+			return
+		}
+		c.mu.Lock()
+		c.nc.SetWriteDeadline(time.Now().Add(l.writeTimeout()))
+		err := c.s.writeFrame(c.w, ctlSwitch)
+		if err == nil {
+			c.s.txBig.Store(true)
+			err = c.w.Flush()
+		}
+		c.mu.Unlock()
+		if err != nil {
+			l.remove(c, err)
+			return
+		}
+		l.mu.Lock()
+		l.updateOffload()
+		l.mu.Unlock()
+	case string(ctlSwitch):
+		c.s.rxBig = true
+	}
 }
 
 // toConn writes a connection's queued packets, as many as are waiting per
 // flush: one write per burst instead of one per packet.
 func (l *Link) toConn(c *conn) {
 	defer l.wg.Done()
+	if l.vnet {
+		c.mu.Lock()
+		c.nc.SetWriteDeadline(time.Now().Add(l.writeTimeout()))
+		err := c.s.writeFrame(c.w, ctlGSO)
+		if err == nil {
+			err = c.w.Flush()
+		}
+		c.mu.Unlock()
+		if err != nil {
+			l.remove(c, err)
+			l.drain(c)
+			return
+		}
+	}
 	for {
 		var p []byte
 		select {
@@ -427,14 +605,14 @@ func (l *Link) toConn(c *conn) {
 		}
 		c.mu.Lock()
 		c.nc.SetWriteDeadline(time.Now().Add(l.writeTimeout()))
-		err := c.s.writeFrame(c.w, p)
-		l.put(p)
+		err := l.writePacket(c, p)
+		l.dequeued(c, p)
 	batch:
 		for err == nil && c.w.Buffered() < batchBytes {
 			select {
 			case p = <-c.q:
-				err = c.s.writeFrame(c.w, p)
-				l.put(p)
+				err = l.writePacket(c, p)
+				l.dequeued(c, p)
 			default:
 				break batch
 			}
@@ -457,7 +635,7 @@ func (l *Link) drain(c *conn) {
 	for {
 		select {
 		case p := <-c.q:
-			l.put(p)
+			l.dequeued(c, p)
 		default:
 			return
 		}
@@ -473,7 +651,9 @@ func (l *Link) writeTimeout() time.Duration {
 func (l *Link) fromConn(c *conn) {
 	defer l.wg.Done()
 	r := bufio.NewReaderSize(c.nc, 256<<10)
-	buf := make([]byte, maxFrame)
+	// Frames land after room for a virtio-net header, so a packet from a
+	// connection that has not switched gets a zero one in place.
+	buf := make([]byte, vnetLen+maxBig)
 	var deadline time.Time
 	for {
 		if ka := l.cfg.Keepalive; ka > 0 {
@@ -482,16 +662,22 @@ func (l *Link) fromConn(c *conn) {
 				c.nc.SetReadDeadline(deadline)
 			}
 		}
-		pkt, err := c.s.readFrame(r, buf)
+		pkt, err := c.s.readFrame(r, buf[vnetLen:])
 		if err != nil {
 			l.remove(c, err)
 			return
 		}
-		if len(pkt) > 0 {
-			l.devMu.Lock()
-			l.dev.Write(pkt)
-			l.devMu.Unlock()
+		switch {
+		case len(pkt) == 0:
+			continue
+		case len(pkt) == 4 && pkt[0] == 0:
+			l.control(c, pkt)
+			continue
+		case l.vnet && !c.s.rxBig:
+			clear(buf[:vnetLen])
+			pkt = buf[:vnetLen+len(pkt)]
 		}
+		c.dev.Write(pkt)
 	}
 }
 
