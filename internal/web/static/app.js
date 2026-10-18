@@ -353,7 +353,7 @@
         ${S.route === "dashboard" ? "" : html`<div class="head"><div><h1>${title}</h1><div class="sub">${sub}</div></div>
           <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط با سرور"}</span>${tools}</div></div>`}
         ${behindNote()}
-        ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:16px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => html`<div class="mono">${e}</div>`)}</div>` : ""}
+        ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:16px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => { const t = errText(e); return t !== e ? html`<div>${t}<div class="mono faint small">${e}</div></div>` : html`<div class="mono">${e}</div>`; })}</div>` : ""}
         ${page()}
       </main>
     </div>${S.drawer ? viewDrawer() : ""}`;
@@ -742,8 +742,8 @@
           ${crypto ? html`<div class="help">${PROTO[base.kind === "obfs" ? "obfs" : "wireguard"].t} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.</div>`
             : base.kind === "tcp" ? html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>
             <span class="help">هر قاب روی جریان TCP با کلیدهای تازه‌ی همان اتصال مهر می‌شود؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ۱۶ بایت در هر بسته.</span>`
-            : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}</select>
-            <span class="help">IPsec در کرنل روی بسته‌های بیرونی همین تانل؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ${38} بایت از MTU.</span>`}</div>
+            : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}${c.name === lightCipher(t.peer).name ? " · سبک‌ترین برای این سرورها" : ""}</option>`)}</select>
+            <span class="help">IPsec در کرنل روی بسته‌های بیرونی همین تانل؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ${38} بایت از MTU. ${lightCipher(t.peer).why}</span>`}</div>
         <details class="adv" ${S.tset[t.name].adv ? "open" : ""} data-act="adv-toggle" data-name="${t.name}">
           <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard", "tcp", "eoip"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
           <div class="in">${advancedFields(`tset.${t.name}`, st, base.kind, true, false, t.kind)}</div>
@@ -849,6 +849,15 @@
         <button class="btn sm danger icon" data-act="del-server" data-name="${p.name}" title="حذف سرور" aria-label="حذف سرور">${I.trash(15)}</button>
       </footer>
     </article>`;
+  }
+
+  // The cipher that costs least on this pair of servers: AES-GCM when both
+  // CPUs have AES instructions (it then adds well under a millisecond), else
+  // ChaCha20, which is fast in software.
+  function lightCipher(peerName) {
+    const p = peerName && peer(peerName), here = S.ov.node.aes_ni, there = p ? p.aes_ni : undefined;
+    if (here && there !== false) return { name: "aes-gcm-128", why: there === undefined ? "پردازنده‌ی این سرور AES سخت‌افزاری دارد؛ AES-128-GCM سبک‌ترین است (پردازنده‌ی سرور مقابل هنوز گزارش نشده)." : "پردازنده‌ی هر دو سرور AES سخت‌افزاری دارد؛ AES-128-GCM سبک‌ترین است و کمتر از یک میلی‌ثانیه به پینگ اضافه می‌کند." };
+    return { name: "chacha20-poly1305", why: "یکی از دو سرور AES سخت‌افزاری ندارد؛ ChaCha20 در نرم‌افزار سریع‌تر است. اگر کرنل سرور آن را نداشت، پنل خطا نشان می‌دهد و AES-GCM را انتخاب کنید." };
   }
 
   // A forward's mode in words.
@@ -1034,6 +1043,7 @@
     const m = e.match(/skipped: tunnel ([\w-]+)/);
     if (m) return `تست نشد: تانل ${m[1]} همین دو آدرس را با همین نوع گرفته و کرنل دومی را نمی‌پذیرد.`;
     if (/already runs .* kernel allows only one/.test(e)) return "بین این دو سرور تانلی از همین نوع هست و کرنل دومی را نمی‌پذیرد؛ GRE، GENEVE یا نوع دیگری انتخاب کنید.";
+    if (/has no .* for IPsec/.test(e)) return "کرنل یکی از سرورها این الگوریتم رمزنگاری را برای IPsec ندارد؛ برای این تانل AES-GCM را انتخاب کنید.";
     if (/file exists/.test(e)) return "با تانل دیگری بین همین دو آدرس تداخل دارد.";
     if (/l2tp|No such file or directory/i.test(e) && /l2tp/i.test(e)) return "کرنل یکی از سرورها L2TP ندارد.";
     if (/not supported|unknown (link )?kind|Operation not supported/i.test(e)) return "کرنل یکی از سرورها این نوع تانل را ندارد.";
@@ -1415,7 +1425,8 @@
           <button type="button" class="choice ${w.protect === "ipsec" ? "on" : ""}" data-act="wiz-protect" data-value="ipsec"><b>${I.lock(15)} IPsec در کرنل</b><span>AES-GCM با سرعت کرنل؛ ۳۸ بایت سربار. ترافیک بین دو سرور خوانا نیست.</span></button>
           <button type="button" class="choice ${w.protect === "obfs" ? "on" : ""}" data-act="wiz-protect" data-value="obfs"><b>${I.mask(15)} NeoObfs</b><span>رمز با XChaCha20 داخل UDP؛ کندتر از کرنل چون در فضای کاربر اجرا می‌شود.</span></button>
         </div>
-        ${w.protect === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px;margin-top:10px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>` : ""}</div>`
+        ${w.protect === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px;margin-top:10px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}${c.name === lightCipher(w.peer).name ? " · سبک‌ترین برای این سرورها" : ""}</option>`)}</select>
+          <span class="help">${lightCipher(w.peer).why}</span>` : ""}</div>`
         : html`<div class="note">${mode.crypt ? `${pi.t || w.mode} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.` : "برای دستگاه دیگر، رمزنگاری را با WireGuard انجام دهید."}</div>`}
       <div class="field"><label for="w-port">پورت UDP ${mode.udp || w.protect === "obfs" ? "" : "(اختیاری)"}</label>
         <input id="w-port" class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="${mode.udp || w.protect === "obfs" ? "خودکار" : "خالی = پروتکل خام"}" style="max-width:220px" ${v6 && fou && w.protect !== "obfs" ? "disabled" : ""}>

@@ -23,6 +23,7 @@ import (
 	"neotunnel/internal/manage"
 	"neotunnel/internal/pmtu"
 	"neotunnel/internal/sysctl"
+	"neotunnel/internal/sysinfo"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/version"
 )
@@ -48,7 +49,7 @@ func (l *Live) Overview() (Overview, error) {
 	}
 	ov := Overview{
 		Node: NodeInfo{
-			Name: st.Self, Address: st.Address, Address6: engine.PublicIPv6(), Version: version.Version, Arch: version.Arch(),
+			Name: st.Self, Address: st.Address, Address6: engine.PublicIPv6(), AESNI: sysinfo.AESNI(), Version: version.Version, Arch: version.Arch(),
 			Key: identity.Fingerprint(l.ID.PublicString()),
 		},
 		Revision: st.Revision,
@@ -205,7 +206,7 @@ func peerViews(st *config.State) []PeerView {
 	out := []PeerView{}
 	for _, p := range st.Peers {
 		v := PeerView{
-			Name: p.Name, Address: p.Address, Address6: p.Address6, Paired: p.Paired(),
+			Name: p.Name, Address: p.Address, Address6: p.Address6, AESNI: p.AESNI, Paired: p.Paired(),
 			InSync: p.Paired() && p.AppliedRevision == st.Revision, Applied: p.AppliedRevision,
 			Version: p.Version, Arch: p.Arch,
 		}

@@ -74,6 +74,7 @@ type NodeInfo struct {
 	Name     string     `json:"name"`
 	Address  string     `json:"address"`
 	Address6 string     `json:"address6,omitempty"`
+	AESNI    bool       `json:"aes_ni"`
 	Version  string     `json:"version"`
 	Arch     string     `json:"arch"`
 	Key      string     `json:"key"`
@@ -177,6 +178,7 @@ type PeerView struct {
 	Name     string `json:"name"`
 	Address  string `json:"address"`
 	Address6 string `json:"address6,omitempty"`
+	AESNI    *bool  `json:"aes_ni,omitempty"`
 	Paired   bool   `json:"paired"`
 	InSync   bool   `json:"in_sync"`
 	Applied  uint64 `json:"applied"`

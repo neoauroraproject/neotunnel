@@ -205,6 +205,9 @@ func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer 
 			if s.Address6 != "" {
 				p.Address6 = s.Address6
 			}
+			if s.AESNI != nil {
+				p.AESNI = s.AESNI
+			}
 		}
 		return nil
 	})

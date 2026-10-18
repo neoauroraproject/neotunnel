@@ -42,8 +42,10 @@ type TunnelStatus struct {
 }
 
 type Status struct {
-	Name     string         `json:"name"`
-	Address6 string         `json:"address6,omitempty"`
+	Name     string `json:"name"`
+	Address6 string `json:"address6,omitempty"`
+	// AESNI: the CPU has AES instructions (nil from peers too old to say).
+	AESNI    *bool          `json:"aes_ni,omitempty"`
 	Version  string         `json:"version"`
 	Arch     string         `json:"arch"`
 	Revision uint64         `json:"revision"`

@@ -89,7 +89,9 @@ type Peer struct {
 	Arch    string `json:"arch,omitempty"`
 	// Address6 is the peer's public IPv6, as it reports it, for tunnels over
 	// an IPv6 underlay.
-	Address6        string    `json:"address6,omitempty"`
+	Address6 string `json:"address6,omitempty"`
+	// AESNI is whether the peer's CPU has AES instructions, as it reports.
+	AESNI           *bool     `json:"aes_ni,omitempty"`
 	AppliedRevision uint64    `json:"applied_revision,omitempty"`
 	LastSeen        time.Time `json:"last_seen,omitempty"`
 }

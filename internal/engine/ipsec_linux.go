@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"net"
 	"net/netip"
 
@@ -102,6 +104,12 @@ func syncIPsec(specs []LinkSpec) []error {
 			netlink.XfrmStateDel(&cur)
 		}
 		if err := netlink.XfrmStateAdd(st); err != nil {
+			if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.ENOENT) {
+				// The kernel has ESP but not this algorithm (common for ChaCha20
+				// on minimal kernels): say which, so the fix is obvious.
+				errs = append(errs, fmt.Errorf("IPsec to %s: this kernel has no %s for IPsec; pick AES-GCM for this tunnel", k.dst, st.Aead.Name))
+				continue
+			}
 			errs = append(errs, fmt.Errorf("IPsec SA to %s: %w (esp4/esp6 kernel modules?)", k.dst, err))
 		}
 	}

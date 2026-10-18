@@ -21,6 +21,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/probe"
+	"neotunnel/internal/sysinfo"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/version"
 )
@@ -185,7 +186,8 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 
 // LocalStatus reports this node's tunnels and counters.
 func LocalStatus(st *config.State, started time.Time) Status {
-	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6()}
+	aes := sysinfo.AESNI()
+	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6(), AESNI: &aes}
 	if st.Managed != nil {
 		out.Revision = st.Managed.Revision
 	}
