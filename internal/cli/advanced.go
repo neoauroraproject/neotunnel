@@ -223,8 +223,10 @@ func forwardSetCmd() *cobra.Command {
 }
 
 func forwardModeFlags(f *pflag.FlagSet, r *manage.ForwardRequest) {
-	f.StringVar(&r.Mode, "mode", "", "nat (default), transparent (far end sees the client's IP), proxy (PROXY protocol header) or relay (TCP only: each connection is carried to the far node as its own TCP connection, no tunnel packets; fastest on long, lossy paths)")
+	f.StringVar(&r.Mode, "mode", "", "nat (default), transparent (far end sees the client's IP), proxy (PROXY protocol header) or relay (TCP only: each connection is carried to the far node as its own TCP connection, no tunnel packets; fastest on long, lossy paths), or socks (a SOCKS5 and HTTP proxy on this server on that port, for programs here: their connections leave to the internet from the far server)")
 	f.IntVar(&r.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --mode proxy: 2 (default, TCP+UDP) or 1 (TCP); with --mode relay: 0 (no header, default), 1 or 2")
+	f.StringVar(&r.Listen, "listen", "", "with --mode socks: the address the proxy listens on (default 127.0.0.1, only this server; any other needs --auth)")
+	f.StringVar(&r.Auth, "auth", "", "with --mode socks: user:password the proxy asks for")
 	f.StringVar(&r.Backup, "backup", "", "a second tunnel to the same far server: the forward moves there while its tunnel stops passing traffic, and back once it has worked again for about a minute (set \"\" to remove)")
 }
 

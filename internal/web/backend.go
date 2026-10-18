@@ -227,6 +227,9 @@ type ForwardView struct {
 	Public string `json:"public"` // this node's public address
 	Mode   string `json:"mode"`
 	ProxyV int    `json:"proxy_version,omitempty"`
+	// Listen and Auth of a socks forward (a proxy on this server).
+	Listen string `json:"listen,omitempty"`
+	Auth   string `json:"auth,omitempty"`
 	// Traffic of this port, the client's own bytes before the tunnel wraps
 	// them. Rx/Tx are absolute totals; the panel diffs them into a rate.
 	Rx    uint64       `json:"rx"`

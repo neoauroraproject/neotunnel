@@ -51,6 +51,15 @@ func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []erro
 			rs.Relays = append(rs.Relays, specs...)
 			continue
 		}
+		if ok && f.ModeOf() == config.ForwardSocks {
+			spec, err := socksRelay(st, f, t, byName)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("proxy on port %s over %s: %w", f.Ports, f.Tunnel, err))
+				continue
+			}
+			rs.Relays = append(rs.Relays, spec)
+			continue
+		}
 		iface, up := ifByTunnel[f.Tunnel]
 		if !ok || !up {
 			errs = append(errs, fmt.Errorf("forward %s: tunnel %s is not running here", f.Ports, f.Tunnel))

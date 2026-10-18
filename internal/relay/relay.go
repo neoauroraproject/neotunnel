@@ -24,6 +24,12 @@ type Spec struct {
 	// connection goes to the far node as its own TCP connection, which
 	// connects to Target's port on its loopback. Version 0 sends no header.
 	Via Via
+	// Socks makes it a SOCKS5 and HTTP proxy on Listen:Port (see socks.go):
+	// each connection goes to Via's far node, which connects to the
+	// address the program asked for. Auth is "user:password" or "".
+	Socks  bool
+	Listen netip.Addr
+	Auth   string
 }
 
 func (s Spec) key() string { return fmt.Sprintf("%s/%d", s.Proto, s.Port) }
@@ -89,6 +95,8 @@ func (m *Manager) Sync(specs []Spec) []error {
 		var srv *server
 		var err error
 		switch {
+		case s.Socks:
+			srv, err = m.serveSocks(s)
 		case s.Via.Tunnel != "" && s.Proto == "tcp":
 			srv, err = m.serveStream(s)
 		case s.Via.Tunnel != "":
@@ -136,7 +144,11 @@ func (m *Manager) serveStream(s Spec) (*server, error) {
 }
 
 func (m *Manager) listenTCP(s Spec, handle func(*net.TCPConn)) (*server, error) {
-	ln, err := net.ListenTCP("tcp", &net.TCPAddr{Port: int(s.Port)})
+	laddr := &net.TCPAddr{Port: int(s.Port)}
+	if s.Listen.IsValid() {
+		laddr.IP = s.Listen.AsSlice()
+	}
+	ln, err := net.ListenTCP("tcp", laddr)
 	if err != nil {
 		return nil, err
 	}

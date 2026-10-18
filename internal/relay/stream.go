@@ -17,9 +17,12 @@ package relay
 //	preamble  "NTR" version(1) len(1) tunnel len(1) cipher
 //	handshake tcptun (purpose "relay <cipher>", so the cipher is authenticated)
 //	request   port(2) proxy_version(1) [src ip(16) port(2) dst ip(16) port(2)]
+//	          or, for a proxy: port(2) 0xff len(1) host, answered by status(1)
 //
 // then the user's bytes both ways. The exit only connects to its own
-// loopback address, on the ports the tunnel's relay forwards name.
+// loopback address, on the ports the tunnel's relay forwards name; for a
+// proxy (Exit.Egress) to host:port on the internet, never to its own
+// loopback or private networks. status is a SOCKS5 reply code (0 = ok).
 
 import (
 	"encoding/binary"
@@ -73,6 +76,9 @@ type Exit struct {
 	Secret string
 	Side   int      // this node's side
 	Ports  []uint16 // the local ports its forwards may reach
+	// Egress: the far node runs a proxy over this tunnel, whose connections
+	// leave to the internet from here.
+	Egress bool
 }
 
 func purpose(cipher string) string {
@@ -266,10 +272,18 @@ type request struct {
 	port     uint16
 	version  int
 	src, dst netip.AddrPort
+	host     string // a proxy's destination (version verConnect)
 }
+
+// verConnect in the version byte asks the exit to connect to a host.
+const verConnect = 0xff
 
 func (r request) marshal() []byte {
 	b := binary.BigEndian.AppendUint16(nil, r.port)
+	if r.host != "" {
+		b = append(b, verConnect, byte(len(r.host)))
+		return append(b, r.host...)
+	}
 	b = append(b, byte(r.version))
 	if r.version != 0 {
 		for _, ap := range []netip.AddrPort{r.src, r.dst} {
@@ -291,6 +305,17 @@ func readRequest(r io.Reader) (request, error) {
 	case 0:
 		return q, nil
 	case 1, 2:
+	case verConnect:
+		var n [1]byte
+		if _, err := io.ReadFull(r, n[:]); err != nil || n[0] == 0 {
+			return q, errors.New("bad proxy request")
+		}
+		host := make([]byte, n[0])
+		if _, err := io.ReadFull(r, host); err != nil {
+			return q, err
+		}
+		q.host = string(host)
+		return q, nil
 	default:
 		return q, fmt.Errorf("bad PROXY protocol version %d", q.version)
 	}
@@ -347,6 +372,7 @@ func (m *Manager) SyncExits(exits []Exit) error {
 	for _, e := range exits {
 		if cur, ok := byName[e.Tunnel]; ok {
 			e.Ports = append(append([]uint16(nil), cur.Ports...), e.Ports...)
+			e.Egress = e.Egress || cur.Egress
 		}
 		byName[e.Tunnel] = e
 	}
@@ -417,6 +443,10 @@ func (m *Manager) handleExit(x *exitServer, c *net.TCPConn) {
 	}
 	c.SetReadDeadline(time.Time{})
 	done()
+	if q.host != "" {
+		m.egress(x, e.Tunnel, q, sc)
+		return
+	}
 	// The tunnel's forwards may have changed while the connection waited.
 	if e, ok := (*x.exits.Load())[e.Tunnel]; !ok || !allowed(e.Ports, q.port) {
 		return

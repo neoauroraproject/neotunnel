@@ -62,3 +62,28 @@ func TestRelayModeNeedsSecretAndTCP(t *testing.T) {
 		t.Error("relay mode accepted UDP")
 	}
 }
+
+// A socks forward listens on loopback (or Listen) and relays through the
+// tunnel's inner address; the far node gets it and opens its exit for
+// egress, without ports.
+func TestSocksModeEntryAndExit(t *testing.T) {
+	hub := modeState()
+	hub.Tunnels[0].Secret = config.NewSecret()
+	hub.Forwards = []config.Forward{{Node: "hub", Tunnel: "t1", Proto: "tcp", Ports: "1080", Mode: config.ForwardSocks, Auth: "a:b"}}
+	_, own := hub.Effective()
+	rs, errs := Build(hub, own, nil)
+	if len(errs) > 0 || len(rs.Relays) != 1 || len(rs.Rules) != 0 {
+		t.Fatalf("entry: %v %+v", errs, rs)
+	}
+	r := rs.Relays[0]
+	if !r.Socks || r.Port != 1080 || r.Listen.String() != "127.0.0.1" || r.Auth != "a:b" || r.Via.Exit.String() != "10.77.0.2:7712" {
+		t.Errorf("proxy %+v", r)
+	}
+	ts, fs := hub.ForPeer("edge")
+	edge := &config.State{Self: "edge", Managed: &config.Managed{Self: "edge", Tunnels: ts, Forwards: fs}}
+	_, own = edge.Effective()
+	rs, errs = Build(edge, own, nil)
+	if len(errs) > 0 || len(rs.Exits) != 1 || !rs.Exits[0].Egress || len(rs.Exits[0].Ports) != 0 {
+		t.Fatalf("exit: %v %+v", errs, rs.Exits)
+	}
+}

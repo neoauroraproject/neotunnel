@@ -254,6 +254,10 @@ type ForwardRequest struct {
 	// Backup is a second tunnel to the same far server that the forward
 	// moves to while Tunnel doesn't pass traffic ("" = none).
 	Backup string `json:"backup,omitempty"`
+	// Listen and Auth are a socks forward's address ("" = 127.0.0.1) and
+	// "user:password" ("" = none; required off loopback).
+	Listen string `json:"listen,omitempty"`
+	Auth   string `json:"auth,omitempty"`
 }
 
 func (r *ForwardRequest) check(st *config.State) error {
@@ -265,7 +269,7 @@ func (r *ForwardRequest) check(st *config.State) error {
 	}
 	if r.Proto == "" {
 		r.Proto = "both"
-		if r.Mode == config.ForwardRelay {
+		if r.Mode == config.ForwardRelay || r.Mode == config.ForwardSocks {
 			r.Proto = "tcp"
 		}
 	}
@@ -282,12 +286,48 @@ func (r *ForwardRequest) check(st *config.State) error {
 	if r.Mode == config.ForwardRelay && t.Sides[1].Node == "" {
 		return fmt.Errorf("relay mode needs NeoTunnel on the far end to accept the connections")
 	}
+	if r.Mode == config.ForwardSocks {
+		if err := checkSocks(r, *t); err != nil {
+			return err
+		}
+	} else {
+		r.Listen, r.Auth = "", ""
+	}
 	if (r.Mode == config.ForwardProxy || r.Mode == config.ForwardRelay) && len(forward.Expand(r.Ports)) > forward.MaxRelayPorts {
 		return fmt.Errorf("proxy mode supports up to %d ports per forward", forward.MaxRelayPorts)
 	}
 	if r.Backup != "" {
 		if err := checkBackup(st, *t, r.Backup); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkSocks checks a SOCKS/HTTP proxy: one port, NeoTunnel on the far end
+// (its connections leave from there), and a password unless only programs
+// on this server can reach it.
+func checkSocks(r *ForwardRequest, t config.Tunnel) error {
+	if len(forward.Expand(r.Ports)) != 1 {
+		return fmt.Errorf("a proxy listens on one port")
+	}
+	if t.Sides[1].Node == "" {
+		return fmt.Errorf("a proxy needs NeoTunnel on the far end: its connections leave from there")
+	}
+	if r.Listen != "" {
+		a, err := netip.ParseAddr(r.Listen)
+		if err != nil {
+			return fmt.Errorf("listen address %q is not an IP address", r.Listen)
+		}
+		if a == netip.AddrFrom4([4]byte{127, 0, 0, 1}) {
+			r.Listen = ""
+		} else if r.Auth == "" && !a.IsLoopback() {
+			return fmt.Errorf("a proxy others can reach needs a user and password (user:password)")
+		}
+	}
+	if r.Auth != "" {
+		if u, p, ok := strings.Cut(r.Auth, ":"); !ok || u == "" || p == "" || len(u) > 255 || len(p) > 255 {
+			return fmt.Errorf("auth must be user:password")
 		}
 	}
 	return nil
@@ -346,7 +386,7 @@ func AddForward(r ForwardRequest) (Change, error) {
 			return err
 		}
 		s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: r.Tunnel, Proto: r.Proto, Ports: r.Ports,
-			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Backup: r.Backup})
+			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Backup: r.Backup, Listen: r.Listen, Auth: r.Auth})
 		return nil
 	})
 	return ch, err
@@ -373,6 +413,7 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 					relaySecret(b, r.Mode)
 				}
 				f.Proto, f.To, f.Mode, f.ProxyVersion, f.Backup = r.Proto, r.To, r.Mode, r.ProxyVersion, r.Backup
+				f.Listen, f.Auth = r.Listen, r.Auth
 				s.Forwards[i] = f
 				return portsFreeExcept(s, i)
 			}
@@ -385,7 +426,7 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 // relaySecret gives a tunnel the secret its relay forwards' keys come from
 // (tunnels that encrypt nothing have none).
 func relaySecret(t *config.Tunnel, mode string) {
-	if mode == config.ForwardRelay && t.Secret == "" {
+	if (mode == config.ForwardRelay || mode == config.ForwardSocks) && t.Secret == "" {
 		t.Secret = config.NewSecret()
 	}
 }

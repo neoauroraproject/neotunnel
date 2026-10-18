@@ -181,6 +181,9 @@ func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firew
 		}
 	}
 	for _, r := range rs.Relays {
+		if r.Socks && r.Listen.IsLoopback() {
+			continue // only this server's programs reach it
+		}
 		n.Ports = append(n.Ports, fmt.Sprintf("%d/%s", r.Port, r.Proto))
 	}
 	if len(rs.Exits) > 0 {

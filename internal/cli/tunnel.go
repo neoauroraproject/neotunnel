@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -196,6 +197,14 @@ func tunnelRemoveCmd() *cobra.Command {
 	}
 }
 
+// proxyAddr is where a socks forward listens.
+func proxyAddr(listen, port string) string {
+	if listen == "" {
+		listen = "127.0.0.1"
+	}
+	return net.JoinHostPort(listen, port)
+}
+
 func forwardCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "forward", Short: "Forward public ports on this node through a tunnel"}
 	var proto string
@@ -206,15 +215,19 @@ func forwardCmd() *cobra.Command {
 		Short: "Forward ports (e.g. 443,8080-8090) to the tunnel's far end",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if mode.Mode == config.ForwardRelay && !cmd.Flags().Changed("proto") {
-				proto = "tcp" // relay mode carries TCP only
+			if (mode.Mode == config.ForwardRelay || mode.Mode == config.ForwardSocks) && !cmd.Flags().Changed("proto") {
+				proto = "tcp" // relay mode and proxies carry TCP only
 			}
 			ch, err := manage.AddForward(manage.ForwardRequest{Tunnel: args[0], Ports: args[1], Proto: proto, To: to,
-				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion, Backup: mode.Backup})
+				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion, Backup: mode.Backup, Listen: mode.Listen, Auth: mode.Auth})
 			if err != nil {
 				return err
 			}
 			printChange(ch)
+			if mode.Mode == config.ForwardSocks {
+				success("proxy on %s (SOCKS5 and HTTP): connections leave from the far end of %s", proxyAddr(mode.Listen, args[1]), args[0])
+				return nil
+			}
 			target := "same port"
 			if to != 0 {
 				target = fmt.Sprintf("port %d", to)
@@ -248,6 +261,9 @@ func forwardCmd() *cobra.Command {
 				backup := ""
 				if f.Backup != "" {
 					backup = fmt.Sprintf("  (backup %s, now through %s)", f.Backup, paths.ActiveOf(f))
+				}
+				if f.ModeOf() == config.ForwardSocks {
+					to = " (proxy on " + proxyAddr(f.Listen, f.Ports) + ")"
 				}
 				fmt.Printf("  %d. %-5s %-20s → %s%s%s\n", i+1, f.Proto, f.Ports, f.Tunnel, to, backup)
 			}

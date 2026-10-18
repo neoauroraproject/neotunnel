@@ -25,14 +25,7 @@ func streamRelays(st *config.State, f config.Forward, t config.Tunnel, byName ma
 	if len(ports) > MaxRelayPorts {
 		return nil, fmt.Errorf("relay mode supports up to %d ports per forward", MaxRelayPorts)
 	}
-	pool := 4
-	switch t.Profile {
-	case config.ProfileLean:
-		pool = 2
-	case config.ProfileMax:
-		pool = 8
-	}
-	via := relay.Via{Tunnel: t.Name, Secret: t.Secret, Side: me, Exit: netip.AddrPortFrom(exit, relay.RelayPort), Cipher: cipher, Pool: pool}
+	via := relay.Via{Tunnel: t.Name, Secret: t.Secret, Side: me, Exit: netip.AddrPortFrom(exit, relay.RelayPort), Cipher: cipher, Pool: poolSize(t)}
 	for _, n := range []string{t.Net4, t.Net6} {
 		if far, ok := config.Inner(n, 1-me); ok && n != "" {
 			via.Inside = netip.AddrPortFrom(far.Addr(), relay.RelayPort)
@@ -49,6 +42,66 @@ func streamRelays(st *config.State, f config.Forward, t config.Tunnel, byName ma
 			Version: f.ProxyVersion, Via: via})
 	}
 	return out, nil
+}
+
+// socksRelay is the listener of a socks forward: a SOCKS5 and HTTP proxy
+// whose connections go to the far node through the tunnel (its inner
+// address) and leave to the internet from there.
+func socksRelay(st *config.State, f config.Forward, t config.Tunnel, byName map[string]config.Tunnel) (relay.Spec, error) {
+	if t.Secret == "" {
+		return relay.Spec{}, errors.New("the tunnel has no secret for the proxy; save it again")
+	}
+	me := sideOf(st, t)
+	via := relay.Via{Tunnel: t.Name, Secret: t.Secret, Side: me, Cipher: tunnelCipher(t, byName), Pool: poolSize(t)}
+	for _, n := range []string{t.Net4, t.Net6} {
+		if far, ok := config.Inner(n, 1-me); ok && n != "" {
+			via.Exit = netip.AddrPortFrom(far.Addr(), relay.RelayPort)
+			break
+		}
+	}
+	if !via.Exit.IsValid() {
+		return relay.Spec{}, errors.New("the tunnel has no inner address")
+	}
+	listen := netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	if f.Listen != "" {
+		a, err := netip.ParseAddr(f.Listen)
+		if err != nil {
+			return relay.Spec{}, fmt.Errorf("bad listen address %q", f.Listen)
+		}
+		listen = a
+	}
+	ports := Expand(f.Ports)
+	if len(ports) != 1 {
+		return relay.Spec{}, errors.New("a proxy listens on one port")
+	}
+	return relay.Spec{Proto: "tcp", Port: uint16(ports[0]), Via: via, Socks: true, Listen: listen, Auth: f.Auth}, nil
+}
+
+// poolSize is how many relay connections a tunnel keeps ready.
+func poolSize(t config.Tunnel) int {
+	switch t.Profile {
+	case config.ProfileLean:
+		return 2
+	case config.ProfileMax:
+		return 8
+	}
+	return 4
+}
+
+// tunnelCipher is the cipher of a tunnel or the first encrypted one it runs
+// over, for its relay connections ("" = authenticated only).
+func tunnelCipher(t config.Tunnel, byName map[string]config.Tunnel) string {
+	for cur, hops := t, 0; hops < 8; hops++ {
+		if tcptun.ValidCipher(cur.Encrypt) == nil && cur.Encrypt != "" {
+			return cur.Encrypt
+		}
+		next, ok := byName[cur.Over]
+		if cur.Over == "" || !ok {
+			break
+		}
+		cur = next
+	}
+	return ""
 }
 
 func sideOf(st *config.State, t config.Tunnel) int {
@@ -92,7 +145,7 @@ func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit 
 	}
 	var out []relay.Exit
 	for _, f := range fs {
-		if f.ModeOf() != config.ForwardRelay || st.IsSelf(f.Node) {
+		if (f.ModeOf() != config.ForwardRelay && f.ModeOf() != config.ForwardSocks) || st.IsSelf(f.Node) {
 			continue
 		}
 		// The far side may move the forward to its backup at any time, so
@@ -103,7 +156,9 @@ func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit 
 				continue
 			}
 			e := relay.Exit{Tunnel: t.Name, Secret: t.Secret, Side: sideOf(st, t)}
-			if f.To != 0 {
+			if f.ModeOf() == config.ForwardSocks {
+				e.Egress = true
+			} else if f.To != 0 {
 				e.Ports = []uint16{f.To}
 			} else {
 				for _, p := range Expand(f.Ports) {

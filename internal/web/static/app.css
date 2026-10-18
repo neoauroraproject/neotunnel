@@ -680,3 +680,8 @@ main.main { animation: page-in 200ms var(--ease-out); }
 @media (max-width: 560px) { .profiles { grid-template-columns: 1fr; } }
 .pf { display: flex; gap: 6px; align-items: center; }
 .pf .input { flex: 1; min-width: 0; }
+
+.proxies { display: grid; gap: 12px; }
+.proxy { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 8px; }
+.proxy-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.proxy .code { margin: 0; }

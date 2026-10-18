@@ -788,7 +788,7 @@
     const fs = (S.ov.forwards || []).filter((f) => f.tunnel === t.name || f.backup === t.name);
     if (t.managed) return "";
     return html`<div class="tfwd"><div class="tfwd-h"><b>پورت‌ها</b>${fs.length ? "" : html`<span class="faint small">هنوز پورتی از این تانل فوروارد نشده</span>`}<span class="grow"></span><button class="btn sm ghost" data-act="add-forward" data-tunnel="${t.name}">${I.plus(14)} فوروارد</button></div>
-      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">→ ${f.target}:${f.to || f.ports}</span>${fwdModeLabel(f)}${f.backup === t.name ? html`<span class="tag">پشتیبانِ ${f.tunnel}</span>` : ""}${fwdPath(f)}<span class="grow"></span><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button></div>`; })}</div>`;
+      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">${f.mode === "socks" ? proxyAt(f) : `→ ${f.target}:${f.to || f.ports}`}</span>${fwdModeLabel(f)}${f.backup === t.name ? html`<span class="tag">پشتیبانِ ${f.tunnel}</span>` : ""}${fwdPath(f)}<span class="grow"></span>${f.mode === "socks" ? "" : html`<button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button>`}</div>`; })}</div>`;
   }
 
   // Speed limit and monthly quota, with how much of the quota is used.
@@ -890,7 +890,8 @@
   }
 
   // A forward's mode in words.
-  const fwdModeLabel = (f) => html`<span class="tag" title="${MODES_FWD[f.mode][1]}">${MODES_FWD[f.mode][0]}${f.mode === "proxy" ? ` v${f.proxy_version || 2}` : f.mode === "relay" && f.proxy_version ? ` + PROXY v${f.proxy_version}` : ""}</span>`;
+  const modeInfo = (m) => MODES_FWD[m] || (m === "socks" ? ["پروکسی SOCKS/HTTP", "پروکسی روی این سرور برای برنامه‌های همین‌جا؛ اتصال‌ها از سرور مقصد به اینترنت می‌روند."] : [m, ""]);
+  const fwdModeLabel = (f) => html`<span class="tag" title="${modeInfo(f.mode)[1]}">${modeInfo(f.mode)[0]}${f.mode === "proxy" ? ` v${f.proxy_version || 2}` : f.mode === "relay" && f.proxy_version ? ` + PROXY v${f.proxy_version}` : ""}</span>`;
 
   // Tunnels that can back up a forward on tunnel name: our other tunnels to
   // the same far server.
@@ -938,11 +939,32 @@
   }
 
   // ---------- ports ----------
+  // Where a proxy listens, and the URLs programs are given.
+  const proxyAt = (f) => `${f.listen || "127.0.0.1"}:${f.ports}`;
+  function proxyURL(f, scheme) {
+    const host = f.listen && f.listen !== "0.0.0.0" && f.listen !== "::" ? f.listen : f.listen ? S.ov.node.address || "SERVER_IP" : "127.0.0.1";
+    const h = host.includes(":") ? `[${host}]` : host;
+    const [u, p] = (f.auth || "").split(":");
+    const cred = f.auth ? `${encodeURIComponent(u)}:${encodeURIComponent(p)}@` : "";
+    return `${scheme}://${cred}${h}:${f.ports}`;
+  }
+
+  function proxiesPanel(ps) {
+    const head = html`<header><h2>پروکسی داخلی (SOCKS5 / HTTP)</h2><span class="aside">برای برنامه‌های همین سرور که باید از سرور مقصد به اینترنت بروند</span><span class="grow"></span><button class="btn sm primary" data-act="add-proxy">${I.plus(14)} پروکسی جدید</button></header>`;
+    if (!ps.length) return html`<div class="panel" style="margin-bottom:16px">${head}<div class="in"><p class="muted" style="margin:0">برنامه‌ای روی این سرور دارید که مستقیم به جایی وصل نمی‌شود (مثلاً تلگرام)؟ یک پروکسی بسازید و آدرسش را در تنظیمات آن برنامه بدهید؛ اتصال‌هایش از داخل تانل به سرور مقصد می‌روند و از آنجا به اینترنت.</p></div></div>`;
+    return html`<div class="panel" style="margin-bottom:16px">${head}<div class="in proxies">${ps.map((f) => html`<div class="proxy">
+        <div class="proxy-h"><b class="ltr">${proxyAt(f)}</b><span class="faint">از تانل</span> ${f.tunnel} <span class="faint">به</span> ${f.peer || ""}
+          ${f.auth ? html`<span class="tag">با رمز</span>` : html`<span class="tag">فقط همین سرور</span>`}${fwdPath(f)}<span class="grow"></span>
+          <button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف پروکسی">${I.trash(15)}</button></div>
+        ${["socks5", "http"].map((sc) => html`<div class="code small">${proxyURL(f, sc)}<button class="btn sm ghost icon" data-act="copy" data-text="${proxyURL(f, sc)}" aria-label="کپی">${I.copy(14)}</button></div>`)}
+      </div>`)}<p class="help" style="margin:4px 0 0">نام دامنه‌ها روی سرور مقصد پیدا می‌شود. فقط TCP؛ برای SOCKS5 در برنامه‌ها گزینه‌ی «remote DNS» یا socks5h را بزنید.</p></div></div>`;
+  }
+
   function viewPorts() {
-    const fs = S.ov.forwards;
+    const all = S.ov.forwards, ps = all.filter((f) => f.mode === "socks"), fs = all.filter((f) => f.mode !== "socks");
     const intro = html`<div class="note" style="margin-bottom:16px">هر پورت این سرور می‌تواند از تانلی جدا به مقصدی جدا برود. ستون «حالت» تعیین می‌کند اتصال‌ها چطور به مقصد برسند و سرویس مقصد چه آدرسی را به‌عنوان کاربر ببیند.</div>`;
-    if (!fs.length) return html`${intro}<div class="panel"><div class="empty">${I.ports(32)}<b>فورواردی تعریف نشده</b>ترافیک ورودی پورت‌های این سرور را از داخل تانل به سرور مقصد بفرستید.<br><button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button></div></div>`;
-    return html`${intro}<div class="panel"><table class="t"><thead><tr><th>ورودی</th><th class="hide-sm">پروتکل</th><th>تانل و مقصد</th><th>حالت</th><th></th></tr></thead><tbody>
+    if (!fs.length) return html`${intro}${proxiesPanel(ps)}<div class="panel"><div class="empty">${I.ports(32)}<b>فورواردی تعریف نشده</b>ترافیک ورودی پورت‌های این سرور را از داخل تانل به سرور مقصد بفرستید.<br><button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button></div></div>`;
+    return html`${intro}${proxiesPanel(ps)}<div class="panel"><table class="t"><thead><tr><th>ورودی</th><th class="hide-sm">پروتکل</th><th>تانل و مقصد</th><th>حالت</th><th></th></tr></thead><tbody>
       ${fs.map((f) => {
         const k = f.tunnel + "|" + f.ports;
         return html`<tr>
@@ -1709,6 +1731,25 @@
       <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-forward-go" ${ts.length ? "" : "disabled"}>${I.plus(16)} افزودن فوروارد</button></footer>`;
   }
 
+  function addProxyView() {
+    const f = S.form, ts = visible().filter((t) => !t.managed && t.peer);
+    if (!f.tunnel && ts.length) f.tunnel = ts[0].name;
+    const open = f.access === "all";
+    return html`${modalHead("پروکسی جدید")}
+      <div class="body">${ts.length ? html`<div class="grid2">
+          <div class="field full"><label for="p-t">از طریق تانل</label><select id="p-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${x.name} به ${x.peer} (${kindTitle(x)})</option>`)}</select>
+            <span class="help">اتصال‌ها از داخل همین تانل به ${tunnel(f.tunnel) ? tunnel(f.tunnel).peer : "سرور مقصد"} می‌روند و از آنجا به اینترنت؛ مقصد، IP آن سرور را می‌بیند.</span></div>
+          <div class="field"><label for="p-port">پورت</label><div class="pf"><input id="p-port" class="input ltr" type="number" min="1" max="65535" data-bind="form.ports" value="${f.ports || ""}" placeholder="1080"><button type="button" class="btn sm" data-act="random-port" data-path="form.ports" data-proto="tcp" title="یک پورت آزاد تصادفی بین ۲۰۰۰۰ و ۶۰۰۰۰">${I.dice(14)} تصادفی</button></div>
+            <span class="help">یک پورت هم SOCKS5 است هم HTTP.</span></div>
+          <div class="field"><span class="lbl">چه کسی وصل شود</span><div class="seg"><button type="button" class="${open ? "" : "on"}" data-act="set" data-path="form.access" data-value="local">فقط همین سرور</button><button type="button" class="${open ? "on" : ""}" data-act="set" data-path="form.access" data-value="all">همه، با رمز</button></div>
+            <span class="help">${open ? "روی همه‌ی IPهای سرور گوش می‌دهد و پورتش در فایروال باز می‌شود؛ بدون نام کاربری و رمز ساخته نمی‌شود." : "فقط برنامه‌های همین سرور (127.0.0.1)؛ از بیرون دیده نمی‌شود."}</span></div>
+          ${open ? html`<div class="field"><label for="p-u">نام کاربری</label><input id="p-u" class="input ltr" data-bind="form.user" value="${f.user || ""}" autocomplete="off"></div>
+          <div class="field"><label for="p-pw">رمز</label><input id="p-pw" class="input ltr" data-bind="form.pass" value="${f.pass || ""}" autocomplete="off"></div>` : ""}
+          ${backupField("form", f, f.tunnel)}
+        </div>` : html`<div class="muted">پروکسی به تانلی نیاز دارد که سرور مقصدش NeoTunnel دارد؛ اول یکی بسازید.</div>`}</div>
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-proxy-go" ${ts.length ? "" : "disabled"}>${I.plus(16)} ساخت پروکسی</button></footer>`;
+  }
+
   function confirmView(title, text, act, data, label) {
     return html`${modalHead(title)}<div class="body"><div>${text}</div></div>
       <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn danger" data-act="${act}" ${raw(Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" "))}>${I.trash(16)} ${label}</button></footer>`;
@@ -1857,6 +1898,15 @@
         const s = await api("POST", "peers", { name: (S.form.name || "").trim(), address: (S.form.address || "").trim() });
         await refresh(); openModal(() => setupView(s)); location.hash = "#/servers";
       } catch (e) { toast(e.message, "bad"); }
+    },
+    "add-proxy"() { S.form = { ports: "1080", access: "local" }; openModal(addProxyView); },
+    async "add-proxy-go"() {
+      const f = S.form, open = f.access === "all";
+      try {
+        const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: String(f.ports || "").trim(), proto: "tcp", mode: "socks",
+          listen: open ? "0.0.0.0" : "", auth: open || f.user ? `${(f.user || "").trim()}:${f.pass || ""}` : "", backup: f.backup || "" });
+        closeModal(); await refresh(); reportChange(ch, "پروکسی ساخته شد");
+      } catch (e) { toast(errText(e.message), "bad"); }
     },
     "add-forward"(el) { S.form = { tunnel: (el && el.dataset.tunnel) || undefined, proto: "both", mode: (S.ov.defaults && S.ov.defaults.forward_mode) || "nat", pver: 2 }; openModal(addForwardView); },
     async "add-forward-go"() {

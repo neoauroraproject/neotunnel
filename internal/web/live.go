@@ -285,7 +285,7 @@ func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardVi
 	out := []ForwardView{}
 	for _, f := range fs {
 		v := ForwardView{Tunnel: f.Tunnel, Proto: f.Proto, Ports: f.Ports, To: f.To, Public: st.Address,
-			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Backup: f.Backup, Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
+			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Listen: f.Listen, Auth: f.Auth, Backup: f.Backup, Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
 		if p := paths[failover.Key(f)]; p != nil && f.Backup != "" {
 			v.Since, v.Switches = p.Since, p.Switches
 		}
@@ -308,8 +308,11 @@ func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardVi
 			if a, ok := config.Inner(n, 1-me); ok {
 				v.Target = a.Addr().String()
 			}
-			if v.Mode == config.ForwardRelay {
+			switch v.Mode {
+			case config.ForwardRelay:
 				v.Target = "127.0.0.1" // the far node connects to its own loopback
+			case config.ForwardSocks:
+				v.Target = "" // wherever the program asks
 			}
 		}
 		out = append(out, v)

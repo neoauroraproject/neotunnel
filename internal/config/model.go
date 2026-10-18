@@ -230,6 +230,10 @@ type Forward struct {
 	//                  encrypted when the tunnel is), and the far node
 	//                  connects to the port on its own loopback. A PROXY
 	//                  header is sent when ProxyVersion is 1 or 2.
+	//   socks          a SOCKS5 and HTTP proxy on this node (one port, both
+	//                  protocols) for programs here: each connection goes
+	//                  through the tunnel to the far node like a relay one,
+	//                  and leaves to the internet from there.
 	Mode string `json:"mode,omitempty"`
 	// ProxyVersion is the PROXY protocol version: 2 (default, TCP and UDP)
 	// or 1 (text, TCP only). In relay mode 0 sends no header.
@@ -238,6 +242,11 @@ type Forward struct {
 	// passing traffic the daemon moves the forward there, and back once
 	// Tunnel is healthy again (see package failover).
 	Backup string `json:"backup,omitempty"`
+	// Listen is the address a socks forward listens on: "" = 127.0.0.1,
+	// only programs on this server. Any other needs Auth.
+	Listen string `json:"listen,omitempty"`
+	// Auth is "user:password" for a socks forward ("" = none).
+	Auth string `json:"auth,omitempty"`
 }
 
 // Uses reports whether the forward can run on the named tunnel.
@@ -251,6 +260,7 @@ const (
 	ForwardTransparent = "transparent"
 	ForwardProxy       = "proxy"
 	ForwardRelay       = "relay"
+	ForwardSocks       = "socks"
 )
 
 // ModeOf returns the forward's mode with the default filled in.
@@ -279,8 +289,12 @@ func ValidForwardMode(mode string, version int, proto string) error {
 		if proto != "tcp" {
 			return fmt.Errorf("relay mode carries TCP only; forward UDP ports in another mode")
 		}
+	case ForwardSocks:
+		if proto != "tcp" {
+			return fmt.Errorf("a SOCKS/HTTP proxy listens on TCP only")
+		}
 	default:
-		return fmt.Errorf("bad forward mode %q (nat, transparent, proxy, relay)", mode)
+		return fmt.Errorf("bad forward mode %q (nat, transparent, proxy, relay, socks)", mode)
 	}
 	return nil
 }
@@ -330,8 +344,8 @@ func (s *State) ForPeer(peer string) ([]Tunnel, []Forward) {
 	for _, f := range s.Forwards {
 		// The far end of a transparent forward must know about it to route
 		// replies back through the tunnel, and of a relay forward to accept
-		// its connections.
-		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay) && (touches[f.Tunnel] || touches[f.Backup])) {
+		// its connections (a socks one too).
+		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay || f.ModeOf() == ForwardSocks) && (touches[f.Tunnel] || touches[f.Backup])) {
 			fs = append(fs, f)
 		}
 	}

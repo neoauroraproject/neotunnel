@@ -318,6 +318,36 @@ grep -q "^PROXY TCP4 198.18.0.2 198.18.0.1 [0-9]* 9103" "$WORK/relay-proxy.txt" 
 grep -q "hello" "$WORK/relay-proxy.txt" || fail "payload after the relay's PROXY header missing"
 pass "relay mode: plain, encrypted and with the client's address in a PROXY header"
 
+# 15b2. Proxy: a SOCKS5/HTTP proxy on hub for its own programs, whose
+#       connections go through the tunnel to edge and leave from there. A
+#       "whoami" server stands in for the internet: it must see edge's
+#       address, not hub's. Loopback destinations are refused; a proxy open
+#       to others needs its password.
+ip netns exec $EDGE python3 -c '
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        b = self.client_address[0].encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("0.0.0.0", 8095), H).serve_forever()' &
+in_hub forward add t1 1080 --mode socks >/dev/null || fail "add proxy"
+in_hub forward add e1 1082 --mode socks --listen 0.0.0.0 --auth "u1:pw-123" >/dev/null || fail "add encrypted proxy with password"
+in_hub forward add e1 1083 --mode socks --listen 0.0.0.0 2>/dev/null && fail "open proxy without a password accepted"
+hup 3
+who() { ip netns exec "$1" curl -s -m 8 "${@:2}" http://$EDGE_IP:8095/ || true; }
+[ "$(who $HUB)" = "$HUB_IP" ] || fail "whoami server: direct request should come from hub"
+[ "$(who $HUB --socks5-hostname 127.0.0.1:1080)" = "$EDGE_IP" ] || fail "SOCKS5 proxy: request did not leave from edge"
+[ "$(who $HUB -x http://127.0.0.1:1080)" = "$EDGE_IP" ] || fail "HTTP proxy (same port): request did not leave from edge"
+[ "$(who $CLIENT -x http://u1:pw-123@198.18.0.1:1082)" = "$EDGE_IP" ] || fail "encrypted proxy with password"
+[ -z "$(who $CLIENT -x http://u1:wrong@198.18.0.1:1082)" ] || fail "proxy accepted a wrong password"
+[ -z "$(who $CLIENT --socks5 198.18.0.1:1080)" ] || fail "loopback-only proxy reachable from the client"
+ip netns exec $HUB curl -s -m 5 --socks5-hostname 127.0.0.1:1080 http://127.0.0.1:8080/ >/dev/null && fail "proxy reached edge's loopback"
+ip netns exec $EDGE ss -Htn state established "( sport = :7712 )" | grep -vq "$HUB_IP" || fail "proxy connections did not come through the tunnel"
+in_hub forward list | grep -q "proxy on 127.0.0.1:1080" || fail "forward list shows the proxy"
+in_hub forward remove t1 1080 >/dev/null && in_hub forward remove e1 1082 >/dev/null || fail "remove proxies"
+pass "proxy: SOCKS5 and HTTP on one port leave from edge through the tunnel; loopback refused; password enforced"
+
 # 15c. Optional (NT_BENCH=1): throughput of a TCP forward through a GENEVE
 #      tunnel vs a relay forward, on a long lossy path (netem on the link
 #      between the servers, both directions).
