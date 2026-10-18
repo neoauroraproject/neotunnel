@@ -8,12 +8,27 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"neotunnel/internal/tun"
 )
 
 // openTAP creates (or attaches to) a layer-2 TAP interface without packet
-// information headers and gives it mac. The interface disappears when the
+// information headers and gives it mac. With a virtio-net header and
+// offload when the kernel has them (vnet), so it hands out and takes TCP
+// super-frames (see package offload). The interface disappears when the
 // file is closed.
-func openTAP(name string, mac net.HardwareAddr) (*os.File, error) {
+func openTAP(name string, mac net.HardwareAddr) (*os.File, bool, error) {
+	if f, err := openTAPFlags(name, mac, unix.IFF_VNET_HDR); err == nil {
+		if tun.SetOffload(f, true) == nil {
+			return f, true, nil
+		}
+		f.Close()
+	}
+	f, err := openTAPFlags(name, mac, 0)
+	return f, false, err
+}
+
+func openTAPFlags(name string, mac net.HardwareAddr, flags uint16) (*os.File, error) {
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/net/tun: %w (is the tun module loaded?)", err)
@@ -23,7 +38,7 @@ func openTAP(name string, mac net.HardwareAddr) (*os.File, error) {
 		unix.Close(fd)
 		return nil, err
 	}
-	ifr.SetUint16(unix.IFF_TAP | unix.IFF_NO_PI)
+	ifr.SetUint16(unix.IFF_TAP | unix.IFF_NO_PI | flags)
 	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("create %s: %w", name, err)

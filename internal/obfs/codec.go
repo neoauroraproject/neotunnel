@@ -18,6 +18,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	mrand "math/rand/v2"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -49,6 +51,17 @@ type codec struct {
 	seq        uint64
 	win        window
 	now        func() time.Time
+
+	// Nonces and padding sizes come from a ChaCha8 generator seeded from
+	// the system, not a system call per datagram.
+	rngMu sync.Mutex
+	rng   *mrand.ChaCha8
+}
+
+func (c *codec) random(b []byte) {
+	c.rngMu.Lock()
+	c.rng.Read(b)
+	c.rngMu.Unlock()
 }
 
 func newCodec(sendKey, recvKey []byte, padding int) (*codec, error) {
@@ -63,7 +76,9 @@ func newCodec(sendKey, recvKey []byte, padding int) (*codec, error) {
 	if padding > 255 {
 		padding = 255
 	}
-	return &codec{send: s, recv: r, padding: padding, seq: uint64(time.Now().UnixNano()), now: time.Now}, nil
+	var seed [32]byte
+	rand.Read(seed[:])
+	return &codec{send: s, recv: r, padding: padding, seq: uint64(time.Now().UnixNano()), now: time.Now, rng: mrand.NewChaCha8(seed)}, nil
 }
 
 // room is the buffer size seal needs for a packet of n bytes.
@@ -75,11 +90,11 @@ func (c *codec) seal(dst []byte, typ byte, pkt []byte, ts uint32) []byte {
 	pad := 0
 	if c.padding > 0 {
 		var b [1]byte
-		rand.Read(b[:])
+		c.random(b[:])
 		pad = int(b[0]) % (c.padding + 1)
 	}
 	nonce := dst[:nonceLen]
-	rand.Read(nonce)
+	c.random(nonce)
 	plain := dst[nonceLen : nonceLen+headerLen+len(pkt)+pad]
 	plain[0], plain[1] = typ, byte(pad)
 	binary.BigEndian.PutUint64(plain[2:], atomic.AddUint64(&c.seq, 1))

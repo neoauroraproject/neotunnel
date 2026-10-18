@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/mmsg"
+	"neotunnel/internal/offload"
 	"neotunnel/internal/tun"
 )
 
@@ -27,11 +29,36 @@ type Config struct {
 	Keepalive time.Duration // 0 = off
 }
 
+const (
+	batch   = 64  // datagrams per receive
+	maxSegs = 128 // packets one super-packet is cut into, at most
+	// maxDatagram is the largest datagram received (the largest inner MTU
+	// is 9000).
+	maxDatagram = 9216 + Overhead + 255
+)
+
+// openTUN opens the interface with a virtio-net header and offload, so it
+// hands out and takes TCP super-packets (see package offload); plain when
+// the kernel can't.
+func openTUN(name string) (*os.File, bool, error) {
+	if f, err := tun.OpenVnet(name); err == nil {
+		if tun.SetOffload(f, true) == nil {
+			return f, true, nil
+		}
+		f.Close()
+	}
+	f, err := tun.Open(name)
+	return f, false, err
+}
+
 // Link is a running tunnel end: a TUN interface and a UDP socket.
 type Link struct {
 	cfg   Config
 	tun   *os.File
+	vnet  bool // tun has a virtio-net header and offload
 	conn  *net.UDPConn
+	r, w  *mmsg.Conn // batched receives and sends on conn
+	noGSO bool       // UDP GSO failed once (outbound only)
 	codec *codec
 	peer  atomic.Pointer[netip.AddrPort]
 	sent  atomic.Int64 // unix nanos of the last datagram sent
@@ -69,12 +96,18 @@ func Start(c Config) (*Link, error) {
 	}
 	conn.SetReadBuffer(4 << 20)
 	conn.SetWriteBuffer(4 << 20)
-	tf, err := tun.Open(c.Name)
+	r, err1 := mmsg.New(conn, batch)
+	w, err2 := mmsg.New(conn, maxSegs)
+	if err := errors.Join(err1, err2); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	tf, vnet, err := openTUN(c.Name)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-	l := &Link{cfg: c, tun: tf, conn: conn, codec: cd, done: make(chan struct{})}
+	l := &Link{cfg: c, tun: tf, vnet: vnet, conn: conn, r: r, w: w, codec: cd, done: make(chan struct{})}
 	remote := c.Remote
 	l.peer.Store(&remote)
 	l.wg.Add(2)
@@ -117,47 +150,134 @@ func (l *Link) send(typ byte, pkt []byte, buf []byte) {
 }
 
 // outbound: TUN -> encrypt -> UDP. Packets are read straight into the
-// datagram buffer behind room for the nonce and header, so sealing is in place.
+// datagram buffer behind room for the nonce and header, so sealing is in
+// place. A TCP super-packet is cut into packets, each sealed into its own
+// datagram, and they all go out in one system call.
 func (l *Link) outbound() {
 	defer l.wg.Done()
 	buf := make([]byte, l.codec.room(65535))
 	off := nonceLen + headerLen
+	start := off
+	if l.vnet {
+		start -= offload.HdrLen
+	}
+	segs, sizes, out := make([][]byte, maxSegs), make([]int, maxSegs), make([][]byte, maxSegs)
+	v6 := l.cfg.Remote.Addr().Is6()
 	for {
-		n, err := l.tun.Read(buf[off : len(buf)-tagLen-l.codec.padding])
+		n, err := l.tun.Read(buf[start : len(buf)-tagLen-l.codec.padding])
 		if err != nil {
 			if !l.closed() && !errors.Is(err, os.ErrClosed) {
 				log.Printf("obfs %s: read: %v", l.cfg.Name, err)
 			}
 			return
 		}
-		l.send(typeData, buf[off:off+n], buf)
+		pkt := buf[off : start+n]
+		ts := uint32(time.Now().Unix())
+		k := 1
+		if !l.vnet {
+			out[0] = l.codec.seal(buf, typeData, pkt, ts)
+		} else if h := offload.ParseHdr(buf[start:]); h.GSOType == offload.GSONone {
+			if offload.Complete(pkt, h) != nil {
+				continue
+			}
+			out[0] = l.codec.seal(buf, typeData, pkt, ts)
+		} else {
+			nseg, size := offload.Segments(pkt, h)
+			if nseg == 0 || nseg > maxSegs {
+				continue
+			}
+			for i := range segs[:nseg] {
+				if len(segs[i]) < l.codec.room(size) {
+					segs[i] = make([]byte, l.codec.room(size))
+				}
+			}
+			if k, err = offload.Segment(pkt, h, 0, segs, off, sizes); err != nil {
+				continue
+			}
+			for i := range k {
+				out[i] = l.codec.seal(segs[i], typeData, segs[i][off:off+sizes[i]], ts)
+			}
+		}
+		if l.write(out[:k], v6) == nil {
+			l.sent.Store(time.Now().UnixNano())
+		}
 	}
 }
 
-// inbound: UDP -> authenticate, decrypt -> TUN. Any address that proves it
-// holds the key becomes the far end, so a NAT rebinding doesn't break us.
+// write sends the datagrams of one read: as one UDP GSO send when they are
+// the same size (no padding), else in one sendmmsg.
+func (l *Link) write(out [][]byte, v6 bool) error {
+	to := *l.peer.Load()
+	if len(out) > 1 && !l.noGSO && sameSize(out) {
+		if err := l.w.WriteGSO(out, to, v6); err == nil {
+			return nil
+		} else {
+			l.noGSO = true
+			log.Printf("obfs %s: UDP GSO unavailable (%v); sending datagrams one by one", l.cfg.Name, err)
+		}
+	}
+	return l.w.Write(out, to, v6)
+}
+
+// sameSize: all of b but the last are as long as the first, the last no
+// longer.
+func sameSize(b [][]byte) bool {
+	n := len(b[0])
+	for _, d := range b[1 : len(b)-1] {
+		if len(d) != n {
+			return false
+		}
+	}
+	return len(b[len(b)-1]) <= n
+}
+
+// inbound: UDP -> authenticate, decrypt -> TUN, a batch of datagrams per
+// system call; consecutive TCP segments of a flow go to the interface as
+// one super-packet. Any address that proves it holds the key becomes the
+// far end, so a NAT rebinding doesn't break us.
 func (l *Link) inbound() {
 	defer l.wg.Done()
-	buf := make([]byte, 65535+Overhead+255)
+	bufs, sizes, from := make([][]byte, batch), make([]int, batch), make([]netip.AddrPort, batch)
+	for i := range bufs {
+		bufs[i] = make([]byte, maxDatagram)
+	}
+	off := nonceLen + headerLen
+	var gro offload.Coalescer
+	write := func(b []byte) error { l.tun.Write(b); return nil }
 	for {
-		n, from, err := l.conn.ReadFromUDPAddrPort(buf)
+		k, err := l.r.Read(bufs, sizes, from)
 		if err != nil {
 			if !l.closed() {
 				log.Printf("obfs %s: receive: %v", l.cfg.Name, err)
 			}
 			return
 		}
-		typ, pkt, err := l.codec.open(buf[:n])
-		if err != nil {
-			l.BadDatagrams.Add(1)
-			continue
+		var peer netip.AddrPort
+		for i := range k {
+			if sizes[i] < 0 {
+				l.BadDatagrams.Add(1)
+				continue
+			}
+			typ, pkt, err := l.codec.open(bufs[i][:sizes[i]])
+			if err != nil {
+				l.BadDatagrams.Add(1)
+				continue
+			}
+			peer = from[i]
+			if typ != typeData || len(pkt) == 0 {
+				continue
+			}
+			if l.vnet {
+				gro.Add(bufs[i][off-offload.HdrLen : off+len(pkt)])
+			} else {
+				l.tun.Write(pkt)
+			}
 		}
-		from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
-		if p := l.peer.Load(); *p != from {
-			l.peer.Store(&from)
+		if l.vnet {
+			gro.Flush(write)
 		}
-		if typ == typeData && len(pkt) > 0 {
-			l.tun.Write(pkt)
+		if p := l.peer.Load(); peer.IsValid() && *p != peer {
+			l.peer.Store(&peer)
 		}
 	}
 }

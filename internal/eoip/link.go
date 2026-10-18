@@ -11,6 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"neotunnel/internal/mmsg"
+	"neotunnel/internal/offload"
 )
 
 // Config describes this node's end of an EoIP tunnel.
@@ -44,9 +47,23 @@ func (c Config) mac() net.HardwareAddr {
 	return m
 }
 
+const (
+	batch   = 64  // packets per receive
+	maxSegs = 128 // frames one super-frame is cut into, at most
+	// maxPacket is the largest packet received: a jumbo frame (the
+	// largest MTU is 9000), its EoIP header and an outer IP header.
+	maxPacket = 9216 + 64
+	// headroom is left in front of every received packet, so the frame in
+	// it has room for a virtio-net header (see package offload).
+	headroom = 16
+)
+
 // carrier moves EoIP packets (header and frame, no outer IP) to the far end.
 type carrier interface {
-	read(b []byte) ([]byte, error)
+	// readBatch receives up to len(bufs) packets and sets pkts[i] to the
+	// EoIP packet in bufs[i], or nil for one to ignore.
+	readBatch(bufs, pkts [][]byte) (int, error)
+	writeBatch(ps [][]byte) error
 	write(p []byte) error
 	Close() error
 }
@@ -54,8 +71,10 @@ type carrier interface {
 // rawCarrier is EoIP over IP protocol 47 / EoIPv6 over 97. The socket is
 // connected, so the kernel only hands it packets from the far end.
 type rawCarrier struct {
-	conn *net.IPConn
-	v4   bool
+	conn  *net.IPConn
+	v4    bool
+	r, w  *mmsg.Conn
+	sizes []int
 }
 
 func dialRaw(c Config) (*rawCarrier, error) {
@@ -71,33 +90,49 @@ func dialRaw(c Config) (*rawCarrier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open raw %s socket: %w", network, err)
 	}
-	return &rawCarrier{conn: conn, v4: c.Remote.Is4()}, nil
-}
-
-func (r *rawCarrier) read(b []byte) ([]byte, error) {
-	n, err := r.conn.Read(b)
-	if err != nil {
+	rd, err1 := mmsg.New(conn, batch)
+	wr, err2 := mmsg.New(conn, maxSegs)
+	if err := errors.Join(err1, err2); err != nil {
+		conn.Close()
 		return nil, err
 	}
-	p := b[:n]
-	// Raw IPv4 sockets deliver the IP header too; IPv6 ones never do.
-	if r.v4 && len(p) > 0 && p[0]>>4 == 4 {
-		ihl := int(p[0]&0x0f) * 4
-		if ihl > len(p) {
-			return nil, errPacket
-		}
-		p = p[ihl:]
-	}
-	return p, nil
+	return &rawCarrier{conn: conn, v4: c.Remote.Is4(), r: rd, w: wr, sizes: make([]int, batch)}, nil
 }
 
-func (r *rawCarrier) write(p []byte) error { _, err := r.conn.Write(p); return err }
-func (r *rawCarrier) Close() error         { return r.conn.Close() }
+func (r *rawCarrier) readBatch(bufs, pkts [][]byte) (int, error) {
+	n, err := r.r.Read(bufs, r.sizes, nil)
+	for i := range n {
+		pkts[i] = nil
+		if r.sizes[i] < 0 {
+			continue
+		}
+		p := bufs[i][:r.sizes[i]]
+		// Raw IPv4 sockets deliver the IP header too; IPv6 ones never do.
+		if r.v4 && len(p) > 0 && p[0]>>4 == 4 {
+			ihl := int(p[0]&0x0f) * 4
+			if ihl > len(p) {
+				continue
+			}
+			p = p[ihl:]
+		}
+		pkts[i] = p
+	}
+	return n, err
+}
+
+// The socket is connected: no destination.
+func (r *rawCarrier) writeBatch(ps [][]byte) error { return r.w.Write(ps, netip.AddrPort{}, !r.v4) }
+func (r *rawCarrier) write(p []byte) error         { _, err := r.conn.Write(p); return err }
+func (r *rawCarrier) Close() error                 { return r.conn.Close() }
 
 // udpCarrier is EoIP inside UDP datagrams on a chosen port.
 type udpCarrier struct {
 	conn   *net.UDPConn
 	remote netip.AddrPort
+	r, w   *mmsg.Conn
+	sizes  []int
+	from   []netip.AddrPort
+	noGSO  bool // UDP GSO failed once (writers only)
 }
 
 func listenUDP(c Config) (*udpCarrier, error) {
@@ -109,20 +144,51 @@ func listenUDP(c Config) (*udpCarrier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on UDP %d: %w", c.Port, err)
 	}
-	return &udpCarrier{conn: conn, remote: netip.AddrPortFrom(c.Remote, c.Port)}, nil
+	rd, err1 := mmsg.New(conn, batch)
+	wr, err2 := mmsg.New(conn, maxSegs)
+	if err := errors.Join(err1, err2); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return &udpCarrier{conn: conn, remote: netip.AddrPortFrom(c.Remote, c.Port), r: rd, w: wr,
+		sizes: make([]int, batch), from: make([]netip.AddrPort, batch)}, nil
 }
 
-func (u *udpCarrier) read(b []byte) ([]byte, error) {
-	for {
-		n, from, err := u.conn.ReadFromUDPAddrPort(b)
-		if err != nil {
-			return nil, err
-		}
+func (u *udpCarrier) readBatch(bufs, pkts [][]byte) (int, error) {
+	n, err := u.r.Read(bufs, u.sizes, u.from)
+	for i := range n {
+		pkts[i] = nil
 		// EoIP has no authentication: only the far end's address may talk.
-		if from.Addr().Unmap() == u.remote.Addr() {
-			return b[:n], nil
+		if u.sizes[i] >= 0 && u.from[i].Addr() == u.remote.Addr() {
+			pkts[i] = bufs[i][:u.sizes[i]]
 		}
 	}
+	return n, err
+}
+
+// writeBatch sends with UDP GSO when the packets are the same size (the
+// pieces of one super-frame), else with one sendmmsg.
+func (u *udpCarrier) writeBatch(ps [][]byte) error {
+	v6 := u.remote.Addr().Is6()
+	if len(ps) > 1 && !u.noGSO && sameSize(ps) {
+		if err := u.w.WriteGSO(ps, u.remote, v6); err == nil {
+			return nil
+		}
+		u.noGSO = true
+	}
+	return u.w.Write(ps, u.remote, v6)
+}
+
+// sameSize: all of b but the last are as long as the first, the last no
+// longer.
+func sameSize(b [][]byte) bool {
+	n := len(b[0])
+	for _, d := range b[1 : len(b)-1] {
+		if len(d) != n {
+			return false
+		}
+	}
+	return len(b[len(b)-1]) <= n
 }
 
 func (u *udpCarrier) write(p []byte) error {
@@ -137,6 +203,7 @@ type Link struct {
 	cfg  Config
 	fr   framing
 	tap  *os.File
+	vnet bool // tap has a virtio-net header and offload
 	car  carrier
 	sent atomic.Int64 // unix nanos of the last packet sent
 	done chan struct{}
@@ -166,12 +233,12 @@ func Start(c Config) (*Link, error) {
 		car.Close()
 		return nil, err
 	}
-	tap, err := openTAP(c.Name, c.mac())
+	tap, vnet, err := openTAP(c.Name, c.mac())
 	if err != nil {
 		car.Close()
 		return nil, err
 	}
-	l := &Link{cfg: c, fr: c.framing(), tap: tap, car: car, done: make(chan struct{})}
+	l := &Link{cfg: c, fr: c.framing(), tap: tap, vnet: vnet, car: car, done: make(chan struct{})}
 	l.wg.Add(2)
 	go l.outbound()
 	go l.inbound()
@@ -215,48 +282,107 @@ func (l *Link) send(b []byte, n int) {
 	}
 }
 
-// outbound: TAP -> EoIP. Frames are read in behind room for the header.
+// outbound: TAP -> EoIP. Frames are read in behind room for the header. A
+// TCP super-frame is cut into ordinary frames, each with its own EoIP
+// header, and they all go out in one system call.
 func (l *Link) outbound() {
 	defer l.wg.Done()
 	hl := l.fr.headerLen()
-	buf := make([]byte, hl+65535)
+	at := max(hl, offload.HdrLen) // where the frame starts in buf
+	start := at
+	if l.vnet {
+		start -= offload.HdrLen
+	}
+	buf := make([]byte, at+65535)
+	segs, sizes, out := make([][]byte, maxSegs), make([]int, maxSegs), make([][]byte, maxSegs)
 	for {
-		n, err := l.tap.Read(buf[hl:])
+		n, err := l.tap.Read(buf[start:])
 		if err != nil {
 			if !l.closed() && !errors.Is(err, os.ErrClosed) {
 				log.Printf("eoip %s: read: %v", l.cfg.Name, err)
 			}
 			return
 		}
-		l.send(buf, n)
+		frame := buf[at : start+n]
+		h := offload.Hdr{}
+		if l.vnet {
+			h = offload.ParseHdr(buf[start:])
+		}
+		if h.GSOType == offload.GSONone {
+			if offload.Complete(frame, h) != nil {
+				continue
+			}
+			l.send(buf[at-hl:], len(frame))
+			continue
+		}
+		nseg, size := offload.Segments(frame, h)
+		if nseg == 0 || nseg > maxSegs {
+			continue
+		}
+		for i := range segs[:nseg] {
+			if len(segs[i]) < hl+size {
+				segs[i] = make([]byte, hl+size)
+			}
+		}
+		k, err := offload.Segment(frame, h, offload.L3(frame), segs, hl, sizes)
+		if err != nil {
+			continue
+		}
+		for i := range k {
+			l.fr.put(segs[i], l.cfg.ID, sizes[i])
+			out[i] = segs[i][:hl+sizes[i]]
+		}
+		if l.car.writeBatch(out[:k]) == nil {
+			l.sent.Store(time.Now().UnixNano())
+		}
 	}
 }
 
-// inbound: EoIP -> TAP, for packets with this tunnel's id.
+// inbound: EoIP -> TAP, for packets with this tunnel's id, a batch per
+// system call; consecutive TCP segments of a flow go to the interface as
+// one super-frame.
 func (l *Link) inbound() {
 	defer l.wg.Done()
-	buf := make([]byte, 65535+GREHeaderLen)
+	full, bufs, pkts := make([][]byte, batch), make([][]byte, batch), make([][]byte, batch)
+	for i := range full {
+		full[i] = make([]byte, headroom+maxPacket)
+		bufs[i] = full[i][headroom:]
+	}
+	// Merged segments are not checked again by the kernel, and EoIP has no
+	// authentication: check each one.
+	gro := offload.Coalescer{L3: 14, Verify: true}
+	write := func(b []byte) error { l.tap.Write(b); return nil }
 	for {
-		p, err := l.car.read(buf)
+		k, err := l.car.readBatch(bufs, pkts)
 		if err != nil {
-			if l.closed() {
-				return
+			if !l.closed() {
+				log.Printf("eoip %s: receive: %v", l.cfg.Name, err)
 			}
-			if errors.Is(err, errPacket) {
+			return
+		}
+		for i := range k {
+			if pkts[i] == nil {
 				l.BadPackets.Add(1)
 				continue
 			}
-			log.Printf("eoip %s: receive: %v", l.cfg.Name, err)
-			return
+			id, frame, err := l.fr.parse(pkts[i])
+			if err != nil || id != l.cfg.ID {
+				// Other GRE traffic (kernel tunnels, other EoIP ids) shares the socket.
+				l.BadPackets.Add(1)
+				continue
+			}
+			if len(frame) == 0 {
+				continue
+			}
+			if !l.vnet {
+				l.tap.Write(frame)
+				continue
+			}
+			off := cap(full[i]) - cap(frame) // where frame starts in full[i]
+			gro.Add(full[i][off-offload.HdrLen : off+len(frame)])
 		}
-		id, frame, err := l.fr.parse(p)
-		if err != nil || id != l.cfg.ID {
-			// Other GRE traffic (kernel tunnels, other EoIP ids) shares the socket.
-			l.BadPackets.Add(1)
-			continue
-		}
-		if len(frame) > 0 {
-			l.tap.Write(frame)
+		if l.vnet {
+			gro.Flush(write)
 		}
 	}
 }

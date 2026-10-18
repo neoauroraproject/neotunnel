@@ -1,15 +1,20 @@
 #!/bin/bash
-# Throughput and CPU of the TCP transport between two network namespaces.
-#   go test -c -o dist/tcptun.test ./internal/tcptun   (GOOS=linux)
-#   bash tcptun-bench.sh /path/to/tcptun.test [seconds]
+# Throughput and CPU of a user-space tunnel between two network namespaces.
+#   go test -c -o dist/tcptun.test ./internal/tcptun   (GOOS=linux; or obfs, eoip)
+#   [KIND=tcp|obfs|eoip|eoip-udp] bash tcptun-bench.sh /path/to/x.test [seconds]
 # Prints one line per case: Mbit/s and the CPU seconds both ends used per GB.
 set -u
 BIN=$1
 BIN_B=${BIN_B:-$BIN} # far end (another build, for mixed versions)
 SECS=${2:-8}
+KIND=${KIND:-tcp}
+EOIP_PORT=0
+# PROF=/dir/name: CPU profiles of both ends ($PROF-a.out, $PROF-b.out); ONE=1: first case only.
+PA=${PROF:+-test.cpuprofile=$PROF-a.out} PB=${PROF:+-test.cpuprofile=$PROF-b.out}
+[ $KIND = eoip-udp ] && EOIP_PORT=7000
 A=ntb-a B=ntb-b
 cleanup() {
-  pkill -f "tcptun.test" 2>/dev/null; pkill -f "tcpbench.py server" 2>/dev/null
+  pkill -f "[.]test -test.run TestBenchEnd" 2>/dev/null; pkill -f "tcpbench.py server" 2>/dev/null
   ip netns del $A 2>/dev/null; ip netns del $B 2>/dev/null
 }
 trap cleanup EXIT
@@ -36,10 +41,10 @@ run() { # label path streams flows cipher dir
            ip netns exec $B tc qdisc replace dev vb root netem delay 25ms loss 0.25% limit 100000 ;;
   esac
   ip netns exec $A env NT_BENCH_SIDE=0 NT_BENCH_DEV=ntb0 NT_BENCH_PORT=7000 NT_BENCH_REMOTE=10.99.0.2:7000 \
-    NT_BENCH_STREAMS=$streams NT_BENCH_CIPHER=$cipher $BIN -test.run TestBenchEnd -test.v >/tmp/ea.log 2>&1 &
+    NT_BENCH_EOIP_PORT=$EOIP_PORT NT_BENCH_STREAMS=$streams NT_BENCH_CIPHER=$cipher $BIN $PA -test.run TestBenchEnd -test.v >/tmp/ea.log 2>&1 &
   local pa=$!
   ip netns exec $B env NT_BENCH_SIDE=1 NT_BENCH_DEV=ntb0 NT_BENCH_PORT=7000 NT_BENCH_REMOTE=10.99.0.1:7000 \
-    NT_BENCH_STREAMS=$streams NT_BENCH_CIPHER=$cipher $BIN_B -test.run TestBenchEnd -test.v >/tmp/eb.log 2>&1 &
+    NT_BENCH_EOIP_PORT=$EOIP_PORT NT_BENCH_STREAMS=$streams NT_BENCH_CIPHER=$cipher $BIN_B $PB -test.run TestBenchEnd -test.v >/tmp/eb.log 2>&1 &
   local pb=$!
   for i in $(seq 50); do
     ip -n $A link show ntb0 >/dev/null 2>&1 && ip -n $B link show ntb0 >/dev/null 2>&1 && break; sleep 0.1
@@ -66,6 +71,14 @@ run() { # label path streams flows cipher dir
   sleep 0.5
 }
 
+if [ $KIND != tcp ]; then
+  run "$KIND clean flows=1 up"   clean 1 1 "" up
+  [ -n "${ONE:-}" ] && exit
+  run "$KIND clean flows=4 up"   clean 1 4 "" up
+  run "$KIND clean flows=4 down" clean 1 4 "" down
+  run "$KIND lossy flows=4 up"   lossy 1 4 "" up
+  exit
+fi
 for c in "" aes-gcm-128; do
   n=${c:-plain}
   run "clean  streams=1 flows=1 $n up"   clean 1 1 "$c" up
