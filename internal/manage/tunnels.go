@@ -3,7 +3,10 @@ package manage
 import (
 	"encoding/base64"
 	"fmt"
+	"math/rand/v2"
+	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"neotunnel/internal/config"
@@ -825,4 +828,44 @@ func checkLanes(t config.Tunnel) error {
 		return fmt.Errorf("lanes need NeoTunnel on the far end (toward a MikroTik, bond several EoIP tunnels there)")
 	}
 	return nil
+}
+
+// RandomPort picks a random port between 20000 and 60000 for a tunnel
+// that no tunnel, forward, the panel or a reserved service uses here, and
+// that nothing else on this server is bound to (tcp or udp). The far
+// server's side is checked by the wizard's live test.
+func RandomPort(st *config.State, proto string) (uint16, error) {
+	if proto != "tcp" {
+		proto = "udp"
+	}
+	for range 300 {
+		p := uint16(20000 + rand.IntN(40001))
+		if portAvailable(st, p, "") != nil || portsFree(st, strconv.Itoa(int(p)), proto, "") != nil {
+			continue
+		}
+		if !bindable(proto, p) {
+			continue
+		}
+		return p, nil
+	}
+	return 0, fmt.Errorf("no free %s port found between 20000 and 60000", proto)
+}
+
+// bindable reports whether nothing on this server holds proto/port.
+func bindable(proto string, port uint16) bool {
+	addr := ":" + strconv.Itoa(int(port))
+	if proto == "tcp" {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return false
+		}
+		l.Close()
+		return true
+	}
+	c, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }

@@ -91,6 +91,7 @@
     out: (s) => svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M9 8l-4 4 4 4M5 12h11"/>', s),
     check: (s) => svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>', s),
     x: (s) => svg('<path d="M6 6l12 12M18 6 6 18"/>', s),
+    dice: (s) => svg('<rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/>', s),
     edit: (s) => svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>', s),
     alert: (s) => svg('<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/>', s),
     lock: (s) => svg('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', s),
@@ -786,7 +787,7 @@
         ${mm === "manual" ? html`<input class="input ltr" type="number" min="576" max="9000" data-bind="${path}.mtu" value="${st.mtu || ""}" placeholder="1400" aria-label="MTU">` : ""}
         <span class="help">${mm === "auto" ? "از ۱۵۰۰ و سربار همه‌ی لایه‌ها حساب می‌شود." : mm === "probe" ? "NeoTunnel با بسته‌های بدون شکستن، MTU واقعی مسیر تا مقصد را پیدا می‌کند، هر ۳۰ دقیقه دوباره می‌سنجد و تانل را با آن تنظیم می‌کند." : "فقط وقتی مقدار درست را می‌دانید."}</span></div>
       <div class="grid2">
-        ${noPort ? "" : html`<div class="field"><label>پورت ${kind === "tcp" ? "TCP" : "UDP"}${editing ? "" : " (اختیاری)"}</label><input class="input ltr" type="number" min="1" max="65535" data-bind="${path}.port" value="${st.port || ""}" placeholder="${["obfs", "wireguard", "tcp"].includes(kind) ? "خودکار" : "پروتکل خام"}">
+        ${noPort ? "" : html`<div class="field"><label>پورت ${kind === "tcp" ? "TCP" : "UDP"}${editing ? "" : " (اختیاری)"}</label><div class="pf"><input class="input ltr" type="number" min="1" max="65535" data-bind="${path}.port" value="${st.port || ""}" placeholder="${["obfs", "wireguard", "tcp"].includes(kind) ? "خودکار" : "پروتکل خام"}"><button type="button" class="btn sm" data-act="random-port" data-path="${path}.port" data-proto="${kind === "tcp" ? "tcp" : "udp"}" title="یک پورت آزاد تصادفی بین ۲۰۰۰۰ و ۶۰۰۰۰">${I.dice(14)} تصادفی</button></div>
           <span class="help">${PROTO[kind] && (PROTO[kind].udp || PROTO[kind].tcp) || kind === "obfs" || kind === "wireguard" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی = پروتکل خام (سریع‌ترین). با پورت، تانل داخل UDP می‌رود؛ وقتی مسیر پروتکل 41 یا 47 را می‌بندد."}</span></div>`}
         <div class="field"><label>TTL</label><input class="input ltr" type="number" min="1" max="255" data-bind="${path}.ttl" value="${st.ttl || ""}" placeholder="255"><span class="help">TTL بسته‌های بیرونی.</span></div>
         ${kind === "obfs" ? html`<div class="field"><label>Padding (بایت)</label><input class="input ltr" type="number" min="0" max="255" data-bind="${path}.padding" value="${st.padding || ""}" placeholder="0"><span class="help">تا این تعداد بایت تصادفی به هر بسته اضافه می‌شود تا اندازه‌ها چیزی را لو ندهند. هزینه‌اش همین مقدار از MTU است.</span></div>` : ""}
@@ -1416,7 +1417,7 @@
         </div>
         ${p === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px;margin-top:10px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>` : ""}</div>
       <div class="field"><label for="w-port">پورت TCP</label>
-        <input id="w-port" class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="خودکار" style="max-width:220px">
+        <div class="pf"><input id="w-port" class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="خودکار" style="max-width:220px"><button type="button" class="btn sm" data-act="random-port" data-path="wiz.port" data-proto="tcp" title="یک پورت آزاد تصادفی بین ۲۰۰۰۰ و ۶۰۰۰۰">${I.dice(14)} تصادفی</button></div>
         <span class="help">هر دو سرور روی این پورت گوش می‌دهند و هر کدام که بتواند به دیگری وصل می‌شود. اگر فقط پورت‌های خاصی (مثلاً 443) بین دو سرور باز است، همان را بدهید؛ پورت نباید روی هیچ‌کدام از دو سرور در استفاده باشد.</span></div>`;
     }
     return html`${checkBanner(w)}
@@ -1429,7 +1430,7 @@
           <span class="help">${lightCipher(w.peer).why}</span>` : ""}</div>`
         : html`<div class="note">${mode.crypt ? `${pi.t || w.mode} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.` : "برای دستگاه دیگر، رمزنگاری را با WireGuard انجام دهید."}</div>`}
       <div class="field"><label for="w-port">پورت UDP ${mode.udp || w.protect === "obfs" ? "" : "(اختیاری)"}</label>
-        <input id="w-port" class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="${mode.udp || w.protect === "obfs" ? "خودکار" : "خالی = پروتکل خام"}" style="max-width:220px" ${v6 && fou && w.protect !== "obfs" ? "disabled" : ""}>
+        <div class="pf"><input id="w-port" class="input ltr" type="number" min="1" max="65535" data-bind="wiz.port" value="${w.port}" placeholder="${mode.udp || w.protect === "obfs" ? "خودکار" : "خالی = پروتکل خام"}" style="max-width:220px" ${v6 && fou && w.protect !== "obfs" ? "disabled" : ""}><button type="button" class="btn sm" data-act="random-port" data-path="wiz.port" data-proto="udp" title="یک پورت آزاد تصادفی بین ۲۰۰۰۰ و ۶۰۰۰۰" ${v6 && fou && w.protect !== "obfs" ? "disabled" : ""}>${I.dice(14)} تصادفی</button></div>
         <span class="help">${v6 && fou && w.protect !== "obfs" ? "روی IPv6، GRE و IPIP بدون پورت اجرا می‌شوند." : mode.udp || w.protect === "obfs" ? "پورتی که دو سر روی آن گوش می‌دهند." : "خالی بهترین سرعت را دارد. اگر مسیر پروتکل خام را رد نمی‌کند، یک پورت UDP بدهید تا تانل داخل UDP برود."}</span></div>`;
   }
 
@@ -1820,6 +1821,14 @@
     async "del-forward-go"(el) {
       try { const ch = await api("POST", "forwards/remove", { tunnel: el.dataset.tunnel, ports: el.dataset.ports }); closeModal(); await refresh(); reportChange(ch, "فوروارد حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
+    },
+    async "random-port"(el) {
+      try {
+        const r = await api("GET", `ports/random?proto=${el.dataset.proto}`);
+        setPath(el.dataset.path, String(r.port));
+        if (el.closest(".modal")) { drawModal(); if (S.wiz && S.wiz.step >= 3) checkSoon(true); }
+        else { S.edit = true; draw(); }
+      } catch (e) { toast(e.message, "bad"); }
     },
     async "tunnel-restart"(el) {
       const n = el.dataset.name;

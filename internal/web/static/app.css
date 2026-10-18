@@ -672,3 +672,5 @@ main.main { animation: page-in 200ms var(--ease-out); }
 .profile .sp.ok { color: var(--ok); font-family: var(--mono); }
 .profile .sp.bad { color: var(--warn); }
 @media (max-width: 560px) { .profiles { grid-template-columns: 1fr; } }
+.pf { display: flex; gap: 6px; align-items: center; }
+.pf .input { flex: 1; min-width: 0; }

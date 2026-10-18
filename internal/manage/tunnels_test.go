@@ -70,3 +70,17 @@ func TestNewTunnelChecksEoIPTunnelID(t *testing.T) {
 		}
 	}
 }
+
+func TestRandomPortAvoidsUsedPorts(t *testing.T) {
+	st := testState()
+	st.Tunnels = []config.Tunnel{{Name: "o", Kind: config.KindObfs, Port: 30443, Sides: [2]config.Side{{Node: "hub"}, {Node: "edge"}}}}
+	for range 50 {
+		p, err := RandomPort(st, "udp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p < 20000 || p > 60000 || p == 30443 {
+			t.Fatalf("got port %d", p)
+		}
+	}
+}

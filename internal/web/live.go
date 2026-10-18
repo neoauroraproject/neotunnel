@@ -698,3 +698,11 @@ func (l *Live) RestartTunnel(ctx context.Context, name string) error {
 	})
 	return peerErr
 }
+
+func (l *Live) RandomPort(proto string) (uint16, error) {
+	st, err := manage.Node()
+	if err != nil {
+		return 0, err
+	}
+	return manage.RandomPort(st, proto)
+}

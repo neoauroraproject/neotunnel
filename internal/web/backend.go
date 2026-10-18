@@ -24,6 +24,8 @@ type Backend interface {
 	SetLimits(name string, l manage.Limits) (manage.Change, error)
 	// RestartTunnel takes a tunnel down and up on both servers, settings unchanged.
 	RestartTunnel(ctx context.Context, name string) error
+	// RandomPort picks a free random port for a tunnel (proto tcp or udp).
+	RandomPort(proto string) (uint16, error)
 	RemoveTunnel(name string) (manage.Change, error)
 	AddForward(req manage.ForwardRequest) (manage.Change, error)
 	UpdateForward(req manage.ForwardRequest) (manage.Change, error)

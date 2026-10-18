@@ -98,6 +98,10 @@ func (s *Server) routes(m *http.ServeMux) {
 		ch, err := b.UpdateTunnel(r.PathValue("name"), req.Settings, req.Port)
 		reply(w, ch, err)
 	}))
+	m.HandleFunc("GET /api/ports/random", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		p, err := b.RandomPort(r.URL.Query().Get("proto"))
+		reply(w, map[string]uint16{"port": p}, err)
+	}))
 	m.HandleFunc("POST /api/tunnels/{name}/restart", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
