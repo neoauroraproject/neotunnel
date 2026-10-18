@@ -366,6 +366,84 @@ fi
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-e1)" >/dev/null || fail "ping after switching to AES-256"
 pass "panel: traffic totals, MTU probe and live settings change"
 
+# 16b. Backup tunnel: port 8083 goes through g1 (plain GRE) with u1 (IPIP in
+#      UDP 3001) as its backup. Dropping GRE on edge cuts g1; after a few
+#      lost health probes the forward moves to u1 and keeps working, and once
+#      GRE passes again for a while it comes back to g1.
+mtu_of() { ip -n "$1" -o link show "$2" | grep -o 'mtu [0-9]*' | cut -d' ' -f2; }
+wait_for() { # seconds, command...: poll until the command succeeds
+  local n=$1; shift
+  for _ in $(seq 1 "$n"); do "$@" && return 0; sleep 1; done
+  return 1
+}
+fwd_on() { in_hub forward list | grep -q "8083 .*now through $1"; }
+mtu_is() { [ "$(mtu_of "$1" "$2")" = "$3" ]; }
+# ov <python expression on the overview, as o>: true when it holds.
+ov() { api "$base/api/overview" | python3 -c "import json,sys; o=json.load(sys.stdin); sys.exit(0 if ($1) else 1)"; }
+f8083="[f for f in o['forwards'] if f['ports']=='8083'][0]"
+in_hub forward add g1 8083 --to 8080 --proto tcp --backup u1 >/dev/null || fail "add forward with a backup"
+fwd_on g1 || { in_hub forward list; fail "forward with a backup does not start on its primary"; }
+[ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 through g1"
+ip netns exec $EDGE nft -f - <<'NFT'
+table inet e2ecut {
+  chain in { type filter hook input priority -300; policy accept; meta l4proto gre drop; }
+}
+NFT
+ip netns exec $HUB ping -c 2 -W 1 "$(inner $EDGE nt-g1)" >/dev/null 2>&1 && fail "GRE drop did not cut g1"
+t0=$(date +%s)
+wait_for 60 fwd_on u1 || { in_hub forward list; fail "forward did not move to the backup"; }
+echo "NOTE moved to the backup $(( $(date +%s) - t0 )) s after the cut"
+[ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 through the backup u1"
+grep -q "forward g1 8083: now through u1" "$WORK/hub.log" || fail "switch to the backup not logged"
+ov "$f8083['backup'] == 'u1' and $f8083['active'] == 'u1'" || fail "panel does not show the backup as the active path"
+pass "backup: g1 cut, port 8083 kept working through u1"
+ip netns exec $EDGE nft delete table inet e2ecut
+t0=$(date +%s)
+wait_for 100 fwd_on g1 || { in_hub forward list; fail "forward did not come back to its primary"; }
+echo "NOTE back on the primary $(( $(date +%s) - t0 )) s after GRE passed again"
+[ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 back through g1"
+ov "$f8083['active'] == 'g1' and [s['to'] for s in $f8083['switches']] == ['u1', 'g1']" || fail "panel switch history"
+in_hub forward remove g1 8083 >/dev/null
+pass "backup: back on g1 once it was healthy again, with the history in the panel"
+
+# 16c. Safe apply. Kept: the panel and edge confirm, nothing reverts. Cut:
+#      after the change the agent port is dropped on edge, so edge can't
+#      confirm; the hub reverts at the deadline, and edge, which never heard
+#      back, puts its own part back by itself.
+g1mtu=$(mtu_of $EDGE nt-g1)
+r=$(api -X PATCH -d '{"mtu":1300}' "$base/api/tunnels/g1?safe=1")
+grep -q '"safe":{"id":"' <<<"$r" || { echo "$r"; fail "safe change not started"; }
+id=$(grep -o '"safe":{"id":"[0-9a-f]*' <<<"$r" | cut -d'"' -f6)
+[ "$(mtu_of $EDGE nt-g1)" = 1300 ] || fail "safe change not applied on edge"
+[ -f "$WORK/edge/safe-hold.json" ] || fail "edge holds no snapshot of the safe change"
+api -X PATCH -d '{"mtu":1280}' "$base/api/tunnels/g1" | grep -q 'منتظر تأیید' || fail "another change accepted while a safe one waits"
+api -X POST "$base/api/safe/$id/keep" | grep -q '"kept":true' || fail "keep safe change"
+[ -f "$WORK/edge/safe-hold.json" ] && fail "edge still holds the kept change"
+[ "$(mtu_of $HUB nt-g1)" = 1300 ] || fail "kept change reverted on hub"
+pass "safe apply: confirmed change kept on both servers"
+
+r=$(api -X PATCH -d '{"mtu":1280}' "$base/api/tunnels/g1?safe=1")
+id=$(grep -o '"safe":{"id":"[0-9a-f]*' <<<"$r" | cut -d'"' -f6)
+[ -n "$id" ] || { echo "$r"; fail "second safe change not started"; }
+[ "$(mtu_of $EDGE nt-g1)" = 1280 ] || fail "safe change not applied on edge"
+ip netns exec $EDGE nft -f - <<'NFT'
+table inet e2ecut {
+  chain in { type filter hook input priority -300; policy accept; tcp dport 7710 drop; }
+}
+NFT
+api -X POST "$base/api/safe/$id/keep" >/dev/null
+t0=$(date +%s)
+wait_for 75 mtu_is $HUB nt-g1 1300 || fail "hub did not revert the unconfirmed change"
+echo "NOTE hub reverted $(( $(date +%s) - t0 )) s after the change"
+ov "not o['safe_last']['kept'] and o['safe_last']['reason'].startswith('edge did not confirm')" || fail "panel does not say why the change was reverted"
+wait_for 30 mtu_is $EDGE nt-g1 1300 || fail "edge did not revert by itself"
+grep -q "previous configuration restored" "$WORK/edge.log" || fail "edge did not log its revert"
+ip netns exec $EDGE nft delete table inet e2ecut
+ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-g1)" >/dev/null || fail "ping through g1 after both reverted"
+api -X PATCH -d '{}' "$base/api/tunnels/g1" | grep -q error && fail "reset g1 settings"
+[ "$(mtu_of $EDGE nt-g1)" = "$g1mtu" ] || fail "g1 MTU not back to automatic"
+pass "safe apply: change that cut the agent path reverted on both servers"
+
 # 17. Uninstall from the command line removes everything, the program too.
 kill "$(cat "$WORK/edge.pid")"; sleep 0.5
 cp "$BIN" "$WORK/nt-edge"

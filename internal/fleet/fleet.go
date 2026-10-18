@@ -19,6 +19,7 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
+	"neotunnel/internal/safe"
 	"neotunnel/internal/setuplink"
 	"neotunnel/internal/version"
 )
@@ -37,7 +38,10 @@ func Push(ctx context.Context, id *identity.Identity, st *config.State, peer str
 		return agent.ApplyResponse{}, err
 	}
 	ts, fs := st.ForPeer(peer)
-	resp, err := c.Apply(ctx, agent.ApplyRequest{Revision: st.Revision, Tunnels: ts, Forwards: fs})
+	// While a safe change waits for confirmation, the peer holds on to what
+	// it ran before and puts it back unless the change is confirmed.
+	hold, secs := safe.HoldFor(time.Now())
+	resp, err := c.Apply(ctx, agent.ApplyRequest{Revision: st.Revision, Tunnels: ts, Forwards: fs, Hold: hold, HoldSeconds: secs})
 	if err != nil {
 		return resp, err
 	}

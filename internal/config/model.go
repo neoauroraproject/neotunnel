@@ -234,6 +234,15 @@ type Forward struct {
 	// ProxyVersion is the PROXY protocol version: 2 (default, TCP and UDP)
 	// or 1 (text, TCP only). In relay mode 0 sends no header.
 	ProxyVersion int `json:"proxy_version,omitempty"`
+	// Backup names a second tunnel to the same far node: when Tunnel stops
+	// passing traffic the daemon moves the forward there, and back once
+	// Tunnel is healthy again (see package failover).
+	Backup string `json:"backup,omitempty"`
+}
+
+// Uses reports whether the forward can run on the named tunnel.
+func (f Forward) Uses(tunnel string) bool {
+	return f.Tunnel == tunnel || (f.Backup != "" && f.Backup == tunnel)
 }
 
 // Forward modes.
@@ -322,7 +331,7 @@ func (s *State) ForPeer(peer string) ([]Tunnel, []Forward) {
 		// The far end of a transparent forward must know about it to route
 		// replies back through the tunnel, and of a relay forward to accept
 		// its connections.
-		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay) && touches[f.Tunnel]) {
+		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay) && (touches[f.Tunnel] || touches[f.Backup])) {
 			fs = append(fs, f)
 		}
 	}
@@ -381,13 +390,20 @@ func (s *State) ReturnPaths() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, f := range fs {
-		if f.ModeOf() != ForwardTransparent || s.IsSelf(f.Node) || seen[f.Tunnel] {
+		if f.ModeOf() != ForwardTransparent || s.IsSelf(f.Node) {
 			continue
 		}
-		for _, t := range ts {
-			if t.Name == f.Tunnel {
-				seen[f.Tunnel] = true
-				out = append(out, f.Tunnel)
+		// The far side may move the forward to its backup at any time, so
+		// both tunnels need a return path.
+		for _, name := range []string{f.Tunnel, f.Backup} {
+			if name == "" || seen[name] {
+				continue
+			}
+			for _, t := range ts {
+				if t.Name == name {
+					seen[name] = true
+					out = append(out, name)
+				}
 			}
 		}
 	}

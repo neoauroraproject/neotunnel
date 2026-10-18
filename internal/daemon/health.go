@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log"
 	"net/netip"
 	"os/exec"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/failover"
 	"neotunnel/internal/health"
 )
 
@@ -49,8 +51,10 @@ func pingOnce(ctx context.Context, addr string) (time.Duration, bool) {
 }
 
 // monitorHealth pings the far inner address of every tunnel and records the
-// result, so the panel knows whether traffic really passes.
-func monitorHealth(ctx context.Context, tr *health.Tracker) {
+// result, so the panel knows whether traffic really passes, then moves
+// forwards with a backup tunnel to whichever of their tunnels works
+// (reconcile applies the move).
+func monitorHealth(ctx context.Context, tr *health.Tracker, reconcile func()) {
 	t := time.NewTicker(healthEvery)
 	defer t.Stop()
 	for {
@@ -79,6 +83,9 @@ func monitorHealth(ctx context.Context, tr *health.Tracker) {
 			wg.Wait()
 			tr.Forget(keep)
 			tr.Save()
+			if failoverStep(st, tr.Snapshot()) {
+				reconcile()
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -86,6 +93,24 @@ func monitorHealth(ctx context.Context, tr *health.Tracker) {
 		case <-t.C:
 		}
 	}
+}
+
+// failoverStep moves this node's forwards between their primary and backup
+// tunnels as the health probes say, and reports whether any moved.
+func failoverStep(st *config.State, hs map[string]health.State) bool {
+	_, fs := st.Effective()
+	ps := failover.Load()
+	before := len(ps)
+	made := failover.Step(ps, fs, hs, time.Now())
+	for k, s := range made {
+		log.Printf("forward %s: now through %s (%s)", k, s.To, s.Reason)
+	}
+	if len(made) > 0 || len(ps) != before {
+		if err := failover.Save(ps); err != nil {
+			log.Printf("failover: %v", err)
+		}
+	}
+	return len(made) > 0
 }
 
 // farInner is the inner address of the tunnel's far end, the thing to ping.

@@ -23,6 +23,16 @@ type ApplyRequest struct {
 	Revision uint64           `json:"revision"`
 	Tunnels  []config.Tunnel  `json:"tunnels"`
 	Forwards []config.Forward `json:"forwards"`
+	// Hold is set while the change is a safe one waiting for confirmation:
+	// unless the master confirms it (SafeConfirm) within HoldSeconds, the
+	// peer puts back what it ran before. Older peers ignore it.
+	Hold        string `json:"hold,omitempty"`
+	HoldSeconds int    `json:"hold_s,omitempty"`
+}
+
+// SafeConfirmRequest keeps the safe change ID on the peer.
+type SafeConfirmRequest struct {
+	ID string `json:"id"`
 }
 
 type ApplyResponse struct {

@@ -753,6 +753,9 @@ func removeTunnels(s *config.State, names []string) {
 	var fs []config.Forward
 	for _, f := range s.Forwards {
 		if !drop[f.Tunnel] {
+			if drop[f.Backup] {
+				f.Backup = ""
+			}
 			fs = append(fs, f)
 		}
 	}

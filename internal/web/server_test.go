@@ -11,6 +11,7 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/safe"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/web"
 )
@@ -32,6 +33,7 @@ func (stub) UpdateForward(manage.ForwardRequest) (manage.Change, error) { return
 func (stub) RandomPort(string) (uint16, error)                          { return 40000, nil }
 
 func (stub) RestartTunnel(context.Context, string) error { return nil }
+func (stub) MikroTik(string) (string, error)             { return "", nil }
 
 func (stub) SetLimits(string, manage.Limits) (manage.Change, error) { return manage.Change{}, nil }
 
@@ -63,6 +65,13 @@ func (stub) Bench(context.Context, string, []string, func(string), func(string, 
 func (stub) Login(user, pass string) bool        { return user == "admin" && pass == "right-password" }
 func (stub) ChangePassword(string, string) error { return nil }
 func (stub) SetPanelPort(int) (string, error)    { return "", nil }
+func (stub) Safely(_ string, fn func() (manage.Change, error)) (manage.Change, *web.SafeView, error) {
+	ch, err := fn()
+	return ch, &web.SafeView{ID: "x"}, err
+}
+func (stub) SafeStatus() (*web.SafeView, *safe.Outcome) { return nil, nil }
+func (stub) KeepSafe(string) (*safe.Outcome, error)     { return nil, nil }
+func (stub) UndoSafe(string) (*safe.Outcome, error)     { return nil, nil }
 
 func newPanel(t *testing.T) http.Handler {
 	t.Helper()

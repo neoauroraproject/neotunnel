@@ -5,8 +5,10 @@ import (
 
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
+	"neotunnel/internal/failover"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/safe"
 	"neotunnel/internal/traffic"
 )
 
@@ -24,6 +26,8 @@ type Backend interface {
 	SetLimits(name string, l manage.Limits) (manage.Change, error)
 	// RestartTunnel takes a tunnel down and up on both servers, settings unchanged.
 	RestartTunnel(ctx context.Context, name string) error
+	// MikroTik returns the RouterOS commands for a router at the far end.
+	MikroTik(name string) (string, error)
 	// RandomPort picks a free random port for a tunnel (proto tcp or udp).
 	RandomPort(proto string) (uint16, error)
 	RemoveTunnel(name string) (manage.Change, error)
@@ -52,6 +56,27 @@ type Backend interface {
 	// SetPanelPort saves a new panel port and returns the new URL; the panel
 	// restarts on it right after responding.
 	SetPanelPort(port int) (string, error)
+
+	// Safely runs change as a safe one (see package safe): reverted on both
+	// servers unless kept with KeepSafe in time.
+	Safely(what string, change func() (manage.Change, error)) (manage.Change, *SafeView, error)
+	// SafeStatus is the safe change waiting for confirmation, if any, and
+	// how the last one ended.
+	SafeStatus() (*SafeView, *safe.Outcome)
+	// KeepSafe confirms a safe change from the panel; the outcome is set
+	// once the peers confirmed too.
+	KeepSafe(id string) (*safe.Outcome, error)
+	UndoSafe(id string) (*safe.Outcome, error)
+}
+
+// SafeView is a safe change waiting for confirmation, as the panel sees it.
+type SafeView struct {
+	ID       string   `json:"id"`
+	What     string   `json:"what"`
+	Deadline int64    `json:"deadline"` // unix ms
+	Peers    []string `json:"peers,omitempty"`
+	Kept     bool     `json:"kept,omitempty"`
+	Acked    []string `json:"acked,omitempty"`
 }
 
 type Overview struct {
@@ -67,7 +92,9 @@ type Overview struct {
 	Errors   []string        `json:"errors,omitempty"`
 	Panel    PanelInfo       `json:"panel"`
 	Commands []CommandGroup  `json:"commands"`
-	Install  string          `json:"install"` // one-line installer for a new server
+	Safe     *SafeView       `json:"safe,omitempty"`      // a safe change waiting for confirmation
+	SafeLast *safe.Outcome   `json:"safe_last,omitempty"` // how the last one ended
+	Install  string          `json:"install"`             // one-line installer for a new server
 	Repo     string          `json:"repo"`
 	Time     int64           `json:"time"` // unix ms, for rate calculation
 }
@@ -205,6 +232,13 @@ type ForwardView struct {
 	Rx    uint64       `json:"rx"`
 	Tx    uint64       `json:"tx"`
 	Today traffic.Pair `json:"today"`
+	// Backup is the tunnel the forward moves to when Tunnel fails, Active
+	// the one it runs on now, Since when it last moved and Switches its
+	// recent moves, oldest first.
+	Backup   string            `json:"backup,omitempty"`
+	Active   string            `json:"active"`
+	Since    int64             `json:"since,omitempty"`
+	Switches []failover.Switch `json:"switches,omitempty"`
 }
 
 type PanelInfo struct {

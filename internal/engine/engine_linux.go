@@ -11,6 +11,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/failover"
 	"neotunnel/internal/firewall"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/relay"
@@ -119,7 +120,7 @@ func Apply(st *config.State) Result {
 	res.Errors = append(res.Errors, syncIPsec(specs)...)
 
 	all, fs := st.Effective()
-	fs = activeForwards(all, fs)
+	fs = activeForwards(all, failover.Route(fs, all, failover.Load()))
 	links := make([]forward.Link, len(specs))
 	for i, s := range specs {
 		links[i] = forward.Link{Name: s.Name, Tunnel: s.Tunnel}

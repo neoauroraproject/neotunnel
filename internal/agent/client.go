@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -80,6 +81,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, hdr m
 		if json.Unmarshal(b, &e) == nil && e.Error != "" {
 			return fmt.Errorf("%s", e.Error)
 		}
+		if resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%s %s: %w", method, path, ErrUnsupported)
+		}
 		return fmt.Errorf("%s %s: %s", method, path, resp.Status)
 	}
 	if out != nil {
@@ -149,4 +153,13 @@ func (c *Client) ExcludeTraffic(ctx context.Context, tunnel string, d traffic.Pa
 // this call answer 404.
 func (c *Client) Restart(ctx context.Context, tunnels []string) error {
 	return c.do(ctx, "POST", "/v1/restart", RestartRequest{Tunnels: tunnels}, nil, nil)
+}
+
+// ErrUnsupported is returned for calls the peer's version doesn't have.
+var ErrUnsupported = errors.New("not supported by this server's version")
+
+// SafeConfirm keeps a safe change on the peer. Peers older than safe
+// changes answer ErrUnsupported.
+func (c *Client) SafeConfirm(ctx context.Context, id string) error {
+	return c.do(ctx, "POST", "/v1/safe/confirm", SafeConfirmRequest{ID: id}, nil, nil)
 }

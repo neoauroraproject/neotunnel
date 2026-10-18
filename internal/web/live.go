@@ -16,12 +16,15 @@ import (
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/failover"
 	"neotunnel/internal/firewall"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/mikrotik"
 	"neotunnel/internal/pmtu"
+	"neotunnel/internal/safe"
 	"neotunnel/internal/sysctl"
 	"neotunnel/internal/sysinfo"
 	"neotunnel/internal/traffic"
@@ -40,6 +43,58 @@ type Live struct {
 	Health *health.Tracker
 	// Reconcile asks the daemon to apply the state now.
 	Reconcile func()
+	// Safe confirms safe changes with peers and reverts them.
+	Safe safe.Hooks
+}
+
+// Safely runs change as a safe one: the tunnels and forwards from before it
+// are kept, and the daemon puts them back on both servers unless the panel
+// keeps the change and the peers confirm it within safe.Wait.
+func (l *Live) Safely(what string, change func() (manage.Change, error)) (manage.Change, *SafeView, error) {
+	st, err := manage.Node()
+	if err != nil {
+		return manage.Change{}, nil, err
+	}
+	p, err := safe.Begin(st, what, time.Now())
+	if err != nil {
+		return manage.Change{}, nil, err
+	}
+	ch, err := change()
+	if err != nil {
+		safe.Cancel(p.ID)
+		return ch, nil, err
+	}
+	var peers []string
+	for _, s := range ch.Peers {
+		peers = append(peers, s.Peer)
+	}
+	safe.SetPeers(p.ID, peers)
+	p.Peers = peers
+	return ch, safeView(&p), nil
+}
+
+// SafeStatus is the change waiting for confirmation and how the last one ended.
+func (l *Live) SafeStatus() (*SafeView, *safe.Outcome) { return safeView(safe.Current()), safe.Last() }
+
+// KeepSafe is the panel's confirmation of a safe change; the daemon then
+// confirms with the peers, at once if they answer.
+func (l *Live) KeepSafe(id string) (*safe.Outcome, error) {
+	if err := safe.Keep(id); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return safe.Tick(ctx, time.Now(), l.Safe), nil
+}
+
+// UndoSafe reverts a safe change now.
+func (l *Live) UndoSafe(id string) (*safe.Outcome, error) { return safe.RevertNow(id, l.Safe) }
+
+func safeView(p *safe.Pending) *SafeView {
+	if p == nil {
+		return nil
+	}
+	return &SafeView{ID: p.ID, What: p.What, Deadline: p.Deadline.UnixMilli(), Peers: p.Peers, Kept: p.Kept, Acked: p.Acked}
 }
 
 func (l *Live) Overview() (Overview, error) {
@@ -88,6 +143,7 @@ func (l *Live) Overview() (Overview, error) {
 	ov.Peers = peerViews(st)
 	ov.Forwards = forwardViews(st, sums)
 	ov.Commands = commands(st)
+	ov.Safe, ov.SafeLast = l.SafeStatus()
 	return ov, nil
 }
 
@@ -225,10 +281,14 @@ func peerViews(st *config.State) []PeerView {
 
 func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardView {
 	ts, fs := st.Effective()
+	paths := failover.Load()
 	out := []ForwardView{}
 	for _, f := range fs {
 		v := ForwardView{Tunnel: f.Tunnel, Proto: f.Proto, Ports: f.Ports, To: f.To, Public: st.Address,
-			Mode: f.ModeOf(), ProxyV: f.ProxyVersion}
+			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Backup: f.Backup, Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
+		if p := paths[failover.Key(f)]; p != nil && f.Backup != "" {
+			v.Since, v.Switches = p.Since, p.Switches
+		}
 		if v.Mode == config.ForwardProxy && v.ProxyV == 0 {
 			v.ProxyV = 2
 		}
@@ -669,6 +729,15 @@ func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all, speed b
 	}
 	c := bench.Candidate{Name: "check", Title: req.Mode, Mode: req.Mode, Port: defs[0].Port, Tunnels: defs}
 	return r.Compare(ctx, []bench.Candidate{c}, nil), nil
+}
+
+// MikroTik returns the RouterOS commands for a router at a tunnel's far end.
+func (l *Live) MikroTik(name string) (string, error) {
+	st, err := manage.Node()
+	if err != nil {
+		return "", err
+	}
+	return mikrotik.Commands(st, name)
 }
 
 // RestartTunnel takes a tunnel and the layers under it down and up again,

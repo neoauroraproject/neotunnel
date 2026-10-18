@@ -8,12 +8,14 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/failover"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/mikrotik"
 )
 
 func tunnelCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "tunnel", Short: "Add, list and remove tunnels"}
-	cmd.AddCommand(tunnelAddCmd(), tunnelSetCmd(), tunnelLimitCmd(), tunnelPowerCmd(true), tunnelPowerCmd(false), tunnelListCmd(), tunnelRemoveCmd(), kindsCmd())
+	cmd.AddCommand(tunnelAddCmd(), tunnelSetCmd(), tunnelLimitCmd(), tunnelPowerCmd(true), tunnelPowerCmd(false), tunnelListCmd(), tunnelRemoveCmd(), tunnelMikroTikCmd(), kindsCmd())
 	return cmd
 }
 
@@ -155,6 +157,27 @@ func printTunnel(st *config.State, t config.Tunnel) {
 	}
 }
 
+func tunnelMikroTikCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "mikrotik <name>",
+		Aliases: []string{"routeros"},
+		Short:   "Print the RouterOS v7 commands for a MikroTik at the tunnel's far end",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			st, err := loadNode()
+			if err != nil {
+				return err
+			}
+			out, err := mikrotik.Commands(st, args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Print(out)
+			return nil
+		},
+	}
+}
+
 func tunnelRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "remove <name>",
@@ -187,7 +210,7 @@ func forwardCmd() *cobra.Command {
 				proto = "tcp" // relay mode carries TCP only
 			}
 			ch, err := manage.AddForward(manage.ForwardRequest{Tunnel: args[0], Ports: args[1], Proto: proto, To: to,
-				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion})
+				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion, Backup: mode.Backup})
 			if err != nil {
 				return err
 			}
@@ -216,12 +239,17 @@ func forwardCmd() *cobra.Command {
 			if len(fs) == 0 {
 				info("none")
 			}
+			paths := failover.Load()
 			for i, f := range fs {
 				to := ""
 				if f.To != 0 {
 					to = fmt.Sprintf(" :%d", f.To)
 				}
-				fmt.Printf("  %d. %-5s %-20s → %s%s\n", i+1, f.Proto, f.Ports, f.Tunnel, to)
+				backup := ""
+				if f.Backup != "" {
+					backup = fmt.Sprintf("  (backup %s, now through %s)", f.Backup, paths.ActiveOf(f))
+				}
+				fmt.Printf("  %d. %-5s %-20s → %s%s%s\n", i+1, f.Proto, f.Ports, f.Tunnel, to, backup)
 			}
 			return nil
 		},

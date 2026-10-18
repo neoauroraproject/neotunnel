@@ -178,7 +178,7 @@ func forwardSetCmd() *cobra.Command {
 	var r manage.ForwardRequest
 	cmd := &cobra.Command{
 		Use:   "set <tunnel> <ports>",
-		Short: "Change a forward's mode (nat, transparent, proxy, relay), target port or protocol",
+		Short: "Change a forward's mode (nat, transparent, proxy, relay), target port, protocol or backup tunnel",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := loadNode()
@@ -202,6 +202,9 @@ func forwardSetCmd() *cobra.Command {
 					if !f.Changed("proxy-version") {
 						r.ProxyVersion = fw.ProxyVersion
 					}
+					if !f.Changed("backup") {
+						r.Backup = fw.Backup
+					}
 				}
 			}
 			ch, err := manage.UpdateForward(r)
@@ -222,6 +225,7 @@ func forwardSetCmd() *cobra.Command {
 func forwardModeFlags(f *pflag.FlagSet, r *manage.ForwardRequest) {
 	f.StringVar(&r.Mode, "mode", "", "nat (default), transparent (far end sees the client's IP), proxy (PROXY protocol header) or relay (TCP only: each connection is carried to the far node as its own TCP connection, no tunnel packets; fastest on long, lossy paths)")
 	f.IntVar(&r.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --mode proxy: 2 (default, TCP+UDP) or 1 (TCP); with --mode relay: 0 (no header, default), 1 or 2")
+	f.StringVar(&r.Backup, "backup", "", "a second tunnel to the same far server: the forward moves there while its tunnel stops passing traffic, and back once it has worked again for about a minute (set \"\" to remove)")
 }
 
 // resetRequest asks the daemon, which owns the counters, to zero them.

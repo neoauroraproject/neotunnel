@@ -8,6 +8,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/failover"
 	"neotunnel/internal/forward"
 )
 
@@ -72,8 +73,8 @@ func Doctor(st *config.State, fix bool) []Finding {
 		for i, s := range specs {
 			links[i] = forward.Link{Name: s.Name, Tunnel: s.Tunnel}
 		}
-		_, fs := st.Effective()
-		rules, _ := forward.Build(st, fs, links)
+		all, fs := st.Effective()
+		rules, _ := forward.Build(st, failover.Route(fs, all, failover.Load()), links)
 		syncReturns(rules.Returns, specs)
 		add(true, true, "routing rules match the current forwards")
 	} else {

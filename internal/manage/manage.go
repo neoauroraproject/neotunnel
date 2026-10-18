@@ -251,6 +251,9 @@ type ForwardRequest struct {
 	To           uint16 `json:"to,omitempty"`
 	Mode         string `json:"mode,omitempty"` // nat (default), transparent, proxy, relay
 	ProxyVersion int    `json:"proxy_version,omitempty"`
+	// Backup is a second tunnel to the same far server that the forward
+	// moves to while Tunnel doesn't pass traffic ("" = none).
+	Backup string `json:"backup,omitempty"`
 }
 
 func (r *ForwardRequest) check(st *config.State) error {
@@ -282,7 +285,41 @@ func (r *ForwardRequest) check(st *config.State) error {
 	if (r.Mode == config.ForwardProxy || r.Mode == config.ForwardRelay) && len(forward.Expand(r.Ports)) > forward.MaxRelayPorts {
 		return fmt.Errorf("proxy mode supports up to %d ports per forward", forward.MaxRelayPorts)
 	}
+	if r.Backup != "" {
+		if err := checkBackup(st, *t, r.Backup); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// checkBackup checks that backup can stand in for tunnel t: another tunnel
+// between this server and the same far server.
+func checkBackup(st *config.State, t config.Tunnel, backup string) error {
+	b, ok := st.Tunnel(backup)
+	if !ok {
+		return fmt.Errorf("unknown backup tunnel %q", backup)
+	}
+	if b.Name == t.Name {
+		return fmt.Errorf("the backup must be another tunnel than %s", t.Name)
+	}
+	if _, ok := b.SideOf(st.Self); !ok {
+		return fmt.Errorf("backup tunnel %s does not start on this server", backup)
+	}
+	if farOf(st, *b) != farOf(st, t) {
+		return fmt.Errorf("backup tunnel %s goes to %s, not to %s like %s", backup, farOf(st, *b), farOf(st, t), t.Name)
+	}
+	return nil
+}
+
+// farOf names the tunnel's far server: its node, or its address when it
+// doesn't run NeoTunnel.
+func farOf(st *config.State, t config.Tunnel) string {
+	me, _ := t.SideOf(st.Self)
+	if far := t.Sides[1-me]; far.Node != "" {
+		return far.Node
+	}
+	return t.Sides[1-me].Endpoint
 }
 
 // AddForward forwards ports on this node through a tunnel. The tunnel's far
@@ -302,11 +339,14 @@ func AddForward(r ForwardRequest) (Change, error) {
 			return fmt.Errorf("unknown tunnel %q", r.Tunnel)
 		}
 		relaySecret(t, r.Mode)
+		if b, ok := s.Tunnel(r.Backup); ok {
+			relaySecret(b, r.Mode)
+		}
 		if err := portsFree(s, r.Ports, r.Proto, ""); err != nil {
 			return err
 		}
 		s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: r.Tunnel, Proto: r.Proto, Ports: r.Ports,
-			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion})
+			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Backup: r.Backup})
 		return nil
 	})
 	return ch, err
@@ -329,7 +369,10 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 				if t, ok := s.Tunnel(r.Tunnel); ok {
 					relaySecret(t, r.Mode)
 				}
-				f.Proto, f.To, f.Mode, f.ProxyVersion = r.Proto, r.To, r.Mode, r.ProxyVersion
+				if b, ok := s.Tunnel(r.Backup); ok {
+					relaySecret(b, r.Mode)
+				}
+				f.Proto, f.To, f.Mode, f.ProxyVersion, f.Backup = r.Proto, r.To, r.Mode, r.ProxyVersion, r.Backup
 				s.Forwards[i] = f
 				return portsFreeExcept(s, i)
 			}

@@ -95,19 +95,23 @@ func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit 
 		if f.ModeOf() != config.ForwardRelay || st.IsSelf(f.Node) {
 			continue
 		}
-		t, ok := byName[f.Tunnel]
-		if !ok || t.Disabled || t.Secret == "" || t.Sides[1-sideOf(st, t)].Node != f.Node {
-			continue
-		}
-		e := relay.Exit{Tunnel: t.Name, Secret: t.Secret, Side: sideOf(st, t)}
-		if f.To != 0 {
-			e.Ports = []uint16{f.To}
-		} else {
-			for _, p := range Expand(f.Ports) {
-				e.Ports = append(e.Ports, uint16(p))
+		// The far side may move the forward to its backup at any time, so
+		// the exits of both tunnels are open.
+		for _, name := range []string{f.Tunnel, f.Backup} {
+			t, ok := byName[name]
+			if name == "" || !ok || t.Disabled || t.Secret == "" || t.Sides[1-sideOf(st, t)].Node != f.Node {
+				continue
 			}
+			e := relay.Exit{Tunnel: t.Name, Secret: t.Secret, Side: sideOf(st, t)}
+			if f.To != 0 {
+				e.Ports = []uint16{f.To}
+			} else {
+				for _, p := range Expand(f.Ports) {
+					e.Ports = append(e.Ports, uint16(p))
+				}
+			}
+			out = append(out, e)
 		}
-		out = append(out, e)
 	}
 	return out
 }

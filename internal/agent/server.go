@@ -21,6 +21,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/probe"
+	"neotunnel/internal/safe"
 	"neotunnel/internal/sysinfo"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/version"
@@ -49,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/upgrade", s.fromMaster(s.upgrade))
 	mux.HandleFunc("POST /v1/traffic/exclude", s.fromMaster(s.excludeTraffic))
 	mux.HandleFunc("POST /v1/restart", s.fromMaster(s.restart))
+	mux.HandleFunc("POST /v1/safe/confirm", s.fromMaster(s.safeConfirm))
 	return mux
 }
 
@@ -216,6 +218,9 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		if req.Revision < m.Revision {
 			return fmt.Errorf("stale revision %d < %d", req.Revision, m.Revision)
 		}
+		if err := safe.HoldManaged(req.Hold, req.HoldSeconds, m, time.Now()); err != nil {
+			return err
+		}
 		m.Revision, m.Tunnels, m.Forwards = req.Revision, req.Tunnels, req.Forwards
 		return nil
 	})
@@ -232,6 +237,22 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		s.Applied()
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// safeConfirm keeps a safe change: the master and its panel can still reach
+// us after it. 409 when the change isn't held here (this peer never got it,
+// or already put back what it ran before).
+func (s *Server) safeConfirm(w http.ResponseWriter, r *http.Request) {
+	var req SafeConfirmRequest
+	if err := readJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if !safe.ConfirmHold(req.ID) {
+		fail(w, http.StatusConflict, errors.New("no such change is waiting here"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"kept": true})
 }
 
 func (s *Server) openProbe(w http.ResponseWriter, r *http.Request) {

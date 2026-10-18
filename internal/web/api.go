@@ -38,6 +38,7 @@ func reply(w http.ResponseWriter, v any, err error) {
 
 func (s *Server) routes(m *http.ServeMux) {
 	b := s.Backend
+	s.safeRoutes(m)
 	m.HandleFunc("GET /api/overview", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		ov, err := b.Overview()
 		reply(w, ov, err)
@@ -52,7 +53,7 @@ func (s *Server) routes(m *http.ServeMux) {
 		setup, err := b.AddPeer(req.Name, req.Address)
 		reply(w, setup, err)
 	}))
-	m.HandleFunc("DELETE /api/peers/{name}", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("DELETE /api/peers/{name}", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		ch, err := b.RemovePeer(r.PathValue("name"))
 		reply(w, ch, err)
 	}))
@@ -73,7 +74,7 @@ func (s *Server) routes(m *http.ServeMux) {
 		reply(w, map[string]string{"version": v}, err)
 	}))
 
-	m.HandleFunc("POST /api/tunnels", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("POST /api/tunnels", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		var req manage.TunnelRequest
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
@@ -82,11 +83,11 @@ func (s *Server) routes(m *http.ServeMux) {
 		ch, err := b.CreateTunnel(req)
 		reply(w, ch, err)
 	}))
-	m.HandleFunc("DELETE /api/tunnels/{name}", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("DELETE /api/tunnels/{name}", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		ch, err := b.RemoveTunnel(r.PathValue("name"))
 		reply(w, ch, err)
 	}))
-	m.HandleFunc("PATCH /api/tunnels/{name}", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("PATCH /api/tunnels/{name}", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			manage.Settings
 			Port uint16 `json:"port"`
@@ -95,8 +96,8 @@ func (s *Server) routes(m *http.ServeMux) {
 			fail(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		ch, err := b.UpdateTunnel(r.PathValue("name"), req.Settings, req.Port)
-		reply(w, ch, err)
+		name := r.PathValue("name")
+		s.change(w, r, "tunnel "+name+" settings", func() (manage.Change, error) { return b.UpdateTunnel(name, req.Settings, req.Port) })
 	}))
 	m.HandleFunc("GET /api/ports/random", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		p, err := b.RandomPort(r.URL.Query().Get("proto"))
@@ -107,14 +108,18 @@ func (s *Server) routes(m *http.ServeMux) {
 		defer cancel()
 		reply(w, map[string]bool{"ok": true}, b.RestartTunnel(ctx, r.PathValue("name")))
 	}))
-	m.HandleFunc("POST /api/tunnels/{name}/limits", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("GET /api/tunnels/{name}/mikrotik", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		text, err := b.MikroTik(r.PathValue("name"))
+		reply(w, map[string]string{"commands": text}, err)
+	}))
+	m.HandleFunc("POST /api/tunnels/{name}/limits", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		var req manage.Limits
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		ch, err := b.SetLimits(r.PathValue("name"), req)
-		reply(w, ch, err)
+		name := r.PathValue("name")
+		s.change(w, r, "tunnel "+name+" on/off and limits", func() (manage.Change, error) { return b.SetLimits(name, req) })
 	}))
 	m.HandleFunc("POST /api/tunnels/{name}/mtu", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
@@ -163,7 +168,7 @@ func (s *Server) routes(m *http.ServeMux) {
 		w.Write(data)
 	}))
 
-	m.HandleFunc("POST /api/forwards", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("POST /api/forwards", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		var req manage.ForwardRequest
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
@@ -172,16 +177,15 @@ func (s *Server) routes(m *http.ServeMux) {
 		ch, err := b.AddForward(req)
 		reply(w, ch, err)
 	}))
-	m.HandleFunc("POST /api/forwards/update", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("POST /api/forwards/update", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		var req manage.ForwardRequest
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		ch, err := b.UpdateForward(req)
-		reply(w, ch, err)
+		s.change(w, r, "forward "+req.Ports+" on "+req.Tunnel, func() (manage.Change, error) { return b.UpdateForward(req) })
 	}))
-	m.HandleFunc("POST /api/forwards/remove", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("POST /api/forwards/remove", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Tunnel, Ports string }
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")

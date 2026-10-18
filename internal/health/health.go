@@ -26,7 +26,11 @@ type State struct {
 	Last   int64   `json:"last"`   // unix of the last reply, 0 = never
 	Probes int     `json:"probes"` // probes in the window so far
 	Passes bool    `json:"passes"` // at least one reply in the window
-	recent []bool  // got a reply, newest last
+	// Up and Down count the probes in a row that got a reply or were lost
+	// (one of them is always 0), for decisions that must not flap.
+	Up     int    `json:"up_streak,omitempty"`
+	Down   int    `json:"down_streak,omitempty"`
+	recent []bool // got a reply, newest last
 	rtts   []float64
 }
 
@@ -56,12 +60,14 @@ func (t *Tracker) Record(tunnel string, ok bool, rtt time.Duration) {
 	ms := float64(rtt.Microseconds()) / 1000
 	if ok {
 		s.RTTms, s.Last = ms, time.Now().Unix()
+		s.Up, s.Down = s.Up+1, 0
 		s.rtts = append(s.rtts, ms)
 		if len(s.rtts) > Window {
 			s.rtts = s.rtts[1:]
 		}
 	} else {
 		s.RTTms = 0
+		s.Up, s.Down = 0, s.Down+1
 	}
 	lost, sum := 0, 0.0
 	for _, g := range s.recent {
