@@ -11,3 +11,11 @@ func lock() (func(), error) {
 	mu.Lock()
 	return mu.Unlock, nil
 }
+
+var applyMu sync.Mutex
+
+// LockApply is process-local on platforms without flock.
+func LockApply() (func(), error) {
+	applyMu.Lock()
+	return applyMu.Unlock, nil
+}

@@ -56,7 +56,7 @@ ip netns exec $EDGE python3 -m http.server 8080 --directory "$WORK/www" >/dev/nu
 in_hub node --name hub --address $HUB_IP >/dev/null
 in_edge node --name edge --address $EDGE_IP >/dev/null
 in_hub panel setup --port $PANEL_PORT --password $PANEL_PASS >/dev/null || fail "panel setup"
-ip netns exec $HUB env NEOTUNNEL_DIR=$WORK/hub "$BIN" daemon >"$WORK/hub.log" 2>&1 &
+ip netns exec $HUB env NEOTUNNEL_DIR=$WORK/hub "$BIN" daemon >"$WORK/hub.log" 2>&1 & echo $! > "$WORK/hub.pid"
 start_edge
 sleep 1
 
@@ -352,7 +352,17 @@ sleep 11  # one traffic sample
 api "$base/api/traffic" | grep -q '"t1"' || fail "no traffic totals for t1"
 api -X POST "$base/api/tunnels/t1/mtu" | grep -q '"path_mtu":1500' || fail "MTU probe"
 api -X PATCH -d '{"encrypt":"aes-gcm-256"}' "$base/api/tunnels/e1" | grep -q error && fail "update tunnel settings"
-ip netns exec $EDGE ip xfrm state | grep -q "rfc4106" || fail "re-keyed SA missing on edge"
+for i in $(seq 1 50); do
+  ip netns exec $EDGE ip xfrm state 2>/dev/null | grep -q "rfc4106" && break
+  sleep 0.1
+done
+if [ "$i" -gt 1 ]; then echo "NOTE re-keyed SA on edge appeared after $((i - 1))00 ms"; fi
+if ! ip netns exec $EDGE ip xfrm state 2>/dev/null | grep -q "rfc4106"; then
+  echo "--- edge xfrm state"; ip netns exec $EDGE ip xfrm state
+  echo "--- hub xfrm state"; ip netns exec $HUB ip xfrm state | grep -E "^src|aead" | head
+  in_hub peer list
+  fail "re-keyed SA missing on edge"
+fi
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-e1)" >/dev/null || fail "ping after switching to AES-256"
 pass "panel: traffic totals, MTU probe and live settings change"
 
@@ -367,7 +377,9 @@ ip netns exec $EDGE ip xfrm state | grep -q "spi 0x4e" && fail "uninstall left I
 ip netns exec $EDGE ip rule | grep -q "^7700:" && fail "uninstall left routing rules"
 pass "uninstall removed tunnels, IPsec, rules, configuration and the program"
 
-# 9. Clean removal.
+# 9. Clean removal. The service would recreate the tunnels on its next
+#    tick, so it is stopped first, as `down` says.
+kill "$(cat "$WORK/hub.pid")" 2>/dev/null; sleep 0.5
 in_hub down >/dev/null
 ip -n $HUB -o link | grep -qE '^[0-9]+: nt-' && fail "interfaces left after down"
 ip netns exec $HUB ip fou show | grep -q "port 3001" && fail "FOU port left after down"

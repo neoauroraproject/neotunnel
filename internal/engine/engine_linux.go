@@ -26,9 +26,14 @@ var mu sync.Mutex
 func Apply(st *config.State) Result {
 	mu.Lock()
 	defer mu.Unlock()
-	// Apply what is saved now, not the copy the caller loaded earlier: the
-	// daemon's loop and a push from the main server can race, and applying
-	// the older copy last would undo the newer one until the next tick.
+	// Apply what is saved now, not the copy the caller loaded earlier, and
+	// one applier at a time across processes: the daemon's loop, the CLI and
+	// a push from the main server can race, and applying an older copy last
+	// would undo the newer one (IPsec keys removed, for one) until the next
+	// tick.
+	if unlock, err := config.LockApply(); err == nil {
+		defer unlock()
+	}
 	if cur, err := config.Load(); err == nil {
 		st = cur
 	}
