@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"syscall"
@@ -40,7 +41,9 @@ func originalDst(c *net.TCPConn) (netip.AddrPort, bool) {
 	return ap, ap.IsValid()
 }
 
-// markSocket sets FetchMark on a socket before it connects.
+// markSocket sets FetchMark on a socket before it connects. Without
+// CAP_NET_ADMIN (tests, a non-root run) there is no mark, and no redirect
+// either, since installing one takes the same right: the socket goes as is.
 func markSocket(network, address string, c syscall.RawConn) error {
 	var serr error
 	err := c.Control(func(fd uintptr) {
@@ -48,6 +51,9 @@ func markSocket(network, address string, c syscall.RawConn) error {
 	})
 	if err != nil {
 		return err
+	}
+	if errors.Is(serr, unix.EPERM) {
+		return nil
 	}
 	return serr
 }
