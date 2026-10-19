@@ -102,6 +102,7 @@
     power: (s) => svg('<path d="M12 3v8"/><path d="M6.3 6.6a8 8 0 1 0 11.4 0"/>', s),
     download: (s) => svg('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>', s),
     globe: (s) => svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>', s),
+    menu: (s) => svg('<path d="M4 7h16M4 12h16M10 17h10"/>', s),
     bolt: (s) => svg('<path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/>', s),
     chart: (s) => svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', s),
     clock: (s) => svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>', s),
@@ -259,7 +260,7 @@
     } catch {
       S.live = false;
     }
-    if (S.modal && !S.modal.passive) return;
+    if ((S.modal && !S.modal.passive) || S.menuDrag) return;
     if (S.edit) patchLive(); else draw();
   }
 
@@ -329,6 +330,7 @@
 
   function draw() {
     const app = $("#app");
+    document.documentElement.classList.toggle("locked", !!(S.menu && S.authed && S.ov));
     if (!S.authed) { const first = !$("#login-user"); morph(app, part(viewLogin())); const u = $("#login-user"); if (u && first) u.focus(); return; }
     if (!S.ov) { morph(app, part(html`<div class="login-wrap"><div class="muted">در حال بارگذاری…</div></div>`)); return; }
     morph(app, part(viewShell()));
@@ -359,13 +361,14 @@
     const liveCls = !S.live ? "off" : S.paused ? "paused" : "";
     return html`<div class="frame">
       <header class="topbar">
+        <button class="iconbtn burger" data-act="menu" aria-label="منو" aria-haspopup="dialog" aria-expanded="${S.menu ? "true" : "false"}" aria-controls="nav-sheet">${I.menu(19)}</button>
         <a class="brand" href="#/dashboard" title="NeoTunnel ${ov.node.version}"><img src="assets/logo.svg" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
         <nav class="tabs" aria-label="صفحه‌ها">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon(18)}<span>${label}</span>${counts[id] ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
         <div class="top-tools">
           <span class="live ${liveCls}" title="${S.live ? (S.paused ? "به‌روزرسانی زنده متوقف است" : "پنل هر ۳ ثانیه تازه می‌شود") : "ارتباط با سرور قطع است"}"><i></i><span>${!S.live ? "قطع ارتباط" : S.paused ? "متوقف" : "زنده"}</span></span>
-          <button class="iconbtn" data-act="theme" title="${S.theme === "dark" ? "تم روشن" : "تم تیره"}" aria-label="تغییر تم">${S.theme === "dark" ? I.sun(17) : I.moon(17)}</button>
+          <button class="iconbtn wide-only" data-act="theme" title="${S.theme === "dark" ? "تم روشن" : "تم تیره"}" aria-label="تغییر تم">${S.theme === "dark" ? I.sun(17) : I.moon(17)}</button>
           <button class="iconbtn hot" data-act="wizard" title="تانل جدید" aria-label="تانل جدید">${I.plus(18)}</button>
-          <button class="iconbtn" data-act="logout" title="خروج" aria-label="خروج">${I.out(17)}</button>
+          <button class="iconbtn wide-only" data-act="logout" title="خروج" aria-label="خروج">${I.out(17)}</button>
         </div>
       </header>
       <main class="main" data-key="page-${S.route}">
@@ -376,8 +379,113 @@
         ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:14px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => { const t = errText(e); return t !== e ? html`<div>${t}<div class="mono faint small">${e}</div></div>` : html`<div class="mono">${e}</div>`; })}</div>` : ""}
         ${page()}
       </main>
-    </div>${S.drawer ? viewDrawer() : ""}`;
+    </div>${S.drawer ? viewDrawer() : ""}${S.menu ? viewMenu(counts) : ""}`;
   }
+
+  // ---------- menu (narrow screens) ----------
+  // The pages and the global controls in a sheet that slides in from the
+  // side the menu button is on and leaves the same way. The button, the
+  // scrim, Escape, a swipe toward the edge or choosing a page closes it.
+  function viewMenu(counts) {
+    const ov = S.ov, st = S.menuEnter ? "enter" : S.menuLeaving ? "leave" : "";
+    S.menuEnter = false;
+    const liveCls = !S.live ? "off" : S.paused ? "paused" : "";
+    return html`<div class="sheet-scrim ${st}" data-act="menu-close"></div>
+      <aside id="nav-sheet" class="sheet ${st}" role="dialog" aria-modal="true" aria-label="منو">
+        <header class="sheet-head">
+          <a class="brand" href="#/dashboard"><img src="assets/logo.svg" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
+          <button class="iconbtn" data-act="menu-close" aria-label="بستن منو">${I.x(18)}</button>
+        </header>
+        <div class="sheet-node">
+          <div><b>${ov.node.name}</b><span class="ltr">${ov.node.address || "-"}</span></div>
+          <span class="live ${liveCls}"><i></i><span>${!S.live ? "قطع ارتباط" : S.paused ? "متوقف" : "زنده"}</span></span>
+        </div>
+        <nav class="sheet-nav" aria-label="صفحه‌ها">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon(20)}<span>${label}</span>${counts[id] ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
+        <div class="sheet-foot">
+          <button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button>
+          <div class="sheet-row">
+            <button class="btn ghost" data-act="theme">${S.theme === "dark" ? I.sun(16) : I.moon(16)} ${S.theme === "dark" ? "تم روشن" : "تم تیره"}</button>
+            <button class="btn ghost" data-act="live-toggle">${I.power(16)} ${S.paused ? "ادامه‌ی به‌روزرسانی" : "توقف به‌روزرسانی"}</button>
+            <span class="grow"></span>
+            <button class="btn ghost" data-act="logout">${I.out(16)} خروج</button>
+          </div>
+        </div>
+      </aside>`;
+  }
+
+  function openMenu() {
+    if (S.menu && !S.menuLeaving) return;
+    clearTimeout(S.menuTimer);
+    S.menu = true; S.menuLeaving = false; S.menuEnter = true;
+    draw();
+    const c = $('.sheet [data-act="menu-close"]'); if (c) c.focus();
+  }
+  // now: without the leaving animation, when another view takes over.
+  function closeMenu(now) {
+    if (!S.menu || (S.menuLeaving && !now)) return;
+    clearTimeout(S.menuTimer);
+    const done = () => {
+      S.menu = false; S.menuLeaving = false; draw();
+      const b = $(".burger"); if (b && b.offsetParent) b.focus({ preventScroll: true });
+    };
+    if (now || reduceMotion) { done(); return; }
+    S.menuLeaving = true; draw();
+    S.menuTimer = setTimeout(done, 240);
+  }
+
+  // Swipe the sheet toward its edge to close it: it follows the finger,
+  // and on release a flick or a drag past 40% of its width closes it from
+  // where it is; anything less springs back.
+  (() => {
+    let drag = null;
+    const edge = () => (document.documentElement.dir === "ltr" ? -1 : 1);
+    document.addEventListener("pointerdown", (e) => {
+      const sh = e.target.closest && e.target.closest(".sheet");
+      if (!sh || S.menuLeaving || e.button > 0) return;
+      drag = { sh, x0: e.clientX, y0: e.clientY, id: e.pointerId, on: false, off: 0, hist: [[e.timeStamp, 0]], w: sh.offsetWidth };
+    });
+    document.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dx = (e.clientX - drag.x0) * edge(), dy = e.clientY - drag.y0;
+      if (!drag.on) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { drag = null; return; } // a scroll
+        if (dx < 10) return;
+        drag.on = true; S.menuDrag = true;
+        drag.sh.setPointerCapture(e.pointerId);
+        drag.sh.style.transition = "none";
+      }
+      drag.off = Math.max(0, dx - 10);
+      drag.hist.push([e.timeStamp, drag.off]); if (drag.hist.length > 6) drag.hist.shift();
+      drag.sh.style.transform = `translateX(${drag.off * edge()}px)`;
+      const scrim = $(".sheet-scrim"); if (scrim) scrim.style.opacity = String(Math.max(0, 1 - drag.off / drag.w));
+    });
+    const end = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const d = drag; drag = null;
+      if (!d.on) return;
+      // A drag ends with no click on what it started over.
+      const swallow = (c) => { c.stopPropagation(); c.preventDefault(); };
+      document.addEventListener("click", swallow, true);
+      setTimeout(() => document.removeEventListener("click", swallow, true), 60);
+      const [t0, o0] = d.hist[0], [t1, o1] = d.hist[d.hist.length - 1];
+      const v = t1 > t0 ? (o1 - o0) / (t1 - t0) : 0; // px per ms
+      const scrim = $(".sheet-scrim");
+      const ease = "240ms cubic-bezier(0.32, 0.72, 0, 1)";
+      d.sh.style.transition = `transform ${ease}`;
+      if (scrim) scrim.style.transition = `opacity ${ease}`;
+      if (d.off + v * 180 > d.w * 0.4) {
+        d.sh.style.transform = `translateX(${d.w * edge()}px)`;
+        if (scrim) scrim.style.opacity = "0";
+        setTimeout(() => { S.menuDrag = false; closeMenu(true); }, 240);
+      } else {
+        d.sh.style.transform = "";
+        if (scrim) scrim.style.opacity = "";
+        setTimeout(() => { S.menuDrag = false; d.sh.style.transition = ""; if (scrim) scrim.style.transition = ""; }, 260);
+      }
+    };
+    document.addEventListener("pointerup", end);
+    document.addEventListener("pointercancel", end);
+  })();
 
   // Safe changes: the preference, the query that asks for one, and the
   // banner of a change waiting for confirmation (or how the last one ended).
@@ -2155,8 +2263,10 @@
   });
 
   const actions = {
+    menu() { if (S.menu && !S.menuLeaving) closeMenu(); else openMenu(); },
+    "menu-close"() { closeMenu(); },
     theme() { S.theme = S.theme === "dark" ? "light" : "dark"; store("nt-theme", S.theme); document.documentElement.dataset.theme = S.theme; draw(); },
-    async logout() { await api("POST", "logout").catch(() => {}); S.authed = false; S.ov = null; draw(); },
+    async logout() { S.menu = false; await api("POST", "logout").catch(() => {}); S.authed = false; S.ov = null; draw(); },
     copy(el) { copy(el.dataset.text); },
     close() { closeModal(); },
     "close-overlay"(el, e) { if (e.target === el) closeModal(); },
@@ -2196,7 +2306,7 @@
       try { S.mtu[n] = await api("POST", `tunnels/${encodeURIComponent(n)}/mtu`); S.open = n; S.drawer = null; location.hash = "#/tunnels"; await refresh(); draw(); }
       catch (e) { toast(e.message, "bad"); }
     },
-    wizard(el) { openWizard(el.dataset.peer ? { peer: el.dataset.peer, mode: el.dataset.mode || "", port: el.dataset.port || "" } : {}); if (el.dataset.peer && !el.dataset.mode) S.wiz.mode = "6to4"; S.drawer = null; drawModal(); },
+    wizard(el) { if (S.menu) closeMenu(true); openWizard(el.dataset.peer ? { peer: el.dataset.peer, mode: el.dataset.mode || "", port: el.dataset.port || "" } : {}); if (el.dataset.peer && !el.dataset.mode) S.wiz.mode = "6to4"; S.drawer = null; drawModal(); },
     "wiz-dest"(el) {
       Object.assign(S.wiz, { dest: el.dataset.dest, peer: el.dataset.name || S.wiz.peer });
       const p = wizPeer(S.wiz); if (p && p.address6) S.wiz.remote6 = p.address6;
@@ -2393,7 +2503,15 @@
     if (fn) { if (el.tagName === "A" && el.dataset.act !== "goto-sec") e.preventDefault(); fn(el, e); }
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { if (S.modal) closeModal(); else if (S.drawer) { S.drawer = null; draw(); } return; }
+    if (e.key === "Escape") { if (S.modal) closeModal(); else if (S.menu) closeMenu(); else if (S.drawer) { S.drawer = null; draw(); } return; }
+    // Tab stays inside the open menu.
+    if (e.key === "Tab" && S.menu && !S.modal) {
+      const els = $(".sheet a[href], .sheet button:not(:disabled)"); if (!els.length) return;
+      const first = els[0], last = els[els.length - 1];
+      if (!e.target.closest(".sheet")) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && e.target === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && e.target === last) { e.preventDefault(); first.focus(); }
+    }
     // SVG nodes act as buttons.
     if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('g[role="button"], div[role="button"]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
   });
@@ -2403,6 +2521,7 @@
     S.edit = false; S.drawer = null; S.defs = null;
     if (S.route === "settings") S.system = null;
     draw(); window.scrollTo(0, 0);
+    if (S.menu) closeMenu();
   });
 
   // ---------- boot ----------
@@ -2415,7 +2534,7 @@
     }
     setInterval(() => { if (S.authed && !document.hidden && !S.paused) refresh(); }, 3000);
     let resized = 0;
-    window.addEventListener("resize", () => { clearTimeout(resized); resized = setTimeout(() => { if (!S.modal && !S.edit) draw(); }, 150); });
+    window.addEventListener("resize", () => { clearTimeout(resized); resized = setTimeout(() => { if (S.menu && window.innerWidth > 980) S.menu = S.menuLeaving = false; if (!S.modal && !S.edit) draw(); }, 150); });
     setInterval(() => { if (S.authed && !document.hidden) refreshTraffic(); }, 30000);
   }
   boot();
