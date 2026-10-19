@@ -8,6 +8,8 @@
 <a href="https://github.com/neoauroraproject/neotunnel/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/neoauroraproject/neotunnel/ci.yml?branch=main&style=flat-square&label=tests&labelColor=111111" alt="tests"></a>
 <img src="https://img.shields.io/badge/Ubuntu-20.04%2B-ececec?style=flat-square&labelColor=111111" alt="ubuntu">
 <a href="LICENSE"><img src="https://img.shields.io/github/license/neoauroraproject/neotunnel?style=flat-square&color=ececec&labelColor=111111" alt="license"></a>
+<img src="https://komarev.com/ghpvc/?username=neoauroraproject&repo=neotunnel&label=Views&color=orange&style=flat-square" alt="views">
+<a href="https://t.me/neoaurora"><img src="https://img.shields.io/badge/Telegram-NeoAurora-26a5e4?style=flat-square&logo=telegram&labelColor=111111" alt="telegram"></a>
 </p>
 
 <p align="center"><img src="docs/screenshots/dashboard.png" alt="داشبورد NeoTunnel: جریان ترافیک زنده‌ی هر تانل، بار سرور، پینگ، کارت شبکه و جزئیات سرور"></p>
@@ -275,6 +277,31 @@ sudo test/e2e.sh dist/neotunnel-linux-amd64   # تست کامل روی کرنل 
 ```
 
 <div dir="rtl">
+
+## حمایت مالی
+
+اگر NeoTunnel برایتان مفید بوده و می‌خواهید از ادامه‌ی توسعه‌اش حمایت کنید، می‌توانید از این راه کمک کنید:
+
+If you find NeoTunnel helpful and want to support its development, you can donate via:
+
+</div>
+
+* **USDT (BEP20):**
+  `0xacA935a5955a756BedaE4738304274EdeE0223D5`
+
+<div dir="rtl">
+
+## پروژه‌های دیگر Neo Aurora
+
+- [HMPanel](https://github.com/neoauroraproject/hmpanel): پنل مدیریت HMray
+- [3xFactor](https://github.com/neoauroraproject/3xfactor): ضریب ترافیک برای 3x-ui، با پنل داخلی
+- [NeoTemplate](https://github.com/neoauroraproject/NeoTemplate): قالب‌های صفحه‌ی اشتراک برای پنل ثنایی (3x-ui)
+- [Neo-Uptime](https://github.com/neoauroraproject/Neo-Uptime): مانیتورینگ آپتایم روی سرور خودتان، با صفحه‌ی وضعیت
+- [NeoCheck](https://github.com/neoauroraproject/neocheck): بررسی سریع وضعیت اتصال و شبکه
+
+## کانال‌های تلگرام
+
+اخبار، نسخه‌های تازه و پشتیبانی: [NeoAurora](https://t.me/neoaurora) / [HMPanel](https://t.me/hmpanel)
 
 ## مجوز
 

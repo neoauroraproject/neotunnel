@@ -106,7 +106,7 @@ func (s *session) header() string {
 	}
 	pad := func(s string, n int) string { return s + strings.Repeat(" ", max(1, n-len(s))) }
 	var b strings.Builder
-	b.WriteString("\n " + accent("◆ NeoTunnel") + " " + dim(version.Version) + "\n")
+	b.WriteString("\n " + accent("◆ NeoTunnel") + " " + dim(version.Version) + "   " + dim(strings.TrimPrefix(version.Channel, "https://")) + "\n")
 	b.WriteString(line + "\n")
 	b.WriteString(" " + dim("server ") + "  " + bold(st.Self) + "  " + pad(st.Address, 22-len(st.Self)) + dim("service ") + " " + svc + "\n")
 	b.WriteString(" " + dim("tunnels") + "  " + pad(fmt.Sprintf("%d of %d up", up, len(ts)), 24) + dim("servers ") + " " + fmt.Sprintf("%d of %d connected", paired, len(st.Peers)) + "\n")

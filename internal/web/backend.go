@@ -121,6 +121,7 @@ type Overview struct {
 	SafeLast *safe.Outcome   `json:"safe_last,omitempty"` // how the last one ended
 	Install  string          `json:"install"`             // one-line installer for a new server
 	Repo     string          `json:"repo"`
+	Channel  string          `json:"channel"`
 	Time     int64           `json:"time"` // unix ms, for rate calculation
 }
 

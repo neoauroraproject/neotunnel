@@ -1742,7 +1742,8 @@
     const ov = S.ov;
     return html`<div class="panel"><header><h2>درباره</h2></header><div class="in"><dl class="kv">
       <dt>نسخه</dt><dd class="ltr">${ov.node.version} ${ov.node.arch}</dd><dt>اثر انگشت کلید سرور</dt><dd class="ltr">${ov.node.key}</dd>
-      <dt>روشن بودن سرور</dt><dd>${fmtUptime(ov.node.uptime_s)}</dd><dt>کد منبع</dt><dd><a href="${ov.repo}" target="_blank" rel="noopener" class="ltr">${ov.repo.replace("https://", "")}</a></dd></dl></div></div>`;
+      <dt>روشن بودن سرور</dt><dd>${fmtUptime(ov.node.uptime_s)}</dd><dt>کد منبع</dt><dd><a href="${ov.repo}" target="_blank" rel="noopener" class="ltr">${ov.repo.replace("https://", "")}</a></dd>
+      <dt>کانال تلگرام</dt><dd><a href="${ov.channel}" target="_blank" rel="noopener" class="ltr">${ov.channel.replace("https://", "")}</a></dd></dl></div></div>`;
   }
 
   async function loadSystem() {

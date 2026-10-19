@@ -135,7 +135,8 @@ if [ "$PANEL" = 1 ]; then
   fi
   printf '  %sThe certificate is self-signed: accept the browser warning once.%s\n\n' "$c_dim" "$c_0"
 fi
-printf '  Manage everything from the terminal with: %sneotunnel%s\n\n' "$c_b" "$c_0"
+printf '  Manage everything from the terminal with: %sneotunnel%s\n' "$c_b" "$c_0"
+printf '  News and releases: %shttps://t.me/neoaurora%s\n\n' "$c_b" "$c_0"
 
 # 5. Menu -----------------------------------------------------------------
 # Open the menu on the user's terminal (stdin is this script when piped).

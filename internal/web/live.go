@@ -116,6 +116,7 @@ func (l *Live) Overview() (Overview, error) {
 		Defaults: st.D(),
 		Install:  "curl -fsSL " + version.InstallURL + " | sudo bash",
 		Repo:     version.RepoURL,
+		Channel:  version.Channel,
 		Time:     time.Now().UnixMilli(),
 	}
 	readSystem(&ov.Node)

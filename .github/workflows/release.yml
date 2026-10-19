@@ -43,6 +43,8 @@ jobs:
             echo '```'
             echo
             echo 'روی سروری که NeoTunnel دارد: `sudo neotunnel update`'
+            echo
+            echo "اخبار و نسخه‌های تازه: [کانال تلگرام NeoAurora](https://t.me/neoaurora) · [حمایت از پروژه](https://github.com/${GITHUB_REPOSITORY}#حمایت-مالی)"
           } > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "NeoTunnel $GITHUB_REF_NAME" --notes-file notes.md
 
