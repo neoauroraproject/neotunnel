@@ -25,22 +25,33 @@ const (
 )
 
 // LinkSpec is one interface this node must have, fully resolved.
+// keyName is the name keys are derived from (older specs have Tunnel only).
+func (s LinkSpec) keyName() string {
+	if s.KeyName != "" {
+		return s.KeyName
+	}
+	return s.Tunnel
+}
+
 type LinkSpec struct {
-	Name   string         `json:"name"`
-	Tunnel string         `json:"tunnel"`
-	Kind   config.Kind    `json:"kind"`
-	Local  netip.Addr     `json:"local"`
-	Remote netip.Addr     `json:"remote"`
-	Key    uint32         `json:"key,omitempty"`
-	VNI    uint32         `json:"vni,omitempty"`
-	Port   uint16         `json:"port,omitempty"`
-	FOU    bool           `json:"fou,omitempty"` // Port is a FOU (UDP) encapsulation port
-	TTL    uint8          `json:"ttl"`
-	MTU    int            `json:"mtu"`
-	NoDF   bool           `json:"no_df,omitempty"`
-	DSCP   uint8          `json:"dscp,omitempty"`
-	Addrs  []netip.Prefix `json:"addrs"`
-	Parent string         `json:"parent,omitempty"`
+	Name   string `json:"name"`
+	Tunnel string `json:"tunnel"`
+	// KeyName is the tunnel's name as both ends know it (Tunnel is the
+	// local one): keys are derived from it. See config.Tunnel.KeyName.
+	KeyName string         `json:"key_name,omitempty"`
+	Kind    config.Kind    `json:"kind"`
+	Local   netip.Addr     `json:"local"`
+	Remote  netip.Addr     `json:"remote"`
+	Key     uint32         `json:"key,omitempty"`
+	VNI     uint32         `json:"vni,omitempty"`
+	Port    uint16         `json:"port,omitempty"`
+	FOU     bool           `json:"fou,omitempty"` // Port is a FOU (UDP) encapsulation port
+	TTL     uint8          `json:"ttl"`
+	MTU     int            `json:"mtu"`
+	NoDF    bool           `json:"no_df,omitempty"`
+	DSCP    uint8          `json:"dscp,omitempty"`
+	Addrs   []netip.Prefix `json:"addrs"`
+	Parent  string         `json:"parent,omitempty"`
 
 	// Side is this node's side of the tunnel (0 or 1); keys are derived
 	// per direction from Secret, which never leaves the node in a spec.
@@ -348,6 +359,7 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 	s := &LinkSpec{
 		Name:      Ifname(t.Name),
 		Tunnel:    t.Name,
+		KeyName:   t.KeyName(),
 		Kind:      t.Kind,
 		Local:     local,
 		Remote:    remote,

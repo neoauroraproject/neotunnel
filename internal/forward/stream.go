@@ -25,7 +25,7 @@ func streamRelays(st *config.State, f config.Forward, t config.Tunnel, byName ma
 	if len(ports) > MaxRelayPorts {
 		return nil, fmt.Errorf("relay mode supports up to %d ports per forward", MaxRelayPorts)
 	}
-	via := relay.Via{Tunnel: t.Name, Secret: t.Secret, Side: me, Exit: netip.AddrPortFrom(exit, relay.RelayPort), Cipher: cipher, Pool: poolSize(t)}
+	via := relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Exit: netip.AddrPortFrom(exit, relay.RelayPort), Cipher: cipher, Pool: poolSize(t)}
 	for _, n := range []string{t.Net4, t.Net6} {
 		if far, ok := config.Inner(n, 1-me); ok && n != "" {
 			via.Inside = netip.AddrPortFrom(far.Addr(), relay.RelayPort)
@@ -52,7 +52,7 @@ func socksRelay(st *config.State, f config.Forward, t config.Tunnel, byName map[
 		return relay.Spec{}, errors.New("the tunnel has no secret for the proxy; save it again")
 	}
 	me := sideOf(st, t)
-	via := relay.Via{Tunnel: t.Name, Secret: t.Secret, Side: me, Cipher: tunnelCipher(t, byName), Pool: poolSize(t)}
+	via := relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Cipher: tunnelCipher(t, byName), Pool: poolSize(t)}
 	for _, n := range []string{t.Net4, t.Net6} {
 		if far, ok := config.Inner(n, 1-me); ok && n != "" {
 			via.Exit = netip.AddrPortFrom(far.Addr(), relay.RelayPort)
@@ -104,6 +104,22 @@ func tunnelCipher(t config.Tunnel, byName map[string]config.Tunnel) string {
 	return ""
 }
 
+// farAddrs are the addresses a tunnel's far node connects from: its public
+// one and its inner ones.
+func farAddrs(st *config.State, t config.Tunnel) []netip.Addr {
+	me := sideOf(st, t)
+	var out []netip.Addr
+	if a, err := netip.ParseAddr(t.Sides[1-me].Endpoint); err == nil {
+		out = append(out, a.Unmap())
+	}
+	for _, n := range []string{t.Net4, t.Net6} {
+		if p, ok := config.Inner(n, 1-me); ok && n != "" {
+			out = append(out, p.Addr())
+		}
+	}
+	return out
+}
+
 func sideOf(st *config.State, t config.Tunnel) int {
 	if st.IsSelf(t.Sides[1].Node) {
 		return 1
@@ -139,10 +155,7 @@ func relayPeer(st *config.State, t config.Tunnel, byName map[string]config.Tunne
 // relayExits lists the tunnels whose relay forwards end on this node: their
 // far node's forwards, with the ports the relay may connect to here.
 func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit {
-	fs := append([]config.Forward(nil), st.Forwards...)
-	if st.Managed != nil {
-		fs = append(fs, st.Managed.Forwards...)
-	}
+	fs := st.AllForwards()
 	var out []relay.Exit
 	for _, f := range fs {
 		if (f.ModeOf() != config.ForwardRelay && f.ModeOf() != config.ForwardSocks) || st.IsSelf(f.Node) {
@@ -155,7 +168,7 @@ func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit 
 			if name == "" || !ok || t.Disabled || t.Secret == "" || t.Sides[1-sideOf(st, t)].Node != f.Node {
 				continue
 			}
-			e := relay.Exit{Tunnel: t.Name, Secret: t.Secret, Side: sideOf(st, t)}
+			e := relay.Exit{Tunnel: t.KeyName(), Secret: t.Secret, Side: sideOf(st, t), From: farAddrs(st, t)}
 			if f.ModeOf() == config.ForwardSocks {
 				e.Egress = true
 			} else if f.To != 0 {

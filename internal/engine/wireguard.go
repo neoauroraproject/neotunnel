@@ -35,7 +35,7 @@ func wgPublic(priv [32]byte) [32]byte {
 
 // wgKeys returns this side's private key and the far end's public key.
 func wgKeys(s LinkSpec) (priv, peer [32]byte, err error) {
-	if priv, err = wgPrivate(s.Secret, s.Tunnel, s.Side); err != nil {
+	if priv, err = wgPrivate(s.Secret, s.keyName(), s.Side); err != nil {
 		return
 	}
 	if s.PeerKey != "" {
@@ -47,7 +47,7 @@ func wgKeys(s LinkSpec) (priv, peer [32]byte, err error) {
 		copy(peer[:], b)
 		return
 	}
-	other, err := wgPrivate(s.Secret, s.Tunnel, 1-s.Side)
+	other, err := wgPrivate(s.Secret, s.keyName(), 1-s.Side)
 	if err != nil {
 		return
 	}
@@ -57,7 +57,7 @@ func wgKeys(s LinkSpec) (priv, peer [32]byte, err error) {
 // WireGuardPublicKey returns the public key of a side of a tunnel, to give
 // to a far end that is configured by hand.
 func WireGuardPublicKey(t config.Tunnel, side int) (string, error) {
-	priv, err := wgPrivate(t.Secret, t.Name, side)
+	priv, err := wgPrivate(t.Secret, t.KeyName(), side)
 	if err != nil {
 		return "", err
 	}

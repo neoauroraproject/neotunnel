@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -84,7 +85,13 @@ func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(v)
 }
 
-// fromMaster allows a request only if the client holds our master's key.
+type masterKey struct{}
+
+// master is the public key of the master a request comes from.
+func master(r *http.Request) string { k, _ := r.Context().Value(masterKey{}).(string); return k }
+
+// fromMaster allows a request only if the client holds the key of one of
+// our masters, and tells the handler which (see master).
 func (s *Server) fromMaster(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key, err := identity.PeerKey(r.TLS.PeerCertificates)
@@ -97,11 +104,15 @@ func (s *Server) fromMaster(h http.HandlerFunc) http.HandlerFunc {
 			fail(w, http.StatusInternalServerError, err)
 			return
 		}
-		if st.Managed == nil || subtle.ConstantTimeCompare([]byte(st.Managed.Master.PublicKey), []byte(key)) != 1 {
+		ok := false
+		for _, m := range st.Masters() {
+			ok = ok || subtle.ConstantTimeCompare([]byte(m.Master.PublicKey), []byte(key)) == 1
+		}
+		if !ok {
 			fail(w, http.StatusForbidden, errors.New("not my master"))
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(context.WithValue(r.Context(), masterKey{}, key)))
 	}
 }
 
@@ -183,7 +194,23 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, LocalStatus(st, s.Started))
+	out := LocalStatus(st, s.Started)
+	// A master hears about its own tunnels, by its own names, and what it
+	// must leave to the others.
+	key := master(r)
+	if m := st.MasterByKey(key); m != nil {
+		out.Revision = m.Revision
+	}
+	mine := out.Tunnels[:0]
+	for _, t := range out.Tunnels {
+		if t.master == key {
+			t.Name = t.keyName
+			mine = append(mine, t)
+		}
+	}
+	out.Tunnels = mine
+	out.Busy, out.BusyPorts = st.Busy(key)
+	writeJSON(w, http.StatusOK, out)
 }
 
 // LocalStatus reports this node's tunnels and counters.
@@ -202,6 +229,7 @@ func LocalStatus(st *config.State, started time.Time) Status {
 		out.Tunnels = append(out.Tunnels, TunnelStatus{
 			Name: t.Name, Iface: engine.Ifname(t.Name), Kind: string(t.Kind),
 			Up: ls.Up, MTU: ls.MTU, RxBytes: ls.RxBytes, TxBytes: ls.TxBytes,
+			master: t.MasterKey, keyName: t.KeyName(),
 		})
 	}
 	return out
@@ -213,12 +241,16 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
+	key := master(r)
 	st, err := config.Update(func(st *config.State) error {
-		m := st.Managed
+		m := st.MasterByKey(key)
+		if m == nil {
+			return errors.New("not my master")
+		}
 		if req.Revision < m.Revision {
 			return fmt.Errorf("stale revision %d < %d", req.Revision, m.Revision)
 		}
-		if err := safe.HoldManaged(req.Hold, req.HoldSeconds, m, time.Now()); err != nil {
+		if err := safe.HoldManaged(req.Hold, req.HoldSeconds, st, m, time.Now()); err != nil {
 			return err
 		}
 		m.Revision, m.Tunnels, m.Forwards = req.Revision, req.Tunnels, req.Forwards
@@ -233,6 +265,7 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	for _, e := range res.Errors {
 		resp.Errors = append(resp.Errors, e.Error())
 	}
+	resp.Busy, resp.BusyPorts = st.Busy(key)
 	if s.Applied != nil {
 		s.Applied()
 	}
@@ -303,6 +336,16 @@ func (s *Server) benchUp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, BenchUpResponse{Specs: specs})
 }
 
+// localName is the name on this node of the tunnel a master calls name.
+func localName(key, name string) string {
+	if st, err := config.Load(); err == nil {
+		if t, ok := st.ManagedFor(key, name); ok {
+			return t.Name
+		}
+	}
+	return name
+}
+
 // BenchIfname keeps temporary test interfaces apart from real tunnels.
 func BenchIfname(tunnel string) string { return "ntx-" + tunnel }
 
@@ -366,7 +409,7 @@ func (s *Server) excludeTraffic(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := traffic.RequestExclude(req.Tunnel, req.Bytes); err != nil {
+	if err := traffic.RequestExclude(localName(master(r), req.Tunnel), req.Bytes); err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -380,7 +423,11 @@ func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	engine.Restart(req.Tunnels, func() {
+	names := make([]string, len(req.Tunnels))
+	for i, n := range req.Tunnels {
+		names[i] = localName(master(r), n)
+	}
+	engine.Restart(names, func() {
 		if st, err := config.Load(); err == nil {
 			engine.Apply(st)
 		}

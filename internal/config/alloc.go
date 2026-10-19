@@ -45,6 +45,19 @@ func (s *State) Allocate(t *Tunnel) error {
 		return err
 	}
 	used := s.usedNets()
+	// Subnets the far server already uses for another main server's tunnels.
+	busy, _ := s.peerBusy(*t)
+	taken := func(p netip.Prefix) bool {
+		if used[p] {
+			return true
+		}
+		for _, b := range busy {
+			if b.Overlaps(p) {
+				return true
+			}
+		}
+		return false
+	}
 	if ki.Carry4 && t.Net4 == "" {
 		base := Pool4.Addr().As4()
 		start := binary.BigEndian.Uint32(base[:])
@@ -53,7 +66,7 @@ func (s *State) Allocate(t *Tunnel) error {
 			var a [4]byte
 			binary.BigEndian.PutUint32(a[:], start+off)
 			p := netip.PrefixFrom(netip.AddrFrom4(a), 30)
-			if !used[p] {
+			if !taken(p) {
 				t.Net4 = p.String()
 				used[p] = true
 				break
@@ -69,7 +82,7 @@ func (s *State) Allocate(t *Tunnel) error {
 			a := ula
 			binary.BigEndian.PutUint16(a[6:8], i)
 			p := netip.PrefixFrom(netip.AddrFrom16(a), 64)
-			if !used[p] {
+			if !taken(p) {
 				t.Net6 = p.String()
 				break
 			}
@@ -80,6 +93,9 @@ func (s *State) Allocate(t *Tunnel) error {
 	}
 	if (t.Kind == KindVXLAN || t.Kind == KindGENEVE) && t.VNI == 0 {
 		t.VNI = keyFor(t.Name) & 0xffffff
+		if _, _, vni := s.PeerClash(*t); vni {
+			s.NewVNI(t)
+		}
 	}
 	if t.NeedsSecret() && t.Secret == "" {
 		t.Secret = NewSecret()

@@ -75,12 +75,32 @@ func TestAcceptRules(t *testing.T) {
 		t.Error("older revision accepted")
 	}
 
-	other, _ := Encode(newID(t), payload(9))
+	// Another main server adds itself next to the first; its key updates
+	// only its own part.
+	p2 := payload(9)
+	p2.Master.Name, p2.Peer = "hub2", "tr"
+	other, _ := Encode(newID(t), p2)
 	po, _ := Decode(other)
-	if Accept(st, po, false) == nil {
-		t.Error("setup key from a different master accepted without --force")
+	if err := Accept(st, po, false); err != nil {
+		t.Fatalf("second master refused: %v", err)
 	}
-	if Accept(st, po, true) != nil {
-		t.Error("--force should switch masters")
+	if ms := st.Masters(); len(ms) != 2 || ms[0].Revision != 5 || ms[1].Revision != 9 || ms[1].Self != "tr" || !st.IsSelf("tr") || !st.IsSelf("edge") {
+		t.Fatalf("masters %+v", ms)
+	}
+	if Accept(st, p1, false) != nil || len(st.Masters()) != 2 {
+		t.Error("the first master's key again should update its part only")
+	}
+
+	// A master with a server named like this one would confuse the sides.
+	p3 := payload(1)
+	p3.Master.Name = "tr"
+	clash, _ := Encode(newID(t), p3)
+	pc, _ := Decode(clash)
+	if Accept(st, pc, false) == nil {
+		t.Error("master named like this server accepted")
+	}
+
+	if Accept(st, po, true) != nil || len(st.Masters()) != 1 || st.Managed.Master.Name != "hub2" {
+		t.Error("--force should leave only the new master")
 	}
 }

@@ -139,10 +139,8 @@ func printTunnel(st *config.State, t config.Tunnel) {
 	if t.QuotaGB > 0 {
 		extra += dim(fmt.Sprintf(" quota %g GB/month", t.QuotaGB))
 	}
-	if st.Managed != nil {
-		if _, local := st.Tunnel(t.Name); !local {
-			extra += dim(" (managed by " + st.Managed.Master.Name + ")")
-		}
+	if t.MasterName != "" {
+		extra += dim(" (managed by " + t.MasterName + ")")
 	}
 	fmt.Printf("  %s %-10s %-8s → %s%s\n", onOff(ls.Up), bold(t.Name), t.Kind, far, extra)
 	for _, n := range []string{t.Net4, t.Net6} {

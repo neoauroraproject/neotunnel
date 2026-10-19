@@ -119,6 +119,9 @@ func Apply(st *config.State) Result {
 	res.Errors = append(res.Errors, syncLanes(specs)...)
 	res.Errors = append(res.Errors, syncIPsec(specs)...)
 
+	// A master's tunnel that clashes with another here waits for its master
+	// to pick new addresses or a new port.
+	res.Errors = append(res.Errors, st.Conflicts()...)
 	all, fs := st.Effective()
 	fs = activeForwards(all, failover.Route(fs, all, failover.Load()))
 	links := make([]forward.Link, len(specs))
@@ -197,7 +200,7 @@ func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firew
 			n.Peers = append(n.Peers, a)
 		}
 	}
-	if m := st.Managed; m != nil {
+	for _, m := range st.Masters() {
 		if a := hostOnly(m.Master.Address); a != "" {
 			n.Peers = append(n.Peers, a)
 		}

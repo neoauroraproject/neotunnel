@@ -253,6 +253,8 @@
     try { S.traffic = (await api("GET", "traffic")) || {}; } catch { /* keep */ }
   }
 
+  // The servers that manage this one (older daemons report only one).
+  const masters = () => (S.ov && (S.ov.masters || (S.ov.master ? [S.ov.master] : []))) || [];
   const visible = () => (S.ov ? S.ov.tunnels.filter((t) => !t.carrier) : []);
   const tunnel = (name) => S.ov && S.ov.tunnels.find((t) => t.name === name);
   const rate = (name) => S.rates[name] || { rx: 0, tx: 0 };
@@ -429,7 +431,7 @@
     return html`<div class="dash">
       <header class="dash-head">
         <div class="id"><span class="mono up">${ov.node.name}</span><span class="mono faint">${ov.node.address || ""}</span>
-          <span class="faint">روشن ${fmtUptime(ov.node.uptime_s)}</span>${ov.master ? html`<span class="faint">مدیریت از ${ov.master.name}</span>` : ""}</div>
+          <span class="faint">روشن ${fmtUptime(ov.node.uptime_s)}</span>${masters().length ? html`<span class="faint">مدیریت از ${masters().map((m) => m.name).join("، ")}</span>` : ""}</div>
         <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط"}</span><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>
       </header>
       <section class="readouts">
@@ -473,7 +475,7 @@
       if (!groups.has(p.name)) groups.set(p.name, { key: p.name, name: p.name, ip: p.address, tunnels: [], paired: p.paired });
       const g = groups.get(p.name); g.paired = p.paired; g.ip = p.address; g.version = p.version;
     }
-    if (ov.master && !groups.size) groups.set(ov.master.name, { key: ov.master.name, name: ov.master.name, ip: ov.master.address.replace(/:\d+$/, ""), tunnels: [], paired: ov.master.paired });
+    for (const m of masters()) if (!groups.has(m.name)) groups.set(m.name, { key: m.name, name: m.name, ip: m.address.replace(/:\d+$/, ""), tunnels: [], paired: m.paired });
     return [...groups.values()];
   }
 
@@ -764,7 +766,7 @@
       </div>` : ""}
       ${tab === "limits" ? html`<div class="dpane" data-key="lim-${t.name}">${limitsBlock(t, st)}</div>` : ""}
       ${tab === "settings" || t.managed ? html`<div class="dpane" data-key="set-${t.name}">
-      ${t.managed ? html`<div class="note">این تانل را سرور اصلی (${S.ov.master ? S.ov.master.name : ""}) تعریف کرده؛ تنظیماتش را از همان‌جا تغییر دهید.</div>` : html`<form class="stack" data-form="tunnel-settings" data-name="${t.name}">
+      ${t.managed ? html`<div class="note">این تانل را سرور اصلی (${t.peer || ""}) تعریف کرده؛ تنظیماتش را از همان‌جا تغییر دهید.</div>` : html`<form class="stack" data-form="tunnel-settings" data-name="${t.name}">
         ${profileField(`tset.${t.name}`, st.profile, base.kind)}
         ${LANE_KINDS.includes(t.kind) ? lanesField(`tset.${t.name}`, st.lanes) : ""}
         <div class="field"><span class="lbl">رمزنگاری</span>
@@ -844,7 +846,7 @@
   // ---------- servers ----------
   function viewServers() {
     const ov = S.ov;
-    const master = ov.master ? html`<div class="note ${ov.master.paired ? "ok" : "warn"}" style="margin-bottom:16px">این سرور توسط <b>${ov.master.name}</b> (<span class="ltr">${ov.master.address}</span>) مدیریت می‌شود ${ov.master.paired ? "و به آن متصل است." : "ولی هنوز به آن نرسیده؛ سرویس مدام تلاش می‌کند."} تانل‌های آن فقط از پنل سرور اصلی تغییر می‌کنند.</div>` : "";
+    const master = masters().map((m) => html`<div class="note ${m.paired ? "ok" : "warn"}" style="margin-bottom:16px">این سرور توسط <b>${m.name}</b> (<span class="ltr">${m.address}</span>) مدیریت می‌شود ${m.paired ? "و به آن متصل است." : "ولی هنوز به آن نرسیده؛ سرویس مدام تلاش می‌کند."} تانل‌های آن فقط از پنل همان سرور تغییر می‌کنند.</div>`);
     if (!ov.peers.length) return html`${master}<div class="panel"><div class="empty">${I.server(32)}<b>هنوز سروری اضافه نشده</b>سرور خارج را با نام و IP اضافه کنید؛ پنل دستور یک‌خطی نصب و اتصال را برای همان سرور می‌سازد.<br><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button></div></div>`;
     const old = ov.peers.filter((p) => p.paired && p.version && p.version !== ov.node.version);
     return html`${master}

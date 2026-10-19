@@ -285,7 +285,7 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 	bottomKind, _ := config.LookupKind(kinds[0])
 	port := req.Port
 	if port == 0 && (bottomKind.UDP || bottomKind.TCP) && bottomKind.Kind != config.KindVXLAN && bottomKind.Kind != config.KindGENEVE {
-		port = FreePort(st, bottomKind.Kind)
+		port = FreePort(st, bottomKind.Kind, req.Peer)
 	}
 
 	var defs []config.Tunnel
@@ -503,7 +503,7 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 			return t, err
 		}
 	} else if (ki.UDP || ki.TCP) && kind != config.KindVXLAN && kind != config.KindGENEVE && o.Over == "" {
-		t.Port = FreePort(st, kind)
+		t.Port = FreePort(st, kind, o.Peer)
 	}
 	self := config.Side{Node: st.Self, Endpoint: st.Address}
 	switch {
@@ -531,6 +531,9 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		t.Sides = [2]config.Side{self, {Endpoint: o.Remote}}
 	default:
 		return t, fmt.Errorf("choose a server or a remote IP")
+	}
+	if t.Port != 0 && st.PeerTakes(t, t.Port, ki.TCP) {
+		return t, fmt.Errorf("port %d is already used on %s by another main server's tunnel; pick another", t.Port, t.Sides[1].Node)
 	}
 	if err := checkTunnelID(t); err != nil {
 		return t, err
@@ -613,8 +616,11 @@ func portUser(st *config.State, port uint16) string {
 	return ""
 }
 
-// FreePort picks an unused UDP (or TCP) port for a kind that always needs one.
-func FreePort(st *config.State, kind config.Kind) uint16 {
+// FreePort picks an unused UDP (or TCP) port for a kind that always needs
+// one, also free on peer ("" = none) as far as it reports.
+func FreePort(st *config.State, kind config.Kind, peer string) uint16 {
+	ki, _ := config.LookupKind(kind)
+	to := config.Tunnel{Sides: [2]config.Side{{Node: peer}}}
 	start := uint16(51820)
 	switch kind {
 	case config.KindObfs:
@@ -623,7 +629,7 @@ func FreePort(st *config.State, kind config.Kind) uint16 {
 		start = 31443
 	}
 	for p := start; p < 65000; p++ {
-		if portAvailable(st, p, "") == nil {
+		if portAvailable(st, p, "") == nil && !st.PeerTakes(to, p, ki.TCP) {
 			return p
 		}
 	}
@@ -675,8 +681,11 @@ func RemoveTunnel(name string) ([]string, Change, error) {
 	}
 	t, ok := st.Tunnel(name)
 	if !ok {
-		if st.Managed != nil {
-			return nil, Change{}, fmt.Errorf("tunnel %q is managed by %s; change it there", name, st.Managed.Master.Name)
+		ts, _ := st.Effective()
+		for _, t := range ts {
+			if t.Name == name && t.MasterName != "" {
+				return nil, Change{}, fmt.Errorf("tunnel %q is managed by %s; change it there", name, t.MasterName)
+			}
 		}
 		return nil, Change{}, fmt.Errorf("unknown tunnel %q", name)
 	}
@@ -871,4 +880,54 @@ func bindable(proto string, port uint16) bool {
 	}
 	c.Close()
 	return true
+}
+
+// FixClashes moves this server's tunnels to peer off the inner subnets,
+// ports and VXLAN/GENEVE ids the peer reports taken there by another main
+// server's tunnels (a peer can have several main servers). Both ends of
+// these tunnels are ours, so they move together; the change is pushed.
+// It returns the tunnels it moved.
+func FixClashes(peer string) ([]string, Change, error) {
+	st, err := Node()
+	if err != nil {
+		return nil, Change{}, err
+	}
+	clashing := func(s *config.State) []int {
+		var out []int
+		for i, t := range s.Tunnels {
+			if _, ok := t.SideOf(peer); !ok {
+				continue
+			}
+			if nets, port, vni := s.PeerClash(t); nets || port || vni {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
+	if len(clashing(st)) == 0 {
+		return nil, Change{}, nil
+	}
+	var moved []string
+	_, ch, err := Commit([]string{peer}, func(s *config.State) error {
+		moved = nil
+		for _, i := range clashing(s) {
+			t := &s.Tunnels[i]
+			nets, port, vni := s.PeerClash(*t)
+			if nets {
+				t.Net4, t.Net6 = "", ""
+				if err := s.Allocate(t); err != nil {
+					return err
+				}
+			}
+			if port {
+				t.Port = FreePort(s, t.Kind, peer)
+			}
+			if vni {
+				s.NewVNI(t)
+			}
+			moved = append(moved, t.Name)
+		}
+		return nil
+	})
+	return moved, ch, err
 }

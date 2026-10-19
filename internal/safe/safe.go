@@ -14,6 +14,7 @@ package safe
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -81,7 +82,22 @@ var mu sync.Mutex
 
 func pendingPath() string { return filepath.Join(config.Dir, "safe.json") }
 func outcomePath() string { return filepath.Join(config.Dir, "safe-last.json") }
-func holdPath() string    { return filepath.Join(config.Dir, "safe-hold.json") }
+
+// holdPath is where a peer keeps the hold of one master's pending change:
+// the first master's in safe-hold.json, as before; another's next to it.
+func holdPath(master string) string {
+	if master == "" {
+		return filepath.Join(config.Dir, "safe-hold.json")
+	}
+	h := sha256.Sum256([]byte(master))
+	return filepath.Join(config.Dir, "safe-hold-"+hex.EncodeToString(h[:6])+".json")
+}
+
+// holdPaths lists the hold files there are.
+func holdPaths() []string {
+	ps, _ := filepath.Glob(filepath.Join(config.Dir, "safe-hold*.json"))
+	return ps
+}
 
 func readJSON(path string, v any) bool {
 	b, err := os.ReadFile(path)
@@ -275,54 +291,65 @@ func Restore(st *config.State, snap Snapshot) {
 // before, kept until the master confirms or the deadline passes.
 type Hold struct {
 	ID       string           `json:"id"`
+	Master   string           `json:"master,omitempty"` // the master's key ("" = the first)
 	Deadline time.Time        `json:"deadline"`
 	Revision uint64           `json:"revision"`
 	Tunnels  []config.Tunnel  `json:"tunnels,omitempty"`
 	Forwards []config.Forward `json:"forwards,omitempty"`
 }
 
-func loadHold() *Hold {
+func loadHold(path string) *Hold {
 	var h Hold
-	if !readJSON(holdPath(), &h) || h.ID == "" {
+	if !readJSON(path, &h) || h.ID == "" {
 		return nil
 	}
 	return &h
+}
+
+// masterPath is the hold file of master m: safe-hold.json for the first.
+func masterPath(st *config.State, m *config.Managed) string {
+	if st.Managed == m {
+		return holdPath("")
+	}
+	return holdPath(m.Master.PublicKey)
 }
 
 // HoldManaged is called on a peer for a push that carries a hold, before
 // m is replaced: the first push of a change keeps m as it was; later
 // pushes of the same change keep that first snapshot. A push without a
 // hold (id "") drops any hold: it is the master's settled configuration.
-func HoldManaged(id string, seconds int, m *config.Managed, now time.Time) error {
+func HoldManaged(id string, seconds int, st *config.State, m *config.Managed, now time.Time) error {
 	mu.Lock()
 	defer mu.Unlock()
+	path := masterPath(st, m)
 	if id == "" {
-		os.Remove(holdPath())
+		os.Remove(path)
 		return nil
 	}
 	if seconds <= 0 || seconds > 600 {
 		seconds = int((Wait + PeerGrace) / time.Second)
 	}
-	h := loadHold()
+	h := loadHold(path)
 	if h == nil || h.ID != id {
-		h = &Hold{ID: id, Revision: m.Revision,
+		h = &Hold{ID: id, Master: m.Master.PublicKey, Revision: m.Revision,
 			Tunnels:  append([]config.Tunnel(nil), m.Tunnels...),
 			Forwards: append([]config.Forward(nil), m.Forwards...)}
 	}
 	h.Deadline = now.Add(time.Duration(seconds) * time.Second)
-	return writeJSON(holdPath(), h)
+	return writeJSON(path, h)
 }
 
 // ConfirmHold drops the hold of change id and reports whether it was held.
 func ConfirmHold(id string) bool {
 	mu.Lock()
 	defer mu.Unlock()
-	h := loadHold()
-	if h == nil || h.ID != id {
-		return false
+	for _, path := range holdPaths() {
+		if h := loadHold(path); h != nil && h.ID == id {
+			os.Remove(path)
+			return true
+		}
 	}
-	os.Remove(holdPath())
-	return true
+	return false
 }
 
 // ExpiredHold returns the hold whose deadline passed (and drops it), for
@@ -330,12 +357,13 @@ func ConfirmHold(id string) bool {
 func ExpiredHold(now time.Time) *Hold {
 	mu.Lock()
 	defer mu.Unlock()
-	h := loadHold()
-	if h == nil || now.Before(h.Deadline) {
-		return nil
+	for _, path := range holdPaths() {
+		if h := loadHold(path); h != nil && !now.Before(h.Deadline) {
+			os.Remove(path)
+			return h
+		}
 	}
-	os.Remove(holdPath())
-	return h
+	return nil
 }
 
 // RestoreManaged puts a hold's snapshot back into the managed state.

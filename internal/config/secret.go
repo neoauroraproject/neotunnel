@@ -56,7 +56,7 @@ func (t Tunnel) NeedsSecret() bool {
 // DeriveKey expands the tunnel secret into n bytes of key material for
 // label. Both ends derive the same keys; labels name the direction.
 func (t Tunnel) DeriveKey(label string, n int) ([]byte, error) {
-	return DeriveKey(t.Secret, t.Name, label, n)
+	return DeriveKey(t.Secret, t.KeyName(), label, n)
 }
 
 // DeriveKey expands a tunnel's base64 secret (see Tunnel.DeriveKey).

@@ -25,9 +25,12 @@ type State struct {
 	Forwards []Forward `json:"forwards,omitempty"`
 	Peers    []Peer    `json:"peers,omitempty"`
 
-	Managed  *Managed  `json:"managed,omitempty"`
-	Panel    *Panel    `json:"panel,omitempty"`
-	Defaults *Defaults `json:"defaults,omitempty"`
+	// Managed is the first server that manages this node, More the others
+	// (see Masters).
+	Managed  *Managed   `json:"managed,omitempty"`
+	More     []*Managed `json:"more_masters,omitempty"`
+	Panel    *Panel     `json:"panel,omitempty"`
+	Defaults *Defaults  `json:"defaults,omitempty"`
 }
 
 // Defaults pre-fill the advanced options of new tunnels and forwards.
@@ -94,13 +97,24 @@ type Peer struct {
 	AESNI           *bool     `json:"aes_ni,omitempty"`
 	AppliedRevision uint64    `json:"applied_revision,omitempty"`
 	LastSeen        time.Time `json:"last_seen,omitempty"`
+	// Busy and BusyPorts are what the peer reports taken there by tunnels
+	// of its other main servers (inner subnets; "udp/51820" ports and
+	// VXLAN/GENEVE ids): new tunnels to it get others.
+	Busy      []string `json:"busy_nets,omitempty"`
+	BusyPorts []string `json:"busy_ports,omitempty"`
 }
 
 func (p Peer) Paired() bool { return p.PublicKey != "" }
 
 type Tunnel struct {
 	Name string `json:"name"`
-	Kind Kind   `json:"kind"`
+	// Origin, MasterName and MasterKey are set on the copies of a master's
+	// tunnels this node runs (see Masters): the name both ends know when
+	// Name is a local one, and whose tunnel it is.
+	Origin     string `json:"-"`
+	MasterName string `json:"-"`
+	MasterKey  string `json:"-"`
+	Kind       Kind   `json:"kind"`
 	// Over names another tunnel whose inner addresses serve as this tunnel's
 	// underlay (e.g. ipip6 over sit for the classic "6to4" stack).
 	Over  string  `json:"over,omitempty"`
@@ -368,38 +382,14 @@ func (s *State) PeersOf(t Tunnel) []string {
 // Effective returns all tunnels and forwards this node must run, local and
 // managed. Use IsSelf to find this node's side of each tunnel.
 func (s *State) Effective() (ts []Tunnel, fs []Forward) {
-	for _, t := range s.Tunnels {
-		if _, ok := t.SideOf(s.Self); ok {
-			ts = append(ts, t)
-		}
-	}
-	for _, f := range s.Forwards {
-		if f.Node == s.Self {
-			fs = append(fs, f)
-		}
-	}
-	if m := s.Managed; m != nil {
-		for _, t := range m.Tunnels {
-			if _, ok := t.SideOf(m.Self); ok {
-				ts = append(ts, t)
-			}
-		}
-		for _, f := range m.Forwards {
-			if f.Node == m.Self {
-				fs = append(fs, f)
-			}
-		}
-	}
+	ts, fs, _ = s.effective()
 	return ts, fs
 }
 
 // ReturnPaths lists this node's tunnels that carry transparent forwards from
 // the other side: replies to those clients must go back through the tunnel.
 func (s *State) ReturnPaths() []string {
-	fs := append([]Forward(nil), s.Forwards...)
-	if s.Managed != nil {
-		fs = append(fs, s.Managed.Forwards...)
-	}
+	fs := s.AllForwards()
 	ts, _ := s.Effective()
 	seen := map[string]bool{}
 	var out []string
@@ -425,9 +415,17 @@ func (s *State) ReturnPaths() []string {
 }
 
 // IsSelf reports whether a node name in a definition refers to this node,
-// either by our own name or by the name our master gave us.
+// either by our own name or by a name one of our masters gave us.
 func (s *State) IsSelf(node string) bool {
-	return node == s.Self || (s.Managed != nil && node == s.Managed.Self)
+	if node == s.Self {
+		return true
+	}
+	for _, m := range s.Masters() {
+		if node == m.Self {
+			return true
+		}
+	}
+	return false
 }
 
 // Speed profiles.

@@ -139,13 +139,13 @@ func TestPeerHold(t *testing.T) {
 	config.Dir = t.TempDir()
 	now := time.Now()
 	m := &config.Managed{Revision: 7, Tunnels: []config.Tunnel{{Name: "t1", MTU: 1400}}}
-	if err := HoldManaged("c1", 75, m, now); err != nil {
+	if err := HoldManaged("c1", 75, &config.State{Managed: m}, m, now); err != nil {
 		t.Fatal(err)
 	}
 	// The master's change lands; a second push of the same change keeps the
 	// first snapshot.
 	m.Revision, m.Tunnels[0].MTU = 8, 1280
-	HoldManaged("c1", 70, m, now)
+	HoldManaged("c1", 70, &config.State{Managed: m}, m, now)
 	if h := ExpiredHold(now.Add(69 * time.Second)); h != nil {
 		t.Fatal("expired early")
 	}
@@ -162,13 +162,13 @@ func TestPeerHold(t *testing.T) {
 	}
 
 	// Confirmed: nothing to put back.
-	HoldManaged("c2", 75, m, now)
+	HoldManaged("c2", 75, &config.State{Managed: m}, m, now)
 	if ConfirmHold("other") || !ConfirmHold("c2") || ExpiredHold(now.Add(time.Hour)) != nil {
 		t.Fatal("confirm")
 	}
 	// A settled push (no hold) drops any hold.
-	HoldManaged("c3", 75, m, now)
-	HoldManaged("", 0, m, now)
+	HoldManaged("c3", 75, &config.State{Managed: m}, m, now)
+	HoldManaged("", 0, &config.State{Managed: m}, m, now)
 	if ConfirmHold("c3") {
 		t.Fatal("hold survived a settled push")
 	}

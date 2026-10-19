@@ -28,7 +28,7 @@ func espFor(s LinkSpec, from int) (espSA, error) {
 	if err != nil {
 		return espSA{}, err
 	}
-	b, err := config.DeriveKey(s.Secret, s.Tunnel, fmt.Sprintf("esp %s %d>%d", c.Name, from, 1-from), 4+c.KeyLen)
+	b, err := config.DeriveKey(s.Secret, s.keyName(), fmt.Sprintf("esp %s %d>%d", c.Name, from, 1-from), 4+c.KeyLen)
 	if err != nil {
 		return espSA{}, err
 	}

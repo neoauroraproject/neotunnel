@@ -33,7 +33,7 @@ func nodeCmd() *cobra.Command {
 			}
 			title("This node")
 			fmt.Printf("  name     %s\n  address  %s\n  key      %s\n", bold(st.Self), st.Address, dim(identity.Fingerprint(id.PublicString())))
-			if m := st.Managed; m != nil {
+			for _, m := range st.Masters() {
 				state := green("paired")
 				if m.EnrollToken != "" {
 					state = yellow("waiting to reach master")

@@ -23,7 +23,7 @@ func TestSafeConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := safe.HoldManaged("c1", 75, m, time.Now()); err != nil {
+	if err := safe.HoldManaged("c1", 75, &config.State{Managed: m}, m, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.SafeConfirm(ctx, "other"); err == nil {

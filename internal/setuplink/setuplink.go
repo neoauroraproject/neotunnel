@@ -93,23 +93,31 @@ func Decode(setupKey string) (*Payload, error) {
 	return &p, nil
 }
 
-// Accept merges a verified payload into the peer's state. It refuses keys
-// from a different master (unless force) and keys older than what's applied.
+// Accept merges a verified payload into the peer's state: it updates the
+// master's part when the key is from one of this server's masters, else
+// adds the master next to the others (a server may have several). It
+// refuses keys older than what's applied, and force replaces every master
+// with this one.
 func Accept(st *config.State, p *Payload, force bool) error {
-	if m := st.Managed; m != nil && !force {
-		if m.Master.PublicKey != p.Master.PublicKey {
-			return fmt.Errorf("this server is managed by %q (%s); the setup key is from %q (%s). Use --force to switch",
-				m.Master.Name, identity.Fingerprint(m.Master.PublicKey), p.Master.Name, identity.Fingerprint(p.Master.PublicKey))
+	if force {
+		st.Managed, st.More = nil, nil
+	}
+	m := st.MasterByKey(p.Master.PublicKey)
+	if m != nil && p.Revision < m.Revision {
+		return fmt.Errorf("setup key is older (revision %d) than the applied configuration (revision %d)", p.Revision, m.Revision)
+	}
+	if m == nil {
+		if err := namesFit(st, p); err != nil {
+			return err
 		}
-		if p.Revision < m.Revision {
-			return fmt.Errorf("setup key is older (revision %d) than the applied configuration (revision %d)", p.Revision, m.Revision)
-		}
+		m = &config.Managed{}
+		st.AddMaster(m)
 	}
 	token := p.EnrollToken
-	if m := st.Managed; token == "" && m != nil && m.Master.PublicKey == p.Master.PublicKey {
+	if token == "" {
 		token = m.EnrollToken
 	}
-	st.Managed = &config.Managed{
+	*m = config.Managed{
 		Master:      p.Master,
 		Self:        p.Peer,
 		Revision:    p.Revision,
@@ -119,6 +127,27 @@ func Accept(st *config.State, p *Payload, force bool) error {
 	}
 	if st.Self == "" {
 		st.Self = p.Peer
+	}
+	return nil
+}
+
+// namesFit refuses a new master whose servers go by a name this server
+// already answers to: its tunnels would look like they start here.
+func namesFit(st *config.State, p *Payload) error {
+	self := st.SelfNames()
+	names := map[string]bool{p.Master.Name: true}
+	for _, t := range p.Tunnels {
+		for _, sd := range t.Sides {
+			if sd.Node != "" && sd.Node != p.Peer {
+				names[sd.Node] = true
+			}
+		}
+	}
+	for n := range names {
+		if self[n] {
+			return fmt.Errorf("%q (%s) has a server named %q, which is also a name of this server; rename one of them first",
+				p.Master.Name, identity.Fingerprint(p.Master.PublicKey), n)
+		}
 	}
 	return nil
 }

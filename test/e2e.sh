@@ -30,7 +30,7 @@ cleanup() {
   set +e
   for p in $(jobs -p); do kill "$p" 2>/dev/null; done
   [ -f "$WORK/edge.pid" ] && kill "$(cat "$WORK/edge.pid")" 2>/dev/null
-  for ns in $HUB $EDGE $CLIENT; do ip netns del $ns 2>/dev/null; done
+  for ns in $HUB $EDGE $CLIENT nt-e2e-hub2; do ip netns del $ns 2>/dev/null; done
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -473,6 +473,42 @@ ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-g1)" >/dev/null || fail "pin
 api -X PATCH -d '{}' "$base/api/tunnels/g1" | grep -q error && fail "reset g1 settings"
 [ "$(mtu_of $EDGE nt-g1)" = "$g1mtu" ] || fail "g1 MTU not back to automatic"
 pass "safe apply: change that cut the agent path reverted on both servers"
+
+# 16d. A second main server: hub2 manages edge too. Its first tunnel is
+#      also called t1 and, before it can know about edge, gets the same inner
+#      subnet as hub's t1. edge accepts the second setup key, runs hub2's t1
+#      under a local name, and hub2 moves the tunnel to a free subnet once
+#      edge reports the clash; hub's t1 is never disturbed.
+HUB2=nt-e2e-hub2 HUB2_IP=192.0.3.1 EDGE2_IP=192.0.3.2
+ip netns add $HUB2
+ip link add veth-h2 netns $HUB2 type veth peer name veth-e2 netns $EDGE
+ip -n $HUB2 addr add $HUB2_IP/24 dev veth-h2; ip -n $EDGE addr add $EDGE2_IP/24 dev veth-e2
+ip -n $HUB2 link set lo up; ip -n $HUB2 link set veth-h2 up; ip -n $EDGE link set veth-e2 up
+in_hub2() { ip netns exec $HUB2 env NEOTUNNEL_DIR=$WORK/hub2 NO_COLOR=1 "$BIN" "$@"; }
+in_hub2 node --name hub2 --address $HUB2_IP >/dev/null
+ip netns exec $HUB2 env NEOTUNNEL_DIR=$WORK/hub2 "$BIN" daemon >"$WORK/hub2.log" 2>&1 & echo $! > "$WORK/hub2.pid"
+sleep 1
+in_hub2 peer add edge --address $EDGE2_IP >/dev/null || fail "hub2: add edge"
+in_hub2 tunnel add t1 --kind gre --peer edge >/dev/null 2>&1 || true # edge not paired yet
+grep -q '"net4": "10.77.0.0/30"' "$WORK/hub2/state.json" || fail "hub2's t1 should start on hub's subnet (it can't know yet)"
+key2=$(in_hub2 peer connect edge | grep -o "NT1\.[^']*" | head -1)
+out=$(in_edge apply "$key2" 2>&1) || { echo "$out"; fail "edge refused a second main server's setup key"; }
+grep -q "managed by 2 main servers" <<<"$out" || { echo "$out"; fail "edge does not report two main servers"; }
+in_edge node | grep -q "master.*hub2" || fail "edge does not list hub2 as a master"
+ip netns exec $HUB ping -c 2 -W 2 10.77.0.2 >/dev/null || fail "hub's t1 disturbed by the second master"
+# hub2 hears edge's report on its next refresh (once a minute) and moves t1.
+moved=""
+for i in $(seq 90); do
+  n=$(ip -n $EDGE -o link show | grep -oE 'nt-t1-[a-z0-9]{3}[@:]' | tr -d '@:' | head -1 || true)
+  if [ -n "$n" ] && a=$(inner $EDGE "$n") && [ -n "$a" ] && [ "$a" != "10.77.0.2" ] &&
+     ip netns exec $HUB2 ping -c 1 -W 1 "$a" >/dev/null 2>&1; then moved=$n; break; fi
+  sleep 1
+done
+[ -n "$moved" ] || { tail -20 "$WORK/hub2.log"; in_edge tunnel list; fail "hub2's t1 did not come up on edge"; }
+ip netns exec $HUB ping -c 2 -W 2 10.77.0.2 >/dev/null || fail "hub's t1 broken after hub2 moved"
+in_hub2 peer list | grep -q "edge.*in sync" || fail "hub2 not in sync with edge"
+pass "two main servers: edge runs both t1s (hub2's as $moved), hub2 moved its subnet off hub's"
+kill "$(cat "$WORK/hub2.pid")" 2>/dev/null; ip netns del $HUB2
 
 # 17. Uninstall from the command line removes everything, the program too.
 kill "$(cat "$WORK/edge.pid")"; sleep 0.5

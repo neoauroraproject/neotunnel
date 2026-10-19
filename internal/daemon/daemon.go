@@ -22,6 +22,7 @@ import (
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
+	"neotunnel/internal/manage"
 	"neotunnel/internal/probe"
 	"neotunnel/internal/safe"
 	"neotunnel/internal/traffic"
@@ -164,6 +165,28 @@ func startPanel(id *identity.Identity, store *traffic.Store, tracker *health.Tra
 	}()
 }
 
+// fixClashes moves our tunnels off what a peer reports taken there by
+// another main server's tunnels (see manage.FixClashes).
+func fixClashes() {
+	st, err := config.Load()
+	if err != nil {
+		return
+	}
+	for _, p := range st.Peers {
+		if !p.Paired() || (len(p.Busy) == 0 && len(p.BusyPorts) == 0) {
+			continue
+		}
+		moved, ch, err := manage.FixClashes(p.Name)
+		if err != nil {
+			log.Printf("tunnels to %s: %v", p.Name, err)
+			continue
+		}
+		if len(moved) > 0 {
+			log.Printf("%s uses their addresses or ports for another main server's tunnels; moved %v (%d error(s))", p.Name, moved, len(ch.Errors))
+		}
+	}
+}
+
 // watchPeers keeps each peer's version and last contact current, so the
 // panel can tell which servers are reachable and which need an upgrade.
 func watchPeers(ctx context.Context, id *identity.Identity) {
@@ -171,6 +194,7 @@ func watchPeers(ctx context.Context, id *identity.Identity) {
 	defer t.Stop()
 	for {
 		fleet.RefreshAll(ctx, id)
+		fixClashes()
 		select {
 		case <-ctx.Done():
 			return
@@ -182,10 +206,14 @@ func watchPeers(ctx context.Context, id *identity.Identity) {
 // tryRegister completes pairing for a node that received its setup key
 // while the master was unreachable.
 func tryRegister(ctx context.Context, id *identity.Identity, st *config.State) {
-	m := st.Managed
-	if m == nil || m.EnrollToken == "" {
-		return
+	for _, m := range st.Masters() {
+		if m.EnrollToken != "" {
+			register(ctx, id, m)
+		}
 	}
+}
+
+func register(ctx context.Context, id *identity.Identity, m *config.Managed) {
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := agent.Register(rctx, id, m); err != nil {
@@ -197,8 +225,8 @@ func tryRegister(ctx context.Context, id *identity.Identity, st *config.State) {
 		return // retry next tick
 	}
 	config.Update(func(s *config.State) error {
-		if s.Managed != nil {
-			s.Managed.EnrollToken = ""
+		if m := s.MasterByKey(m.Master.PublicKey); m != nil {
+			m.EnrollToken = ""
 		}
 		return nil
 	})

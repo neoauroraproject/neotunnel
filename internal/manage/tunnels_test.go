@@ -38,7 +38,7 @@ func TestPlanTCPTunnel(t *testing.T) {
 func TestFreePortSkipsUsedPorts(t *testing.T) {
 	st := testState()
 	st.Tunnels = []config.Tunnel{{Name: "o", Kind: config.KindObfs, Port: 31443, Sides: [2]config.Side{{Node: "hub"}, {Node: "edge"}}}}
-	if p := FreePort(st, config.KindTCP); p != 31444 {
+	if p := FreePort(st, config.KindTCP, ""); p != 31444 {
 		t.Errorf("got port %d", p)
 	}
 }

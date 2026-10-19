@@ -32,6 +32,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,6 +80,9 @@ type Exit struct {
 	// Egress: the far node runs a proxy over this tunnel, whose connections
 	// leave to the internet from here.
 	Egress bool
+	// From are the far node's addresses: when two tunnels here have the same
+	// name (from two main servers), a connection is matched by its source.
+	From []netip.Addr
 }
 
 func purpose(cipher string) string {
@@ -368,13 +372,16 @@ func (m *Manager) SyncExits(exits []Exit) error {
 		}
 		return nil
 	}
+	// Tunnels of two main servers may share a name; their secrets differ.
 	byName := map[string]Exit{}
 	for _, e := range exits {
-		if cur, ok := byName[e.Tunnel]; ok {
+		k := e.Tunnel + "\x00" + e.Secret
+		if cur, ok := byName[k]; ok {
 			e.Ports = append(append([]uint16(nil), cur.Ports...), e.Ports...)
 			e.Egress = e.Egress || cur.Egress
+			e.From = append(append([]netip.Addr(nil), cur.From...), e.From...)
 		}
-		byName[e.Tunnel] = e
+		byName[k] = e
 	}
 	if m.exit == nil {
 		ln, err := net.ListenTCP("tcp", &net.TCPAddr{Port: m.exitPort})
@@ -444,11 +451,11 @@ func (m *Manager) handleExit(x *exitServer, c *net.TCPConn) {
 	c.SetReadDeadline(time.Time{})
 	done()
 	if q.host != "" {
-		m.egress(x, e.Tunnel, q, sc)
+		m.egress(x, e, q, sc)
 		return
 	}
 	// The tunnel's forwards may have changed while the connection waited.
-	if e, ok := (*x.exits.Load())[e.Tunnel]; !ok || !allowed(e.Ports, q.port) {
+	if e, ok := current(x, e); !ok || !allowed(e.Ports, q.port) {
 		return
 	}
 	m.Conns.Add(1)
@@ -482,7 +489,11 @@ func readPreamble(c net.Conn, exits map[string]Exit) (Exit, string, error) {
 	if _, err := io.ReadFull(c, cipher); err != nil {
 		return Exit{}, "", err
 	}
-	e, ok := exits[string(name[:len(name)-1])]
+	var from netip.Addr
+	if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		from = a.AddrPort().Addr().Unmap()
+	}
+	e, ok := findExit(exits, string(name[:len(name)-1]), from)
 	if !ok {
 		return Exit{}, "", errors.New("unknown tunnel")
 	}
@@ -490,6 +501,33 @@ func readPreamble(c net.Conn, exits map[string]Exit) (Exit, string, error) {
 		return Exit{}, "", err
 	}
 	return e, string(cipher), nil
+}
+
+// findExit finds the tunnel a relay connection names. When tunnels of two
+// main servers share the name, the connection's source tells them apart.
+func findExit(exits map[string]Exit, name string, from netip.Addr) (Exit, bool) {
+	var found []Exit
+	for _, e := range exits {
+		if e.Tunnel == name {
+			found = append(found, e)
+		}
+	}
+	if len(found) == 1 {
+		return found[0], true
+	}
+	for _, e := range found {
+		if slices.Contains(e.From, from) {
+			return e, true
+		}
+	}
+	return Exit{}, false
+}
+
+// current is e as the exits are now (they may change while a connection
+// waits in the pool).
+func current(x *exitServer, e Exit) (Exit, bool) {
+	cur, ok := (*x.exits.Load())[e.Tunnel+"\x00"+e.Secret]
+	return cur, ok
 }
 
 func allowed(ports []uint16, p uint16) bool {

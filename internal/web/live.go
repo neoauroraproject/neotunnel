@@ -119,8 +119,12 @@ func (l *Live) Overview() (Overview, error) {
 	if cc, _ := sysctl.Get("net.ipv4.tcp_congestion_control"); cc == "bbr" {
 		ov.Node.BBR = true
 	}
-	if m := st.Managed; m != nil {
-		ov.Master = &MasterInfo{Name: m.Master.Name, Address: m.Master.Address, Paired: m.EnrollToken == ""}
+	for _, m := range st.Masters() {
+		mi := MasterInfo{Name: m.Master.Name, Address: m.Master.Address, Paired: m.EnrollToken == ""}
+		if ov.Master == nil {
+			ov.Master = &mi
+		}
+		ov.Masters = append(ov.Masters, mi)
 	}
 	if p := st.Panel; p != nil {
 		ov.Panel = PanelInfo{URL: PanelURL(st), Port: p.Port, User: p.User}
@@ -207,11 +211,9 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 		if t.Kind == config.KindVXLAN || t.Kind == config.KindGENEVE {
 			v.VNI = t.VNI
 		}
-		if _, local := st.Tunnel(t.Name); !local {
+		if t.MasterName != "" {
 			v.Managed = true
-			if st.Managed != nil {
-				v.Peer = st.Managed.Master.Name
-			}
+			v.Peer = t.MasterName
 		}
 		if p, ok := config.Inner(t.Net4, me); ok {
 			v.Here4 = p.String()

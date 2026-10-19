@@ -297,8 +297,8 @@ func httpStatus(code byte) int {
 // ---------- exit ----------
 
 // egress connects a proxy's connection to the internet from this node.
-func (m *Manager) egress(x *exitServer, tunnel string, q request, sc net.Conn) {
-	if e, ok := (*x.exits.Load())[tunnel]; !ok || !e.Egress {
+func (m *Manager) egress(x *exitServer, e Exit, q request, sc net.Conn) {
+	if e, ok := current(x, e); !ok || !e.Egress {
 		sc.Write([]byte{repNotAllowed})
 		return
 	}

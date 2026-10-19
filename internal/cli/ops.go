@@ -172,7 +172,7 @@ func applyCmd() *cobra.Command {
 			return report(engine.Apply(st))
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "accept a setup key from a different main server")
+	cmd.Flags().BoolVar(&force, "force", false, "drop every other main server this server is managed by (a server can be managed by several)")
 	return cmd
 }
 
@@ -206,14 +206,22 @@ func applyKey(key string, force bool) error {
 		return err
 	}
 	success("configuration from %s accepted (revision %d, %d tunnel(s))", p.Master.Name, p.Revision, len(p.Tunnels))
+	if n := len(st.Masters()); n > 1 {
+		info("this server is now managed by %d main servers", n)
+	}
 	report(engine.Apply(st))
 
-	if st.Managed.EnrollToken != "" {
+	if m := st.MasterByKey(p.Master.PublicKey); m != nil && m.EnrollToken != "" {
 		ctx, cancel := ctxTimeout(10 * time.Second)
-		err := agent.Register(ctx, id, st.Managed)
+		err := agent.Register(ctx, id, m)
 		cancel()
 		if err == nil {
-			config.Update(func(s *config.State) error { s.Managed.EnrollToken = ""; return nil })
+			config.Update(func(s *config.State) error {
+				if m := s.MasterByKey(p.Master.PublicKey); m != nil {
+					m.EnrollToken = ""
+				}
+				return nil
+			})
 			success("paired with %s — future changes arrive automatically", p.Master.Name)
 		} else {
 			warn("could not reach %s yet (%v); the service keeps trying", p.Master.Name, err)

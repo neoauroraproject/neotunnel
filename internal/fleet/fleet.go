@@ -48,6 +48,9 @@ func Push(ctx context.Context, id *identity.Identity, st *config.State, peer str
 	config.Update(func(s *config.State) error {
 		if p, ok := s.Peer(peer); ok {
 			p.AppliedRevision, p.LastSeen = resp.Revision, time.Now()
+			if resp.Busy != nil || resp.BusyPorts != nil {
+				p.Busy, p.BusyPorts = resp.Busy, resp.BusyPorts
+			}
 		}
 		return nil
 	})
@@ -206,6 +209,7 @@ func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer 
 	config.Update(func(st *config.State) error {
 		if p, ok := st.Peer(peer); ok {
 			p.Version, p.Arch, p.LastSeen = s.Version, s.Arch, time.Now()
+			p.Busy, p.BusyPorts = s.Busy, s.BusyPorts
 			if s.Address6 != "" {
 				p.Address6 = s.Address6
 			}

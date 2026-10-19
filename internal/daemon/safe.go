@@ -79,10 +79,14 @@ func watchSafe(ctx context.Context, h safe.Hooks, reconcile func()) {
 		}
 		if hold := safe.ExpiredHold(time.Now()); hold != nil {
 			st, err := config.Update(func(s *config.State) error {
-				if s.Managed == nil {
-					return errors.New("no master")
+				m := s.Managed // holds from before several masters name none
+				if hold.Master != "" {
+					m = s.MasterByKey(hold.Master)
 				}
-				safe.RestoreManaged(s.Managed, hold)
+				if m == nil {
+					return errors.New("no such master")
+				}
+				safe.RestoreManaged(m, hold)
 				return nil
 			})
 			if err == nil {

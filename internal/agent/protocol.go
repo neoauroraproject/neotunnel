@@ -38,6 +38,9 @@ type SafeConfirmRequest struct {
 type ApplyResponse struct {
 	Revision uint64   `json:"revision"`
 	Errors   []string `json:"errors,omitempty"`
+	// What the asking master must leave to others (see Status).
+	Busy      []string `json:"busy_nets,omitempty"`
+	BusyPorts []string `json:"busy_ports,omitempty"`
 }
 
 type TunnelStatus struct {
@@ -49,6 +52,8 @@ type TunnelStatus struct {
 	RxBytes uint64 `json:"rx_bytes"`
 	TxBytes uint64 `json:"tx_bytes"`
 	Error   string `json:"error,omitempty"`
+
+	master, keyName string // whose tunnel, and its name there
 }
 
 type Status struct {
@@ -61,6 +66,11 @@ type Status struct {
 	Revision uint64         `json:"revision"`
 	Uptime   int64          `json:"uptime_s"`
 	Tunnels  []TunnelStatus `json:"tunnels"`
+	// Busy4 and BusyPorts are the inner subnets and ports ("udp/51820")
+	// this node uses for tunnels other than the asking master's (its own,
+	// or another master's): that master gives its tunnels others.
+	Busy      []string `json:"busy_nets,omitempty"`
+	BusyPorts []string `json:"busy_ports,omitempty"`
 }
 
 type ProbeRequest struct {

@@ -110,7 +110,7 @@ func (s *session) header() string {
 	b.WriteString(line + "\n")
 	b.WriteString(" " + dim("server ") + "  " + bold(st.Self) + "  " + pad(st.Address, 22-len(st.Self)) + dim("service ") + " " + svc + "\n")
 	b.WriteString(" " + dim("tunnels") + "  " + pad(fmt.Sprintf("%d of %d up", up, len(ts)), 24) + dim("servers ") + " " + fmt.Sprintf("%d of %d connected", paired, len(st.Peers)) + "\n")
-	if m := st.Managed; m != nil {
+	for _, m := range st.Masters() {
 		state := green("connected")
 		if m.EnrollToken != "" {
 			state = yellow("waiting to reach it")

@@ -49,7 +49,7 @@ func keepalive(s engine.LinkSpec, def time.Duration) time.Duration {
 
 func obfsConfig(s engine.LinkSpec) obfs.Config {
 	return obfs.Config{
-		Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
+		Name: s.Name, Tunnel: keyName(s), Secret: s.Secret, Side: s.Side,
 		Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
 		Padding: s.Padding, Keepalive: keepalive(s, 25*time.Second),
 	}
@@ -57,7 +57,7 @@ func obfsConfig(s engine.LinkSpec) obfs.Config {
 
 func tcpConfig(s engine.LinkSpec) tcptun.Config {
 	return tcptun.Config{
-		Name: s.Name, Tunnel: s.Tunnel, Secret: s.Secret, Side: s.Side,
+		Name: s.Name, Tunnel: keyName(s), Secret: s.Secret, Side: s.Side,
 		Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
 		Cipher: s.Cipher, Keepalive: keepalive(s, 15*time.Second), Streams: tcpStreams(s.Profile),
 	}
@@ -314,4 +314,12 @@ func tcpStreams(profile string) int {
 		return 8
 	}
 	return 4
+}
+
+// keyName is the name a link's keys come from (see engine.LinkSpec).
+func keyName(s engine.LinkSpec) string {
+	if s.KeyName != "" {
+		return s.KeyName
+	}
+	return s.Tunnel
 }

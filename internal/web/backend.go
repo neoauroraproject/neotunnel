@@ -80,8 +80,11 @@ type SafeView struct {
 }
 
 type Overview struct {
-	Node     NodeInfo        `json:"node"`
+	Node NodeInfo `json:"node"`
+	// Master is the first server that manages this one (older panels read
+	// it); Masters are all of them.
 	Master   *MasterInfo     `json:"master,omitempty"`
+	Masters  []MasterInfo    `json:"masters,omitempty"`
 	Revision uint64          `json:"revision"`
 	Tunnels  []TunnelView    `json:"tunnels"`
 	Peers    []PeerView      `json:"peers"`
