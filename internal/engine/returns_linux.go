@@ -93,7 +93,7 @@ func syncReturns(rs []forward.Return, specs []LinkSpec) []error {
 			route := &netlink.Route{LinkIndex: l.Attrs().Index, Dst: dst, Gw: toIP(peer.Addr()), Table: int(r.Mark)}
 			if s.Lanes > 1 {
 				// Replies spread over the lanes like any other traffic.
-				route = &netlink.Route{Dst: dst, Table: int(r.Mark), MultiPath: laneHops(lanes[s.Tunnel], peer.Addr())}
+				route = &netlink.Route{Dst: dst, Table: int(r.Mark), MultiPath: laneHops(lanes[s.Tunnel], laneGateway(s, peer.Addr()))}
 			}
 			if err := netlink.RouteReplace(route); err != nil {
 				errs = append(errs, fmt.Errorf("return route via %s: %w", s.Name, err))

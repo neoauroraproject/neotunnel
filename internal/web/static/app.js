@@ -602,10 +602,14 @@
     const sx = narrow() ? 90 : 240, ex = narrow() ? 400 : 560; // where ribbons start and end, of 1000
     const rtl = document.documentElement.dir !== "ltr", X = (x) => (rtl ? 1000 - x : x);
     const rates = ts.map((t) => { const r = rate(t.name); return r.rx + r.tx; });
-    const bundle = Math.min(130, H * 0.42), gap = 2;
-    const widths = rates.map((r) => (sum > 1500 ? Math.max(5, (r / sum) * bundle) : 7));
-    const tot = widths.reduce((a, w) => a + w, 0) + gap * (ts.length - 1);
-    let a = H / 2 - tot / 2;
+    // The ribbons fill the total's box edge to edge, at every rate: the box
+    // is as tall as the bundle, and the widths are scaled to fit it.
+    const n = ts.length, gap = 2;
+    const box = Math.round(Math.max(54, Math.min(n * 28, Math.max(130, H * 0.3))));
+    const room = box - gap * (n - 1);
+    const raw0 = rates.map((r) => (sum > 1500 ? Math.max(5, (r / sum) * room) : room / n));
+    const k = room / raw0.reduce((s, w) => s + w, 0), widths = raw0.map((w) => w * k);
+    let a = H / 2 - box / 2;
     const defs = [], paths = [];
     ts.forEach((t, i) => {
       const w = widths[i], y = top + rowH * (i + 0.5), ew = Math.max(3, w * 0.6);
@@ -635,7 +639,7 @@
     return html`${head}
       <div class="flow-stage" style="height:${H}px">
         ${raw(`<svg class="ribbons" viewBox="0 0 1000 ${H}" preserveAspectRatio="none" aria-hidden="true"><defs>${defs.join("")}</defs>${paths.join("")}</svg>`)}
-        <div class="source" style="top:${H / 2}px;width:calc(${sx / 10}% + 28px)"><div class="bar" style="flex:1"><small>مجموع لحظه‌ای</small><b data-live="total-rate">${fmtRate(sum)}</b></div><div class="tile ${sum > 1500 ? "" : "idle"}">${I.bolt(22)}</div></div>
+        <div class="source" style="top:${H / 2}px;height:${box}px;width:calc(${sx / 10}% + 28px)"><div class="bar" style="flex:1"><small>مجموع لحظه‌ای</small><b data-live="total-rate">${fmtRate(sum)}</b></div><div class="tile ${sum > 1500 ? "" : "idle"}">${I.bolt(22)}</div></div>
         <div class="outs" style="width:${(100 - ex / 10).toFixed(1)}%">${outs}</div>
       </div>
       ${flowFoot()}`;
@@ -1412,7 +1416,7 @@
     return html`<div class="speed">
       <div class="panel">${gauge(j)}</div>
       <div class="stack">
-        <div class="panel"><header><h2>اندازه‌گیری</h2><span class="aside">برای تست تانل و مقایسه، هر دو</span></header><div class="in stack">
+        <div class="panel"><header><h2>اندازه‌گیری</h2><span class="aside">برای تست تانل، مقایسه و سرعت در ساخت تانل</span></header><div class="in stack">
           <div class="sopts">
             <div class="field"><span class="lbl">مدت هر جهت</span>${opt("secs", [[5, "۵ ثانیه"], [10, "۱۰ ثانیه"], [20, "۲۰ ثانیه"], [30, "۳۰ ثانیه"]], "مدت")}</div>
             <div class="field"><span class="lbl">اتصال هم‌زمان</span>${opt("streams", [[1, "۱"], [4, "۴"], [8, "۸"], [16, "۱۶"], [32, "۳۲"]], "اتصال‌ها")}</div>
@@ -1908,7 +1912,7 @@
     const v = value || "balanced", tcp = kind === "tcp";
     const conns = { lean: 2, balanced: 4, max: 8 };
     const w = path === "wiz" ? S.wiz : null, live = w && canCheck(w);
-    return html`<div class="field"><span class="lbl">حالت سرعت ${live ? html`<span class="faint small">· با انتخاب هر حالت، سرعت همان ترکیب اندازه گرفته می‌شود</span>` : ""}</span>
+    return html`<div class="field"><span class="lbl">حالت سرعت ${live ? html`<span class="faint small">· با انتخاب هر حالت، سرعت همان ترکیب مثل «تست سرعت» اندازه گرفته می‌شود: هر جهت ${S.speed.secs} ثانیه با ${S.speed.streams} اتصال</span>` : ""}</span>
       <div class="profiles" role="radiogroup">${PROFILES.map(([id, l, d]) => html`<button type="button" role="radio" aria-checked="${v === id}" class="profile ${v === id ? "on" : ""}" data-act="set" data-path="${path}.profile" data-value="${id}">
         <b>${l}</b><span>${d.split(":")[0]}${tcp ? ` · ${conns[id]} اتصال` : ""}</span>${live ? speedChip(w.speeds[speedKey(w, id)]) : ""}</button>`)}</div>
       <span class="help">${PROFILES.find(([id]) => id === v)[2]}${tcp ? ` تانل TCP روی ${conns[v]} اتصال هم‌زمان کار می‌کند؛ هر جریان ترافیک روی یکی از آن‌ها می‌ماند.` : ""}</span></div>`;
@@ -2049,7 +2053,9 @@
   }
   // Speed of the current combination under one profile, measured with a
   // temporary tunnel; the wizard keeps all three so they can be compared.
-  const speedKey = (w, profile) => checkKey(w, w.mode, true) + "|" + profile;
+  // It runs as the speed page is set (seconds, connections), so the numbers
+  // compare with that page's.
+  const speedKey = (w, profile) => checkKey(w, w.mode, true) + "|" + profile + "|" + S.speed.secs + "x" + S.speed.streams;
   function speedChip(r) {
     if (!r) return html`<i class="sp faint">اندازه گرفته نشده</i>`;
     if (r.state === "run") return html`<i class="sp"><i class="spin"></i> در حال اندازه‌گیری…</i>`;
@@ -2064,7 +2070,7 @@
     const profile = w.profile || "balanced", key = speedKey(w, profile);
     if (w.speeds[key] && w.speeds[key].state !== "run") return;
     w.speeds[key] = { state: "run" }; drawModal();
-    const req = Object.assign(wizRequest(w, w.peer), { forward: "", speed: true });
+    const req = Object.assign(wizRequest(w, w.peer), { forward: "", speed: true, seconds: S.speed.secs, streams: S.speed.streams });
     try {
       const r = ((await api("POST", "check", req)) || [])[0] || {};
       w.speeds[key] = r.status === "done" ? { state: "ok", up: r.up_bps, down: r.down_bps } : { state: "bad", err: r.error };

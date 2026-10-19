@@ -2,9 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"neotunnel/internal/sysctl"
 )
@@ -25,6 +27,35 @@ import (
 // laneProto marks the routes NeoTunnel owns for lanes.
 const laneProto = netlink.RouteProtocol(77)
 
+// IPv6 refuses device-only next hops in a multipath route, so each lane
+// also holds a fixed link-local address for its side (fe80::4e54:1 or :2)
+// and IPv6 routes go via the other side's one on every lane.
+func laneLinkLocal(side int) netip.Addr {
+	return netip.AddrFrom16([16]byte{0: 0xfe, 1: 0x80, 12: 0x4e, 13: 0x54, 15: byte(side + 1)})
+}
+
+// laneGateway is the next hop toward far on a lane of s: far itself for
+// IPv4 (on-link), the far side's lane link-local address for IPv6.
+func laneGateway(s LinkSpec, far netip.Addr) netip.Addr {
+	if far.Is4() {
+		return far
+	}
+	return laneLinkLocal(1 - s.Side)
+}
+
+// addLaneLinkLocal puts this side's lane link-local address on a lane.
+func addLaneLinkLocal(s LinkSpec) error {
+	l, err := netlink.LinkByName(s.Name)
+	if err != nil {
+		return err
+	}
+	a := &netlink.Addr{IPNet: &net.IPNet{IP: toIP(laneLinkLocal(s.Side)), Mask: net.CIDRMask(64, 128)}, Flags: unix.IFA_F_NODAD}
+	if err := netlink.AddrReplace(l, a); err != nil {
+		return fmt.Errorf("link-local address on %s: %w", s.Name, err)
+	}
+	return nil
+}
+
 // lanesOf groups the specs of tunnels on several lanes by tunnel, lane 0
 // first.
 func lanesOf(specs []LinkSpec) (map[string][]LinkSpec, []string) {
@@ -42,8 +73,8 @@ func lanesOf(specs []LinkSpec) (map[string][]LinkSpec, []string) {
 	return by, order
 }
 
-// laneHops is one next hop per lane that exists; gw (if valid) is the far
-// end's inner address, on-link on every lane.
+// laneHops is one next hop per lane that exists; gw (if valid) is the same
+// on every lane: the far end's inner address on-link, or a link-local one.
 func laneHops(lanes []LinkSpec, gw netip.Addr) []*netlink.NexthopInfo {
 	var hops []*netlink.NexthopInfo
 	for _, s := range lanes {
@@ -53,7 +84,10 @@ func laneHops(lanes []LinkSpec, gw netip.Addr) []*netlink.NexthopInfo {
 		}
 		h := &netlink.NexthopInfo{LinkIndex: l.Attrs().Index}
 		if gw.IsValid() {
-			h.Gw, h.Flags = toIP(gw), int(netlink.FLAG_ONLINK)
+			h.Gw = toIP(gw)
+			if !gw.IsLinkLocalUnicast() {
+				h.Flags = int(netlink.FLAG_ONLINK)
+			}
 		}
 		hops = append(hops, h)
 	}
@@ -76,12 +110,20 @@ func syncLanes(specs []LinkSpec) []error {
 	wanted := map[string]bool{}
 	for _, name := range order {
 		lanes := by[name]
-		hops := laneHops(lanes, netip.Addr{})
-		if len(hops) == 0 {
-			continue
-		}
 		lead := lanes[0]
 		for i, far := range lead.Far {
+			hops := laneHops(lanes, netip.Addr{})
+			if far.Is6() {
+				for _, s := range lanes {
+					if err := addLaneLinkLocal(s); err != nil {
+						errs = append(errs, fmt.Errorf("tunnel %s: %w", name, err))
+					}
+				}
+				hops = laneHops(lanes, laneGateway(lead, far))
+			}
+			if len(hops) == 0 {
+				continue
+			}
 			r := &netlink.Route{Dst: hostNet(far), MultiPath: hops, Protocol: laneProto}
 			if far.Is4() && i < len(lead.Addrs) {
 				// IPv6 picks the lane's address by itself (and a source

@@ -29,6 +29,38 @@ type Rule struct {
 	Key string
 }
 
+// dnat is the rule's address family as nft names it in meta nfproto and in
+// dnat, and its target ("10.77.0.2", "[fd00::2]:443").
+func (r Rule) dnat() (fam, nat, target string) {
+	fam, nat, target = "ipv4", "ip", r.Target.String()
+	if r.Target.Is6() {
+		fam, nat, target = "ipv6", "ip6", "["+target+"]"
+	}
+	if r.To != 0 {
+		target += ":" + strconv.Itoa(int(r.To))
+	}
+	return fam, nat, target
+}
+
+// localnetIfaces are the tunnel interfaces that IPv4 forwards leave on:
+// connections this server makes to 127.0.0.1:port go out on them, and
+// their replies, addressed to 127.0.0.1 once un-NATed, come back on them,
+// which the kernel only accepts with route_localnet set there.
+func localnetIfaces(rs Ruleset) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range rs.Rules {
+		if r.Target.Is4() {
+			out[r.Iface] = true
+			for _, l := range r.Lanes {
+				out[l] = true
+			}
+		}
+	}
+	return out
+}
+
+func localnet(rs Ruleset) bool { return len(localnetIfaces(rs)) > 0 }
+
 type Ruleset struct {
 	Rules  []Rule
 	Ifaces []string // tunnel interfaces that get MSS clamping

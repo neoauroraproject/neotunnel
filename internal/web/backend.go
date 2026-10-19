@@ -42,8 +42,8 @@ type Backend interface {
 	Bench(ctx context.Context, peer string, only []string, o SpeedOptions, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error)
 	// Check brings a would-be tunnel up for a few seconds and reports whether
 	// traffic passes (all: every kind at once).
-	// With speed it also measures bandwidth, a few seconds each way.
-	Check(ctx context.Context, req manage.TunnelRequest, all, speed bool) ([]bench.Result, error)
+	// With speed set it also measures bandwidth, the way the speed test does.
+	Check(ctx context.Context, req manage.TunnelRequest, all bool, speed *SpeedOptions) ([]bench.Result, error)
 	// ProbeMTU measures the path MTU under a tunnel and remembers it.
 	ProbeMTU(ctx context.Context, name string) (MTUReport, error)
 	Traffic() map[string]traffic.Summary
@@ -89,6 +89,13 @@ func (s SpeedOptions) apply(o *bench.Options) {
 	if s.Streams > 0 {
 		o.Streams = min(s.Streams, 32)
 	}
+}
+
+// length is how long the test runs each way.
+func (s SpeedOptions) length() time.Duration {
+	o := bench.DefaultOptions()
+	s.apply(&o)
+	return o.Duration
 }
 
 // SafeView is a safe change waiting for confirmation, as the panel sees it.

@@ -210,6 +210,7 @@ func (s *Server) routes(m *http.ServeMux) {
 			manage.TunnelRequest
 			All   bool `json:"all"`
 			Speed bool `json:"speed"`
+			SpeedOptions
 		}
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
@@ -220,9 +221,15 @@ func (s *Server) routes(m *http.ServeMux) {
 			return
 		}
 		defer s.checking.Unlock()
-		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		limit := 45 * time.Second
+		var speed *SpeedOptions
+		if req.Speed {
+			speed = &req.SpeedOptions
+			limit += 2 * speed.length()
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), limit)
 		defer cancel()
-		res, err := b.Check(ctx, req.TunnelRequest, req.All, req.Speed)
+		res, err := b.Check(ctx, req.TunnelRequest, req.All, speed)
 		reply(w, res, err)
 	}))
 	m.HandleFunc("POST /api/jobs", s.authed(func(w http.ResponseWriter, r *http.Request) {

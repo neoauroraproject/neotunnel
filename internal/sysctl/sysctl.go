@@ -65,6 +65,16 @@ func EnsureForwarding() error { return set(forwarding) }
 // Set changes one value now (not persisted; the daemon re-applies it).
 func Set(key, value string) error { return set(map[string]string{key: value}) }
 
+// SetIface changes an interface's IPv4 value (net.ipv4.conf.<iface>.<key>)
+// now. Interface names may hold dots ("nt-g1.1"), which a key can't.
+func SetIface(iface, key, value string) error {
+	p := filepath.Join(root, "net", "ipv4", "conf", iface, key)
+	if b, err := os.ReadFile(p); err == nil && strings.TrimSpace(string(b)) == value {
+		return nil
+	}
+	return os.WriteFile(p, []byte(value), 0o644)
+}
+
 // ApplyBoost sets the profile now and persists it across reboots.
 func ApplyBoost() error {
 	all := map[string]string{}

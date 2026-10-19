@@ -131,6 +131,15 @@ pass "offline peer caught up with one command"
 [ "$(http_code http://198.18.0.1:9090/)" = 200 ] || fail "forward 9090 -> 8080 through ipip/udp"
 pass "ports 8080 and 9090(->8080) reach edge through two different tunnels"
 
+# 6b. A program on hub itself (an Xray outbound to 127.0.0.1:port) takes the
+#     same forwards: through loopback, hub's public and its tunnel address.
+for a in 127.0.0.1 $HUB_IP 10.77.0.1; do
+  ip netns exec $HUB curl -s -m 5 "http://$a:8080/" | grep -q hello-from-edge || fail "forward 8080 from hub itself via $a"
+done
+ip netns exec $HUB curl -s -m 5 http://127.0.0.1:9090/ | grep -q hello-from-edge || fail "forward 9090 -> 8080 from hub itself"
+[ "$(ip netns exec $HUB cat /proc/sys/net/ipv4/conf/nt-t1/route_localnet)" = 1 ] || fail "route_localnet not on for nt-t1"
+pass "forwards also serve hub's own programs at 127.0.0.1, its public and its tunnel address"
+
 # 7. Built-in test and benchmark.
 in_hub test t1 --duration 2s --pings 30 | tee "$WORK/test.txt"
 grep -q "Mbit/s\|Gbit/s" "$WORK/test.txt" || fail "test produced no throughput"
@@ -239,6 +248,12 @@ g4far=$(ip -n $EDGE -o -4 addr show dev nt-g4 | awk '{print $4}' | cut -d/ -f1)
 [ "$(ip -n $EDGE -o -4 addr show dev nt-g4.3 | awk '{print $4}')" = "$g4far/32" ] || fail "lanes do not share the inner address"
 [ "$(ip -n $HUB route show "$g4far" | grep -c 'nexthop')" = 4 ] || { ip -n $HUB route show "$g4far"; fail "no 4-way multipath route to $g4far"; }
 ip netns exec $HUB ping -c 3 -W 2 "$g4far" >/dev/null || fail "ping through gre on lanes"
+# IPv6 has no device-only multipath routes: its next hop is the far side's
+# lane link-local address on every lane.
+g4far6=$(ip -n $EDGE -o -6 addr show dev nt-g4 scope global | awk '{print $4}' | cut -d/ -f1)
+[ -n "$g4far6" ] || fail "no inner IPv6 address on lanes"
+[ "$(ip -n $HUB -6 route show "$g4far6" | grep -c 'nexthop via fe80::4e54:')" = 4 ] || { ip -n $HUB -6 route show "$g4far6"; fail "no 4-way IPv6 multipath route to $g4far6"; }
+ip netns exec $HUB ping -6 -c 3 -W 2 "$g4far6" >/dev/null || fail "IPv6 ping through gre on lanes"
 in_hub test g4 --duration 2s --pings 20 | tee "$WORK/lanetest.txt"
 grep -q "Mbit/s\|Gbit/s" "$WORK/lanetest.txt" || fail "no throughput through the lanes"
 used=0

@@ -47,6 +47,64 @@ func TestBuildTargetsFarEnd(t *testing.T) {
 	}
 }
 
+// An Xray outbound on the server itself to 127.0.0.1:443, or to one of its
+// own addresses, must take the forward too.
+func TestForwardFromThisServer(t *testing.T) {
+	st := modeState()
+	fs := []config.Forward{
+		{Node: "hub", Tunnel: "t1", Proto: "tcp", Ports: "443", Mode: config.ForwardTransparent},
+		{Node: "hub", Tunnel: "t1", Proto: "udp", Ports: "2053", To: 53},
+	}
+	rs, errs := Build(st, fs, []Link{{Name: "nt-t1", Tunnel: "t1"}})
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	s := Script(rs)
+	_, out, _ := strings.Cut(s, "chain output {")
+	out, _, _ = strings.Cut(out, "  }\n")
+	for _, want := range []string{
+		"type nat hook output priority -100;",
+		// No transparent mark: the far end can't answer 127.0.0.1.
+		"meta nfproto ipv4 fib daddr type local tcp dport { 443 } dnat ip to 10.77.0.2\n",
+		"meta nfproto ipv4 fib daddr type local udp dport { 2053 } dnat ip to 10.77.0.2:53\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output chain missing %q:\n%s", want, s)
+		}
+	}
+	for _, want := range []string{
+		`iifname "nt-*" ip daddr 127.0.0.0/8 drop`,
+		"type filter hook output priority -150;",
+		`iifname "nt-t1" ct status dnat udp sport { 2053 } counter name`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script missing %q:\n%s", want, s)
+		}
+	}
+	if !localnetIfaces(rs)["nt-t1"] {
+		t.Error("route_localnet not wanted on nt-t1")
+	}
+}
+
+func TestForwardFromThisServerIPv6(t *testing.T) {
+	st := &config.State{Self: "hub", Tunnels: []config.Tunnel{{
+		Name: "t6", Kind: config.KindIP6GRE, Net6: "fd00:77::/64",
+		Sides: [2]config.Side{{Node: "hub"}, {Node: "edge"}},
+	}}}
+	fs := []config.Forward{{Node: "hub", Tunnel: "t6", Proto: "tcp", Ports: "443"}}
+	rs, errs := Build(st, fs, []Link{{Name: "nt-t6", Tunnel: "t6"}})
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	s := Script(rs)
+	if !strings.Contains(s, "meta nfproto ipv6 ip6 daddr != ::1 fib daddr type local tcp dport { 443 } dnat ip6 to [") {
+		t.Errorf("IPv6 output rule:\n%s", s)
+	}
+	if localnet(rs) || strings.Contains(s, "127.0.0.0/8") {
+		t.Errorf("an IPv6-only forward needs no loopback routing:\n%s", s)
+	}
+}
+
 func TestForwardToOtherPort(t *testing.T) {
 	st := &config.State{Self: "hub", Tunnels: []config.Tunnel{{
 		Name: "de", Kind: config.KindIPIP6, Net4: "10.77.0.4/30",

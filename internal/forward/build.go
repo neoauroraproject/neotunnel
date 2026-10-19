@@ -172,14 +172,7 @@ func Script(rs Ruleset) string {
 	b.WriteString("  chain prerouting {\n    type nat hook prerouting priority dstnat; policy accept;\n")
 	transparent := map[string]bool{}
 	for _, r := range rs.Rules {
-		fam, nat := "ipv4", "ip"
-		target := r.Target.String()
-		if r.Target.Is6() {
-			fam, nat, target = "ipv6", "ip6", "["+target+"]"
-		}
-		if r.To != 0 {
-			target += ":" + strconv.Itoa(int(r.To))
-		}
+		fam, nat, target := r.dnat()
 		mark := ""
 		if r.Transparent {
 			transparent[r.Iface] = true
@@ -191,6 +184,35 @@ func Script(rs Ruleset) string {
 		}
 	}
 	b.WriteString("  }\n")
+	if len(rs.Rules) > 0 {
+		// Connections this server makes itself never pass prerouting: an
+		// Xray outbound here to 127.0.0.1:port, or to one of this server's
+		// own addresses, takes the same forwards on output. They are always
+		// masqueraded, transparent or not, since the far end can't answer
+		// a loopback address. IPv6 has no way out of ::1.
+		b.WriteString("  chain output {\n    type nat hook output priority -100; policy accept;\n")
+		for _, r := range rs.Rules {
+			fam, nat, target := r.dnat()
+			lo := ""
+			if r.Target.Is6() {
+				lo = "ip6 daddr != ::1 "
+			}
+			for _, p := range r.Proto {
+				fmt.Fprintf(&b, "    meta nfproto %s %sfib daddr type local %s dport { %s } dnat %s to %s\n",
+					fam, lo, p, r.Ports, nat, target)
+			}
+		}
+		b.WriteString("  }\n")
+	}
+	if localnet(rs) {
+		// Tunnels whose forwards serve 127.0.0.1 accept packets for the
+		// loopback network (route_localnet, see Apply), so the replies get
+		// back. Before NAT those replies are addressed to the tunnel's own
+		// address; anything sent to 127.0.0.0/8 through a tunnel is forged.
+		b.WriteString("  chain localnet {\n    type filter hook prerouting priority raw; policy accept;\n")
+		b.WriteString("    iifname \"nt-*\" ip daddr 127.0.0.0/8 drop\n")
+		b.WriteString("  }\n")
+	}
 	b.WriteString("  chain postrouting {\n    type nat hook postrouting priority srcnat; policy accept;\n")
 	seen := map[string]bool{}
 	for _, r := range rs.Rules {
@@ -231,6 +253,22 @@ func Script(rs Ruleset) string {
 		for _, r := range rs.Rules {
 			for _, p := range r.Proto {
 				fmt.Fprintf(&b, "    oifname != \"nt-*\" %s sport { %s } counter name %sd\n", p, r.Ports, counterName(r.Key))
+			}
+		}
+		b.WriteString("  }\n")
+		// The same for this server's own connections: counted on output
+		// before NAT, and their replies on input once un-NATed.
+		b.WriteString("  chain account_local_out {\n    type filter hook output priority -150; policy accept;\n")
+		for _, r := range rs.Rules {
+			for _, p := range r.Proto {
+				fmt.Fprintf(&b, "    fib daddr type local %s dport { %s } counter name %su\n", p, r.Ports, counterName(r.Key))
+			}
+		}
+		b.WriteString("  }\n")
+		b.WriteString("  chain account_local_in {\n    type filter hook input priority 110; policy accept;\n")
+		for _, r := range rs.Rules {
+			for _, p := range r.Proto {
+				fmt.Fprintf(&b, "    iifname %s ct status dnat %s sport { %s } counter name %sd\n", ifMatch(r.Iface, r.Lanes), p, r.Ports, counterName(r.Key))
 			}
 		}
 		b.WriteString("  }\n")
