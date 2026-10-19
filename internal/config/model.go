@@ -31,6 +31,9 @@ type State struct {
 	More     []*Managed `json:"more_masters,omitempty"`
 	Panel    *Panel     `json:"panel,omitempty"`
 	Defaults *Defaults  `json:"defaults,omitempty"`
+	// Fetch sends this server's own downloads from listed sites through a
+	// tunnel (nil = off).
+	Fetch *Fetch `json:"fetch,omitempty"`
 }
 
 // Defaults pre-fill the advanced options of new tunnels and forwards.
@@ -56,7 +59,18 @@ type Panel struct {
 	Path     string `json:"path"` // secret URL prefix, e.g. "/k3x9q2"
 	User     string `json:"user"`
 	PassHash string `json:"pass_hash"` // bcrypt
+	// Domain is the name the panel is opened at, and Cert where its
+	// certificate comes from: "acme" (Let's Encrypt, renewed by the daemon),
+	// "custom" (pasted in the panel) or "" (self-signed, opened by IP).
+	Domain string `json:"domain,omitempty"`
+	Cert   string `json:"cert,omitempty"`
 }
+
+// Panel certificate sources.
+const (
+	CertACME   = "acme"
+	CertCustom = "custom"
+)
 
 // Managed is the part of the state owned by this node's master.
 type Managed struct {
@@ -261,6 +275,9 @@ type Forward struct {
 	Listen string `json:"listen,omitempty"`
 	// Auth is "user:password" for a socks forward ("" = none).
 	Auth string `json:"auth,omitempty"`
+	// Fetch marks the socks forward a main server sends its peer for its
+	// downloads through the tunnel (see Fetch); it has no listener there.
+	Fetch bool `json:"fetch,omitempty"`
 }
 
 // Uses reports whether the forward can run on the named tunnel.
@@ -362,6 +379,9 @@ func (s *State) ForPeer(peer string) ([]Tunnel, []Forward) {
 		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay || f.ModeOf() == ForwardSocks) && (touches[f.Tunnel] || touches[f.Backup])) {
 			fs = append(fs, f)
 		}
+	}
+	if f, ok := s.fetchForward(peer); ok {
+		fs = append(fs, f)
 	}
 	return ts, fs
 }

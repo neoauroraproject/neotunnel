@@ -386,6 +386,40 @@ in_hub forward list | grep -q "proxy on 127.0.0.1:1080" || fail "forward list sh
 in_hub forward remove t1 1080 >/dev/null && in_hub forward remove e1 1082 >/dev/null || fail "remove proxies"
 pass "proxy: SOCKS5 and HTTP on one port leave from edge through the tunnel; loopback refused; password enforced"
 
+# 15b3. Downloads through a tunnel: hub's own connections to listed sites
+#       are redirected, go through t1 and leave from edge; other sites stay
+#       direct. fetch.test, which only edge can reach (hub's route to it is a
+#       dead end), stands in for a filtered GitHub.
+ip -n $EDGE link add fetch0 type dummy && ip -n $EDGE addr add 203.0.113.80/32 dev fetch0 && ip -n $EDGE link set fetch0 up
+ip -n $HUB link add dead0 type dummy && ip -n $HUB link set dead0 up && ip -n $HUB route add 203.0.113.0/24 dev dead0
+echo "203.0.113.80 fetch.test other.test" >> /etc/hosts
+mkdir -p "$WORK/fetchwww" && echo hello-fetch > "$WORK/fetchwww/index.html"
+ip netns exec $EDGE python3 -m http.server 80 --bind 203.0.113.80 --directory "$WORK/fetchwww" >/dev/null 2>&1 &
+sleep 1
+ip netns exec $HUB curl -s -m 2 http://fetch.test/ >/dev/null && fail "fetch.test reachable from hub without the tunnel (test setup)"
+fetch_running() { api "$base/api/settings/fetch" | grep -q "\"running\":$1"; }
+r=$(api -d '{"on":true,"tunnel":"t1","domains":["fetch.test"],"all":true}' "$base/api/settings/fetch")
+grep -q '"error"' <<<"$r" && { echo "$r"; fail "turn downloads through the tunnel on"; }
+for _ in $(seq 1 10); do fetch_running true && break; sleep 1; done
+fetch_running true || { api "$base/api/settings/fetch"; fail "downloads listener not running"; }
+ip netns exec $HUB nft list table inet neotunnel_fetch | grep -q "redirect to :7713" || fail "no downloads redirect"
+[ "$(ip netns exec $HUB curl -s -m 8 http://fetch.test/)" = hello-fetch ] || { api "$base/api/settings/fetch"; fail "listed site not reached through the tunnel"; }
+ip netns exec $HUB curl -s -m 3 http://other.test/ >/dev/null && fail "a site not listed went through the tunnel"
+api "$base/api/settings/fetch" | grep -q '"host":"fetch.test","via":"tunnel"' || fail "status does not show fetch.test through the tunnel"
+api -d '{"on":false,"tunnel":"t1","domains":["fetch.test"],"all":true}' "$base/api/settings/fetch" | grep -q '"error"' && fail "turn downloads off"
+for _ in $(seq 1 10); do fetch_running false && break; sleep 1; done
+ip netns exec $HUB nft list table inet neotunnel_fetch 2>/dev/null | grep -q redirect && fail "redirect left after turning downloads off"
+ip netns exec $HUB curl -s -m 3 http://fetch.test/ >/dev/null && fail "listed site still went through the tunnel after turning it off"
+pass "downloads: a listed site goes through the tunnel and leaves from edge, others stay direct; off removes the redirect"
+
+# 15b4. Backup: one file with the state and the server's key, which the
+#       restore page reads back as this same server.
+api "$base/api/backup" > "$WORK/backup.json"
+grep -q '"format": "neotunnel-backup"' "$WORK/backup.json" && grep -q '"identity.key"' "$WORK/backup.json" || fail "backup lacks the format or the key"
+api --data-binary @"$WORK/backup.json" "$base/api/backup/inspect" | tee "$WORK/inspect.json" | grep -q '"node":"hub"' || { cat "$WORK/inspect.json"; fail "backup preview"; }
+grep -q '"same_key":true' "$WORK/inspect.json" && grep -q '"edge"' "$WORK/inspect.json" || { cat "$WORK/inspect.json"; fail "backup preview misses the key or the peer"; }
+pass "backup: state and key in one file, read back as this server"
+
 # 15c. Optional (NT_BENCH=1): throughput of a TCP forward through a GENEVE
 #      tunnel vs a relay forward, on a long lossy path (netem on the link
 #      between the servers, both directions).

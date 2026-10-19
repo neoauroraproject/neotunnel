@@ -30,6 +30,12 @@ type Spec struct {
 	Socks  bool
 	Listen netip.Addr
 	Auth   string
+	// FetchSites makes it the downloads listener (see fetch.go): connections
+	// redirected here go to Via's far node when they name one of these
+	// sites (comma-separated), directly otherwise. FetchStrict never sends
+	// a listed site directly.
+	FetchSites  string
+	FetchStrict bool
 }
 
 func (s Spec) key() string { return fmt.Sprintf("%s/%d", s.Proto, s.Port) }
@@ -95,6 +101,8 @@ func (m *Manager) Sync(specs []Spec) []error {
 		var srv *server
 		var err error
 		switch {
+		case s.FetchSites != "":
+			srv, err = m.serveFetch(s)
 		case s.Socks:
 			srv, err = m.serveSocks(s)
 		case s.Via.Tunnel != "" && s.Proto == "tcp":

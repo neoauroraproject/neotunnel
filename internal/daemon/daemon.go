@@ -20,6 +20,7 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
 	"neotunnel/internal/fleet"
+	"neotunnel/internal/forward"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/manage"
@@ -111,16 +112,23 @@ func Run(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			store.Save()
+			stop(store)
 			return nil
 		case <-term:
-			store.Save()
+			stop(store)
 			return nil
 		case <-t.C:
 		case <-hup:
 		case <-kick:
 		}
 	}
+}
+
+// stop is the daemon's last work: the traffic totals are saved, and the
+// downloads redirect goes with the listener it sends connections to.
+func stop(store *traffic.Store) {
+	store.Save()
+	forward.StopFetch()
 }
 
 var (
@@ -155,7 +163,7 @@ func startPanel(id *identity.Identity, store *traffic.Store, history *metrics.St
 		Backend: &web.Live{ID: id, Started: time.Now(), Problems: currentProblems, Store: store, History: history, Health: tracker, Reconcile: reconcile, Safe: hooks},
 		Path:    st.Panel.Path,
 		Restart: func() {
-			log.Printf("panel port changed; restarting")
+			log.Printf("restarting for the panel (new port or a restored backup)")
 			os.Exit(0) // systemd (Restart=always) brings us back on the new port
 		},
 	}

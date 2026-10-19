@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -26,6 +27,20 @@ func fail(w http.ResponseWriter, code int, msg string) {
 
 func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v)
+}
+
+// maxUpload bounds an uploaded backup file (graphs history included).
+const maxUpload = 64 << 20
+
+func readUpload(r *http.Request) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxUpload+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxUpload {
+		return nil, errors.New("the file is too large for a NeoTunnel backup")
+	}
+	return data, nil
 }
 
 // reply sends v, or the error as a 400.
@@ -176,6 +191,83 @@ func (s *Server) routes(m *http.ServeMux) {
 		w.Header().Set("Content-Disposition", `attachment; filename="neotunnel-backup-`+time.Now().Format("2006-01-02")+`.json"`)
 		w.Header().Set("Cache-Control", "no-store")
 		w.Write(data)
+	}))
+	m.HandleFunc("POST /api/backup/inspect", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		data, err := readUpload(r)
+		if err != nil {
+			fail(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		p, err := b.InspectBackup(data)
+		reply(w, p, err)
+	}))
+	m.HandleFunc("POST /api/backup/restore", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		data, err := readUpload(r)
+		if err != nil {
+			fail(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		res, err := b.Restore(data)
+		reply(w, res, err)
+		if err == nil && s.Restart != nil {
+			// The daemon holds the old key: start again with the restored one.
+			go func() {
+				time.Sleep(time.Second)
+				s.Restart()
+			}()
+		}
+	}))
+
+	m.HandleFunc("GET /api/settings/fetch", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		v, err := b.FetchSettings()
+		reply(w, v, err)
+	}))
+	m.HandleFunc("POST /api/settings/fetch", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req config.Fetch
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		ch, err := b.SetFetch(req)
+		reply(w, ch, err)
+	}))
+	m.HandleFunc("POST /api/settings/fetch/test", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Host string }
+		readJSON(r, &req)
+		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+		defer cancel()
+		writeJSON(w, http.StatusOK, b.TestFetch(ctx, req.Host))
+	}))
+
+	m.HandleFunc("GET /api/settings/cert", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		v, err := b.PanelCert(r.URL.Query().Get("domain"))
+		reply(w, v, err)
+	}))
+	m.HandleFunc("POST /api/settings/cert", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Mode, Domain, Cert, Key string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		switch req.Mode {
+		case config.CertACME:
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+			defer cancel()
+			v, err := b.IssueCert(ctx, req.Domain)
+			reply(w, v, err)
+		case config.CertCustom:
+			v, err := b.SetCustomCert(req.Domain, req.Cert, req.Key)
+			reply(w, v, err)
+		case "self":
+			if err := b.RemoveCert(); err != nil {
+				fail(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			v, err := b.PanelCert("")
+			reply(w, v, err)
+		default:
+			fail(w, http.StatusBadRequest, "bad request")
+		}
 	}))
 
 	m.HandleFunc("POST /api/forwards", s.changing(func(w http.ResponseWriter, r *http.Request) {

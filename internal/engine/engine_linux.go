@@ -130,6 +130,11 @@ func Apply(st *config.State) Result {
 	}
 	rules, ferrs := forward.Build(st, fs, links)
 	rules.Protect = protects(specs)
+	if us == nil {
+		// Only the daemon has the downloads listener; the redirect waits
+		// for it (the CLI's change reloads the daemon at once).
+		rules.Fetch = nil
+	}
 	res.Errors = append(res.Errors, ferrs...)
 	if err := forward.Apply(rules); err != nil {
 		res.Errors = append(res.Errors, err)
@@ -137,6 +142,10 @@ func Apply(st *config.State) Result {
 	res.Errors = append(res.Errors, syncReturns(rules.Returns, specs)...)
 	if us != nil {
 		res.Errors = append(res.Errors, us.SyncRelays(rules.Relays, rules.Exits)...)
+		if rules.Fetch != nil && !relay.FetchStatus().Running {
+			// The redirect must never outlive its listener.
+			forward.StopFetch()
+		}
 	}
 	if err := firewall.Ensure(firewallNeeds(st, specs, rules)); err != nil {
 		res.Errors = append(res.Errors, err)

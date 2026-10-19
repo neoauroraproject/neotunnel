@@ -332,7 +332,8 @@ func dialOut(host string, port uint16) (*net.TCPConn, byte) {
 		if !destAllowed(a) {
 			continue
 		}
-		d := net.Dialer{KeepAlive: 30 * time.Second}
+		// Marked, so this server's own downloads redirect leaves it alone.
+		d := net.Dialer{KeepAlive: 30 * time.Second, Control: markSocket}
 		c, err := d.DialContext(ctx, "tcp", netip.AddrPortFrom(a, port).String())
 		if err == nil {
 			return c.(*net.TCPConn), repOK

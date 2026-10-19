@@ -35,17 +35,17 @@ func nft(script string) error {
 // Apply loads the ruleset into nftables: forwarding in one transaction, the
 // IPsec protection table in a second one.
 func Apply(rs Ruleset) error {
-	main, protect := Script(rs), ProtectScript(rs.Protect)
+	main, protect, fetch := Script(rs), ProtectScript(rs.Protect), FetchScript(rs.Fetch)
 	mu.Lock()
 	defer mu.Unlock()
 	// Every time, not only on changes: a tunnel that came back up has its
 	// interface settings back at the defaults.
 	lerr := setLocalnet(rs)
-	if main+protect == lastSet && time.Since(lastLoad) < refreshEvery {
+	if main+protect+fetch == lastSet && time.Since(lastLoad) < refreshEvery {
 		return lerr
 	}
 	if _, err := exec.LookPath("nft"); err != nil {
-		if len(rs.Rules) == 0 && len(rs.Returns) == 0 && len(rs.Protect) == 0 {
+		if len(rs.Rules) == 0 && len(rs.Returns) == 0 && len(rs.Protect) == 0 && rs.Fetch == nil {
 			return nil // nothing to install, nothing to clean up
 		}
 		return fmt.Errorf("nftables is required for port forwarding and encryption: apt install nftables")
@@ -58,8 +58,26 @@ func Apply(rs Ruleset) error {
 		lastSet = ""
 		return fmt.Errorf("encrypted tunnels accept unencrypted packets too (nftables too old?): %w", err)
 	}
-	lastSet, lastLoad = main+protect, time.Now()
+	if err := nft(fetch); err != nil {
+		lastSet = ""
+		if rs.Fetch != nil && !rs.Fetch.All {
+			return fmt.Errorf("downloads through the tunnel: this server can't tell terminal commands apart (nftables or kernel too old); choose all programs instead: %w", err)
+		}
+		return fmt.Errorf("downloads through the tunnel: %w", err)
+	}
+	lastSet, lastLoad = main+protect+fetch, time.Now()
 	return lerr
+}
+
+// StopFetch removes the downloads redirect alone: without the daemon's
+// listener behind it, this server's own HTTP and HTTPS would go nowhere.
+func StopFetch() {
+	mu.Lock()
+	defer mu.Unlock()
+	if _, err := exec.LookPath("nft"); err == nil {
+		nft(FetchScript(nil))
+	}
+	lastSet = ""
 }
 
 // setLocalnet turns route_localnet on for the tunnels that need it (see

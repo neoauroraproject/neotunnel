@@ -223,6 +223,34 @@
     return data;
   }
 
+  // apiUpload sends a file's text as the request body.
+  async function apiUpload(path, text) {
+    const res = await fetch("api/" + path, { method: "POST", credentials: "same-origin", headers: { "X-NeoTunnel": "1", "Content-Type": "application/json" }, body: text });
+    let data = null;
+    try { data = await res.json(); } catch { /* empty */ }
+    if (!res.ok) throw new Error((data && data.error) || `خطا (${res.status})`);
+    return data;
+  }
+
+  async function inspectBackup(file) {
+    S.restore = { text: "", preview: null, error: "", busy: false };
+    try {
+      S.restore.text = await file.text();
+      S.restore.preview = await apiUpload("backup/inspect", S.restore.text);
+    } catch (e) { S.restore.error = e.message; }
+    draw();
+  }
+
+  async function certSave(body, okMsg) {
+    const e = S.ce; e.busy = true; draw();
+    try {
+      S.cert = await api("POST", "settings/cert", body);
+      S.ce = null; toast(okMsg); await refresh();
+      if (body.mode !== "self") toast("آدرس تازه‌ی پنل: " + S.ov.panel.url);
+    } catch (err) { e.busy = false; toast(err.message, "bad"); }
+    draw();
+  }
+
   function toast(msg, kind = "ok") {
     const el = document.createElement("div");
     el.className = `toast ${kind}`;
@@ -1658,10 +1686,10 @@
   }
 
   // ---------- settings ----------
-  const SECS = [["node", "این سرور"], ["access", "دسترسی پنل"], ["defaults", "پیش‌فرض تانل‌ها"], ["net", "شبکه و سرعت"], ["traffic", "ترافیک"], ["maint", "نگهداری"], ["about", "درباره"]];
+  const SECS = [["node", "این سرور"], ["access", "دسترسی پنل"], ["defaults", "پیش‌فرض تانل‌ها"], ["net", "شبکه و سرعت"], ["fetch", "دانلودهای سرور"], ["traffic", "ترافیک"], ["maint", "پشتیبان و نگهداری"], ["about", "درباره"]];
 
   function viewSettings() {
-    const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
+    const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, fetch: setFetch, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
     return html`<div class="settings">
       <nav class="snav" aria-label="بخش‌های تنظیمات">${SECS.map(([k, l]) => html`<button class="${S.sec === k ? "on" : ""}" data-act="sec" data-sec="${k}">${l}</button>`)}</nav>
       <div class="spane">${pane()}</div></div>`;
@@ -1688,7 +1716,75 @@
         <div class="grid2"><div class="field full"><label for="s-cur">رمز فعلی</label><input id="s-cur" class="input ltr" name="current" type="password" autocomplete="current-password" required></div>
         <div class="field"><label for="s-new">رمز جدید</label><input id="s-new" class="input ltr" name="next" type="password" autocomplete="new-password" minlength="8" required><span class="help">حداقل ۸ کاراکتر.</span></div>
         <div class="field"><label for="s-again">تکرار رمز جدید</label><input id="s-again" class="input ltr" name="again" type="password" autocomplete="new-password" required></div></div>
-        <div class="form-foot"><button class="btn primary" type="submit">تغییر رمز</button></div></form></div></div>`;
+        <div class="form-foot"><button class="btn primary" type="submit">تغییر رمز</button></div></form></div></div>
+      ${certPanel()}`;
+  }
+
+  // The panel's domain and certificate.
+  function certPanel() {
+    const c = S.cert;
+    if (!c) { loadCert(); return html`<div class="panel"><header><h2>دامنه و SSL</h2></header><div class="in muted">در حال خواندن…</div></div>`; }
+    const e = S.ce || (S.ce = { mode: c.mode === "custom" ? "custom" : "acme", domain: c.domain || "", cert: "", key: "", busy: false, check: null });
+    const exp = c.expires ? new Date(c.expires) : null, days = exp ? Math.floor((exp - Date.now()) / 864e5) : 0;
+    const now = c.mode === "self"
+      ? html`<span class="state"><i class="dot warn"></i>گواهی خودامضا؛ مرورگر هشدار می‌دهد</span>`
+      : html`<span class="state"><i class="dot ${c.error ? "bad" : days < 15 ? "warn" : "ok"}"></i><span class="ltr">${c.domain}</span></span>`;
+    const ck = e.check;
+    const checkNote = ck && ck.checked ? (ck.here
+      ? html`<div class="note ok">دامنه به همین سرور (<span class="ltr">${ck.address}</span>) اشاره می‌کند.</div>`
+      : html`<div class="note warn">${ck.resolves && ck.resolves.length ? html`دامنه به <span class="ltr">${ck.resolves.join("، ")}</span> اشاره می‌کند، نه به IP این سرور (<span class="ltr">${ck.address}</span>).` : "دامنه پیدا نشد."} اول رکورد A دامنه را روی IP همین سرور بگذارید. اگر پشت Cloudflare است، Let's Encrypt معمولاً باز هم کار می‌کند.</div>`) : "";
+    return html`<div class="panel"><header><h2>دامنه و SSL</h2><span class="aside">${now}</span></header><div class="in stack">
+      <p class="help" style="margin:0">با یک دامنه و گواهی معتبر، پنل بدون هشدار مرورگر باز می‌شود. پورت و آدرس مخفی پنل همان می‌ماند.</p>
+      ${c.mode !== "self" ? html`<dl class="kv"><dt>دامنه</dt><dd class="ltr">${c.domain}</dd><dt>صادرکننده</dt><dd>${c.mode === "acme" ? "Let's Encrypt، تمدید خودکار" : "گواهی خودتان"}${c.issuer ? html` <span class="faint small ltr">(${c.issuer})</span>` : ""}</dd>
+        ${exp ? html`<dt>اعتبار تا</dt><dd>${exp.toLocaleDateString("fa-IR")} <span class="faint small">(${days} روز دیگر)</span></dd>` : ""}
+        ${c.error ? html`<dt>خطا</dt><dd class="ltr small">${c.error}</dd>` : ""}<dt>آدرس پنل</dt><dd><a class="ltr" href="${S.ov.panel.url}">${S.ov.panel.url}</a></dd></dl>` : ""}
+      <div class="seg">${[["acme", "Let's Encrypt (رایگان)"], ["custom", "گواهی خودم"]].map(([v, l]) => html`<button type="button" class="${e.mode === v ? "on" : ""}" data-act="set" data-path="ce.mode" data-value="${v}">${l}</button>`)}</div>
+      <div class="field"><label for="c-domain">دامنه</label><div class="row" style="flex-wrap:nowrap"><input id="c-domain" class="input ltr" data-bind="ce.domain" value="${e.domain}" placeholder="panel.example.com" style="max-width:320px"><button class="btn" data-act="cert-check" ${e.busy ? "disabled" : ""}>بررسی</button></div></div>
+      ${checkNote}
+      ${e.mode === "acme"
+        ? html`<p class="help" style="margin:0">Let's Encrypt دامنه را روی <b>پورت 80</b> همین سرور بررسی می‌کند؛ این پورت برای یک دقیقه باید آزاد و از بیرون باز باشد. ${c.port80 ? "" : html`<b>الان پورت 80 را برنامه‌ی دیگری گرفته</b> (مثلاً nginx یا Xray)؛ برای گرفتن گواهی چند لحظه متوقفش کنید.`} گواهی هر ۹۰ روز خودکار تمدید می‌شود (وقتی ۳۰ روز مانده)؛ تمدید هم پورت 80 را لازم دارد.</p>
+          <div class="form-foot"><button class="btn primary" data-act="cert-issue" ${e.busy ? "disabled" : ""}>${I.lock(16)} ${e.busy ? "در حال گرفتن گواهی…" : "گرفتن گواهی"}</button>${c.mode !== "self" ? html`<span class="grow"></span><button class="btn ghost" data-act="cert-self">برگشت به گواهی خودامضا</button>` : ""}</div>`
+        : html`<div class="field"><label for="c-crt">گواهی (fullchain، PEM)</label><textarea id="c-crt" class="input ltr mono" rows="5" data-bind="ce.cert" placeholder="-----BEGIN CERTIFICATE-----">${e.cert}</textarea></div>
+          <div class="field"><label for="c-key">کلید خصوصی (PEM)</label><textarea id="c-key" class="input ltr mono" rows="4" data-bind="ce.key" placeholder="-----BEGIN PRIVATE KEY-----">${e.key}</textarea><span class="help">مثلاً گواهی Origin کلادفلر یا گواهی‌ای که با acme.sh گرفته‌اید. کلید فقط روی همین سرور ذخیره می‌شود.</span></div>
+          <div class="form-foot"><button class="btn primary" data-act="cert-custom" ${e.busy ? "disabled" : ""}>${I.lock(16)} ذخیره‌ی گواهی</button>${c.mode !== "self" ? html`<span class="grow"></span><button class="btn ghost" data-act="cert-self">برگشت به گواهی خودامضا</button>` : ""}</div>`}
+    </div></div>`;
+  }
+
+  async function loadCert() {
+    try { S.cert = await api("GET", "settings/cert"); if (S.route === "settings" && S.sec === "access") draw(); } catch (e) { toast(e.message, "bad"); }
+  }
+
+  // This server's downloads through a tunnel.
+  function setFetch() {
+    const v = S.fetch;
+    if (!v) { loadFetch(); return html`<div class="panel"><div class="in muted">در حال خواندن…</div></div>`; }
+    const f = S.fe || (S.fe = Object.assign({}, v.fetch, { groups: (v.fetch.groups || []).slice(), domains: (v.fetch.domains || []).join("\n"), all: v.fetch.all || !v.terminal, test: "github.com", result: null, testing: false }));
+    const on = v.fetch.on, st = v.status;
+    const state = on && st.running ? html`<span class="state"><i class="dot ok"></i>روشن، از ${v.fetch.tunnel}</span>` : on ? html`<span class="state"><i class="dot warn"></i>روشن، هنوز راه نیفتاده</span>` : html`<span class="state"><i class="dot"></i>خاموش</span>`;
+    const via = { tunnel: ["از تانل", "lock"], direct: ["مستقیم", ""], failed: ["ناموفق", "warn"] };
+    const probe = (p, l) => html`<div><div class="k">${l}</div><div class="v">${p.ok ? html`<span class="state"><i class="dot ok"></i>${p.ms} ms</span>` : html`<span class="state"><i class="dot bad"></i>وصل نشد</span><div class="faint small ltr">${p.error || ""}</div>`}</div></div>`;
+    return html`<div class="panel"><header><h2>دانلودهای این سرور از تانل</h2><span class="aside">${state}</span></header><div class="in stack">
+      <p class="help" style="margin:0">وقتی اینترنت مستقیم سرور قطع یا کند است، یا سایتی مثل GitHub فیلتر شده، دانلود از سایت‌هایی که انتخاب می‌کنید (نصب اسکریپت، apt، git clone، pip و <span class="ltr">neotunnel update</span>) از تانل می‌رود و از سرور خارج به اینترنت وصل می‌شود. اسم سایت هم همان‌جا پیدا می‌شود، پس DNS خراب این سرور مشکلی ایجاد نمی‌کند. بقیه‌ی ترافیک، از جمله ترافیک کاربرها، مثل قبل مستقیم می‌رود.</p>
+      <label class="switch"><input type="checkbox" data-act="fe-check" data-key="on" ${f.on ? "checked" : ""}>روشن</label>
+      ${v.tunnels.length ? html`<div class="field"><label for="f-tun">از کدام تانل</label><select id="f-tun" class="input" data-bind="fe.tunnel" style="max-width:320px">${v.tunnels.map((t) => html`<option value="${t}" ${f.tunnel === t ? "selected" : ""}>${t}</option>`)}</select><span class="help">ترافیک از سرور آن طرف این تانل به اینترنت می‌رود. فقط تانل‌هایی که آن طرفشان NeoTunnel است.</span></div>`
+        : html`<div class="note warn">تانلی به یک سرور NeoTunnel ندارید؛ اول یک تانل به سرور خارج بسازید.</div>`}
+      <div class="field"><span class="lbl">سایت‌ها</span><div class="checks">${v.groups.map((g) => html`<label class="switch"><input type="checkbox" data-act="fe-group" value="${g.name}" ${f.groups.includes(g.name) ? "checked" : ""}>${g.title} <span class="faint small ltr">${g.domains.join(", ")}</span></label>`)}</div></div>
+      <div class="field"><label for="f-dom">سایت‌های دیگر</label><textarea id="f-dom" class="input ltr" rows="3" data-bind="fe.domains" placeholder="download.docker.com&#10;example.org">${f.domains}</textarea><span class="help">هر خط یک دامنه؛ زیردامنه‌هایش هم حساب می‌شوند.</span></div>
+      <div class="field"><span class="lbl">کدام برنامه‌ها</span><div class="seg">${[["", "فقط دستورهای ترمینال و SSH"], ["1", "همه‌ی برنامه‌های سرور"]].map(([val, l]) => html`<button type="button" class="${(f.all ? "1" : "") === val ? "on" : ""}" data-act="set" data-path="fe.all" data-value="${val}" ${val === "" && !v.terminal ? "disabled" : ""}>${l}</button>`)}</div>
+        <span class="help">${f.all ? "هر برنامه‌ای روی سرور که به این سایت‌ها وصل شود از تانل می‌رود، از جمله سرویس‌ها (مثلاً Docker و به‌روزرسانی خودکار apt)." : "فقط چیزهایی که خودتان در ترمینال یا SSH اجرا می‌کنید. سرویس‌هایی مثل Xray و پنل‌ها دست نمی‌خورند. پیشنهادی."}${v.terminal ? "" : html` <b>این سرور دستورهای ترمینال را جدا تشخیص نمی‌دهد</b> (cgroup v2 ندارد)، پس فقط «همه‌ی برنامه‌ها» ممکن است.`}</span></div>
+      <label class="switch"><input type="checkbox" data-act="fe-check" data-key="strict" ${f.strict ? "checked" : ""}>اگر تانل قطع بود، این سایت‌ها مستقیم هم نروند</label>
+      <div class="form-foot"><button class="btn primary" data-act="save-fetch">ذخیره</button></div>
+    </div></div>
+    <div class="panel"><header><h2>آزمایش و وضعیت</h2></header><div class="in stack">
+      <div class="row" style="flex-wrap:nowrap"><input class="input ltr" data-bind="fe.test" value="${f.test}" aria-label="سایت" style="max-width:260px"><button class="btn" data-act="fetch-test" ${f.testing ? "disabled" : ""}>${I.play(15)} ${f.testing ? "در حال آزمایش…" : "آزمایش"}</button></div>
+      ${f.result ? html`<div class="grid2">${probe(f.result.tunnel, "از تانل")}${probe(f.result.direct, "مستقیم")}</div>` : html`<p class="help" style="margin:0">اتصال HTTPS به سایت را یک بار از تانل و یک بار مستقیم امتحان می‌کند. آزمایش تانل فقط وقتی کار می‌کند که این بخش روشن و ذخیره شده باشد.</p>`}
+      <dl class="kv"><dt>از تانل</dt><dd>${st.tunnel}</dd><dt>مستقیم</dt><dd>${st.direct}</dd><dt>ناموفق</dt><dd>${st.failed}</dd></dl>
+      ${st.recent.length ? html`<table class="t"><thead><tr><th>سایت</th><th>مسیر</th><th>زمان</th></tr></thead><tbody>${st.recent.map((r) => html`<tr><td class="ltr small" style="text-align:start">${r.host}</td><td><span class="tag ${via[r.via][1]}">${via[r.via][0]}</span>${r.error ? html` <span class="faint small ltr">${r.error}</span>` : ""}</td><td class="small">${ago(r.at / 1000)}</td></tr>`)}</tbody></table>` : html`<div class="muted">هنوز اتصالی نبوده.</div>`}
+    </div></div>`;
+  }
+
+  async function loadFetch() {
+    try { S.fetch = await api("GET", "settings/fetch"); if (S.route === "settings" && S.sec === "fetch") draw(); } catch (e) { toast(e.message, "bad"); }
   }
 
   function setDefaults() {
@@ -1730,9 +1826,26 @@
   }
 
   function setMaint() {
+    const r = S.restore;
+    const p = r && r.preview;
     return html`<div class="panel"><header><h2>پشتیبان</h2></header><div class="in stack">
-        <p class="help" style="margin:0">همه‌ی تنظیمات، سرورها، کلیدها و رمزهای تانل‌ها در یک فایل JSON. آن را جای امن نگه دارید.</p>
+        <p class="help" style="margin:0">همه‌ی تنظیمات، سرورها، تانل‌ها، کلید این سرور، آمار ترافیک، نمودارها و گواهی پنل در یک فایل. کلید و رمزها داخلش هست؛ فایل را جای امن نگه دارید.</p>
         <div><a class="btn" href="api/backup" download>${I.download(16)} دانلود پشتیبان</a></div></div></div>
+      <div class="panel"><header><h2>بازگردانی</h2></header><div class="in stack">
+        <p class="help" style="margin:0">فایل پشتیبان را روی همین سرور یا یک سرور تازه (بعد از نصب NeoTunnel) بازگردانی کنید. روی سرور تازه، IP قدیمی در همه‌ی تانل‌ها با IP این سرور عوض می‌شود و سرورهای مقصد خودکار به‌روز می‌شوند؛ چون کلید سرور هم برمی‌گردد، لازم نیست آن‌ها را دوباره وصل کنید. ورود و پورت همین پنل عوض نمی‌شود.</p>
+        <label class="btn" style="align-self:flex-start">${I.sync(16)} انتخاب فایل پشتیبان<input type="file" accept=".json,application/json" data-act="restore-file" hidden></label>
+        ${r && r.error ? html`<div class="note bad">${r.error}</div>` : ""}
+        ${p ? html`<div class="note ${p.warnings && p.warnings.length ? "warn" : ""}"><dl class="kv">
+            <dt>سرور</dt><dd class="ltr">${p.node}</dd>
+            ${p.created ? html`<dt>تاریخ</dt><dd>${new Date(p.created).toLocaleString("fa-IR")}${p.version ? html` <span class="faint small ltr">${p.version}</span>` : ""}</dd>` : ""}
+            <dt>تانل‌ها و فورواردها</dt><dd>${p.tunnels} تانل، ${p.forwards} فوروارد</dd>
+            <dt>سرورهای مقصد</dt><dd class="ltr">${p.peers.length ? p.peers.join(", ") : "—"}</dd>
+            <dt>IP</dt><dd>${p.address && p.here && p.address !== p.here ? html`<span class="ltr">${p.address}</span> ← <span class="ltr">${p.here}</span> <span class="faint small">(در تانل‌ها عوض می‌شود)</span>` : html`<span class="ltr">${p.address || p.here || "—"}</span>`}</dd>
+            ${p.domain ? html`<dt>دامنه‌ی پنل</dt><dd class="ltr">${p.domain}</dd>` : ""}</dl>
+          ${(p.warnings || []).includes("no-key") ? html`<p style="margin:8px 0 0"><b>این پشتیبان کلید سرور را ندارد</b> (نسخه‌ی قدیمی). بعد از بازگردانی، سرورهای مقصد را با دستور اتصالشان دوباره وصل کنید.</p>` : ""}
+          ${(p.warnings || []).includes("managed-moved") ? html`<p style="margin:8px 0 0"><b>این پشتیبانِ یک سرور مقصد است</b> و IP آن عوض شده؛ بعد از بازگردانی، IP تازه را روی سرور اصلی (${(p.managed || []).join("، ")}) هم وارد کنید.</p>` : ""}</div>
+          <div class="form-foot"><button class="btn danger" data-act="restore" ${r.busy ? "disabled" : ""}>${I.sync(16)} ${r.busy ? "در حال بازگردانی…" : "بازگردانی روی این سرور"}</button><button class="btn ghost" data-act="restore-cancel">انصراف</button></div>` : ""}
+      </div></div>
       <div class="panel"><header><h2>سرویس</h2></header><div class="in stack">
         <p class="help" style="margin:0">ری‌استارت سرویس، تانل‌های کرنلی را قطع نمی‌کند؛ لایه‌ی NeoObfs و رله‌ها چند ثانیه قطع می‌شوند.</p>
         <div class="row"><button class="btn" data-act="restart">${I.sync(16)} ری‌استارت سرویس</button><button class="btn" data-act="sync-all">همگام‌سازی همه‌ی سرورها</button></div></div></div>
@@ -2201,7 +2314,7 @@
   // data-bind paths: "wiz.port", "form.ports", "tset.<name>.mtu", "fwdEdit.<k>.mode", "defs.padding".
   function setPath(path, value) {
     const parts = path.split(".");
-    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs, fwdEditor: S.fwdEditor };
+    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs, fwdEditor: S.fwdEditor, fe: S.fe, ce: S.ce };
     let obj = roots[parts[0]];
     if (!obj) return;
     if (parts[0] === "fwdEdit") { obj = obj[parts.slice(1, -1).join(".")]; if (!obj) return; obj[parts[parts.length - 1]] = value; return; }
@@ -2231,6 +2344,9 @@
     if (t.dataset.act === "st-subject") { S.st.subject = t.value; draw(); }
     if (t.dataset.act === "safe-pref") { S.safe = t.checked; store("nt-safe", S.safe ? "1" : "0"); if (t.closest(".modal")) drawModal(); else draw(); }
     if (t.dataset.act === "def-check") { S.defs[t.dataset.key] = t.checked; S.edit = true; }
+    if (t.dataset.act === "fe-check") { S.fe[t.dataset.key] = t.checked; S.edit = true; }
+    if (t.dataset.act === "fe-group") { const g = S.fe.groups.filter((x) => x !== t.value); S.fe.groups = t.checked ? g.concat(t.value) : g; S.edit = true; }
+    if (t.dataset.act === "restore-file" && t.files && t.files[0]) inspectBackup(t.files[0]);
     if (t.dataset.act === "st-check") { setPath(t.dataset.path, t.checked); if (!t.closest(".modal")) S.edit = true; }
   });
   document.addEventListener("toggle", (e) => {
@@ -2479,7 +2595,45 @@
     "run-test"() { startJob("test", S.speed.tunnel); },
     "run-bench"() { startJob("bench", S.speed.peer, S.speed.only); },
     async "cancel-job"() { if (S.job) await api("POST", `jobs/${S.job.id}/cancel`).catch(() => {}); },
-    sec(el) { S.sec = el.dataset.sec; store("nt-settings", S.sec); S.edit = false; S.defs = null; draw(); },
+    sec(el) { S.sec = el.dataset.sec; store("nt-settings", S.sec); S.edit = false; S.defs = null; S.fetch = S.fe = S.cert = S.ce = S.restore = null; draw(); },
+    async "save-fetch"() {
+      const f = S.fe;
+      const body = { on: !!f.on, tunnel: f.tunnel || "", groups: f.groups, domains: f.domains.split(/[\s,]+/).filter(Boolean), strict: !!f.strict, all: !!f.all };
+      try {
+        const ch = await api("POST", "settings/fetch", body);
+        S.edit = false; S.fe = null; S.fetch = null;
+        reportChange(ch, body.on ? "دانلودها از تانل می‌روند" : "دانلودها دوباره مستقیم می‌روند");
+        setTimeout(loadFetch, 1500);
+      } catch (e) { toast(e.message, "bad"); }
+    },
+    async "fetch-test"() {
+      const f = S.fe; f.testing = true; f.result = null; draw();
+      try { f.result = await api("POST", "settings/fetch/test", { host: f.test }); S.fetch = await api("GET", "settings/fetch"); }
+      catch (e) { toast(e.message, "bad"); }
+      f.testing = false; draw();
+    },
+    async "cert-check"() {
+      const e = S.ce;
+      try { e.check = await api("GET", "settings/cert?domain=" + encodeURIComponent(e.domain.trim())); draw(); } catch (err) { toast(err.message, "bad"); }
+    },
+    async "cert-issue"() { await certSave({ mode: "acme", domain: S.ce.domain.trim() }, "گواهی Let's Encrypt گرفته شد"); },
+    async "cert-custom"() { await certSave({ mode: "custom", domain: S.ce.domain.trim(), cert: S.ce.cert, key: S.ce.key }, "گواهی ذخیره شد"); },
+    async "cert-self"() { await certSave({ mode: "self" }, "پنل دوباره با گواهی خودامضا و IP باز می‌شود"); },
+    "restore-cancel"() { S.restore = null; draw(); },
+    restore() {
+      const p = S.restore.preview;
+      openModal(() => confirmView("بازگردانی پشتیبان", html`تنظیمات، تانل‌ها و کلید این سرور با پشتیبانِ <b class="ltr">${p.node}</b> جایگزین می‌شود و سرویس ری‌استارت می‌شود. ادامه می‌دهید؟`, "restore-go", {}, "بازگردانی", I.sync));
+    },
+    async "restore-go"() {
+      const r = S.restore; r.busy = true; closeModal(); draw();
+      try {
+        const res = await apiUpload("backup/restore", r.text);
+        (res.peers || []).forEach((p) => toast(p.ok ? `${p.peer} به‌روز شد` : `${p.peer}: ${p.error}`, p.ok ? "ok" : "bad"));
+        toast("پشتیبان بازگردانی شد؛ سرویس ری‌استارت می‌شود و پنل چند ثانیه دیگر دوباره بالا می‌آید");
+        S.restore = null;
+        setTimeout(() => location.reload(), 8000);
+      } catch (e) { r.busy = false; toast(e.message, "bad"); draw(); }
+    },
     "goto-sec"(el, e) { e.preventDefault(); S.sec = el.dataset.sec; location.hash = "#/settings"; },
     async "save-defaults"() {
       const d = S.defs;

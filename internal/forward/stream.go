@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/relay"
@@ -75,6 +76,26 @@ func socksRelay(st *config.State, f config.Forward, t config.Tunnel, byName map[
 		return relay.Spec{}, errors.New("a proxy listens on one port")
 	}
 	return relay.Spec{Proto: "tcp", Port: uint16(ports[0]), Via: via, Socks: true, Listen: listen, Auth: f.Auth}, nil
+}
+
+// fetchRelay is the downloads listener (see config.Fetch): its connections
+// to listed sites go through the tunnel like a socks forward's.
+func fetchRelay(st *config.State, f config.Fetch, byName map[string]config.Tunnel) (relay.Spec, error) {
+	t, ok := byName[f.Tunnel]
+	if !ok {
+		return relay.Spec{}, fmt.Errorf("tunnel %s is not running here", f.Tunnel)
+	}
+	sites := f.Sites()
+	if len(sites) == 0 {
+		return relay.Spec{}, errors.New("no sites are chosen")
+	}
+	s, err := socksRelay(st, config.Forward{Tunnel: t.Name, Ports: fmt.Sprint(config.FetchPort)}, t, byName)
+	if err != nil {
+		return relay.Spec{}, err
+	}
+	s.Socks = false
+	s.FetchSites, s.FetchStrict = strings.Join(sites, ","), f.Strict
+	return s, nil
 }
 
 // poolSize is how many relay connections a tunnel keeps ready.

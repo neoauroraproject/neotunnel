@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
@@ -654,15 +653,6 @@ func (l *Live) System() (SystemInfo, error) {
 }
 
 func (l *Live) Boost() error { return sysctl.ApplyBoost() }
-
-// Backup returns the state file, keys and secrets included.
-func (l *Live) Backup() ([]byte, error) {
-	st, err := config.Load()
-	if err != nil {
-		return nil, err
-	}
-	return json.MarshalIndent(st, "", "  ")
-}
 
 // stackOverhead is what every layer of a stack (bottom first) adds to a
 // packet. Worst case for MTU sizing; with average padding for traffic

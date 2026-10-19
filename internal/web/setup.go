@@ -132,6 +132,9 @@ func PanelURL(st *config.State) string {
 		return ""
 	}
 	host := st.Address
+	if st.Panel.Domain != "" && st.Panel.Cert != "" {
+		host = st.Panel.Domain
+	}
 	if host == "" {
 		host = "SERVER-IP"
 	}

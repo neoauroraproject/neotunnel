@@ -53,7 +53,24 @@ type Backend interface {
 	ResetTraffic(tunnel string) error
 	System() (SystemInfo, error)
 	Boost() error
+	// Backup is this server's backup file (see backup.go); InspectBackup
+	// tells what restoring one would do, and Restore does it (the daemon
+	// restarts afterwards).
 	Backup() ([]byte, error)
+	InspectBackup(data []byte) (BackupPreview, error)
+	Restore(data []byte) (RestoreResult, error)
+
+	// Downloads through a tunnel (see config.Fetch).
+	FetchSettings() (FetchView, error)
+	SetFetch(f config.Fetch) (manage.Change, error)
+	TestFetch(ctx context.Context, host string) FetchTest
+
+	// The panel's domain and certificate (see cert.go). PanelCert also
+	// checks where domain points ("" = the current one).
+	PanelCert(domain string) (CertView, error)
+	IssueCert(ctx context.Context, domain string) (CertView, error)
+	SetCustomCert(domain, certPEM, keyPEM string) (CertView, error)
+	RemoveCert() error
 
 	Login(user, pass string) bool
 	ChangePassword(current, next string) error

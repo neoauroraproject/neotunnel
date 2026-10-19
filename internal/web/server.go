@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"embed"
@@ -92,16 +93,26 @@ func securityHeaders(h http.Handler) http.Handler {
 	})
 }
 
-// ListenAndServe runs the panel over HTTPS with a self-signed certificate.
+// ListenAndServe runs the panel over HTTPS: with the domain's certificate
+// when one is set (see cert.go), else a self-signed one.
 func (s *Server) ListenAndServe(port int, address string) error {
 	cert, err := certificate(address)
 	if err != nil {
 		return err
 	}
+	if err := loadPanelCert(); err != nil {
+		log.Printf("panel certificate: %v (serving the self-signed one)", err)
+	}
+	go renewCerts(context.Background())
 	srv := &http.Server{
-		Addr:              ":" + strconv.Itoa(port),
-		Handler:           s.Handler(),
-		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		Addr:    ":" + strconv.Itoa(port),
+		Handler: s.Handler(),
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if c := panelCert.Load(); c != nil {
+				return c, nil
+			}
+			return &cert, nil
+		}},
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}

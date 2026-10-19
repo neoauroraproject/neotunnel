@@ -563,6 +563,12 @@ select.input { padding-inline-end: 8px; }
 .switch input:checked::after { transform: translateX(16px); background: var(--accent-ink); }
 [dir="rtl"] .switch input:checked::after { transform: translateX(-16px); }
 .switch.sm { font-size: 12.5px; gap: 8px; }
+.checks { display: flex; flex-direction: column; gap: 10px; }
+.checks .switch { flex-wrap: wrap; row-gap: 2px; }
+.checks .switch .faint { flex-basis: 100%; padding-inline-start: 48px; overflow-wrap: anywhere; text-align: start; }
+[dir="rtl"] .checks .switch .faint.ltr { text-align: right; padding-inline-start: 0; padding-right: 48px; }
+textarea.input { height: auto; min-height: 72px; padding-block: 10px; resize: vertical; line-height: 1.5; }
+textarea.input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 details.adv { border: 1px solid var(--line); border-radius: var(--r); background: var(--card-2); }
 details.adv > summary { list-style: none; cursor: pointer; padding: 12px 16px; display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 13.5px; }
 details.adv > summary::-webkit-details-marker { display: none; }

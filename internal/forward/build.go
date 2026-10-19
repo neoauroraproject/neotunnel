@@ -106,7 +106,45 @@ func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []erro
 		}
 	}
 	rs.Exits = relayExits(st, byName)
+	if f, ok := st.FetchActive(); ok {
+		spec, err := fetchRelay(st, f, byName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("downloads through %s: %w", f.Tunnel, err))
+		} else {
+			rs.Relays = append(rs.Relays, spec)
+			rs.Fetch = &FetchRedirect{All: f.All}
+		}
+	}
 	return rs, errs
+}
+
+// FetchScript renders the table that redirects this server's own HTTP and
+// HTTPS connections to the downloads listener (config.Fetch). It is loaded
+// on its own: the user.slice match needs a newer nftables and kernel than
+// the rest, and a failure must not take the forwards down.
+func FetchScript(fr *FetchRedirect) string {
+	var b strings.Builder
+	b.WriteString("table inet neotunnel_fetch\ndelete table inet neotunnel_fetch\n")
+	if fr == nil {
+		return b.String()
+	}
+	b.WriteString("table inet neotunnel_fetch {\n  chain output {\n    type nat hook output priority -110; policy accept;\n")
+	// The daemon's own direct connections, the loopback, the tunnels and
+	// this server's or private networks' addresses are never downloads.
+	fmt.Fprintf(&b, "    meta mark 0x%08x return\n", relay.FetchMark)
+	b.WriteString("    oifname { \"lo\", \"nt-*\" } return\n")
+	b.WriteString("    fib daddr type local return\n")
+	b.WriteString("    ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } return\n")
+	b.WriteString("    ip6 daddr { ::1, fc00::/7, fe80::/10, ff00::/8 } return\n")
+	scope := ""
+	if !fr.All {
+		// Only what people run in a terminal or over SSH: their sessions
+		// live under user.slice, services elsewhere.
+		scope = "socket cgroupv2 level 1 \"user.slice\" "
+	}
+	fmt.Fprintf(&b, "    %stcp dport { 80, 443 } redirect to :%d\n", scope, config.FetchPort)
+	b.WriteString("  }\n}\n")
+	return b.String()
 }
 
 // relays lists the listeners of a proxy-mode forward, one per port and

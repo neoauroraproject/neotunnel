@@ -75,6 +75,18 @@ func (stub) SafeStatus() (*web.SafeView, *safe.Outcome) { return nil, nil }
 func (stub) KeepSafe(string) (*safe.Outcome, error)     { return nil, nil }
 func (stub) UndoSafe(string) (*safe.Outcome, error)     { return nil, nil }
 
+func (stub) InspectBackup([]byte) (web.BackupPreview, error)         { return web.BackupPreview{}, nil }
+func (stub) Restore([]byte) (web.RestoreResult, error)               { return web.RestoreResult{}, nil }
+func (stub) FetchSettings() (web.FetchView, error)                   { return web.FetchView{}, nil }
+func (stub) SetFetch(config.Fetch) (manage.Change, error)            { return manage.Change{}, nil }
+func (stub) TestFetch(context.Context, string) web.FetchTest         { return web.FetchTest{} }
+func (stub) PanelCert(string) (web.CertView, error)                  { return web.CertView{}, nil }
+func (stub) IssueCert(context.Context, string) (web.CertView, error) { return web.CertView{}, nil }
+func (stub) SetCustomCert(string, string, string) (web.CertView, error) {
+	return web.CertView{}, nil
+}
+func (stub) RemoveCert() error { return nil }
+
 func newPanel(t *testing.T) http.Handler {
 	t.Helper()
 	return (&web.Server{Backend: stub{}, Path: "/secret"}).Handler()

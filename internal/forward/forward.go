@@ -9,11 +9,12 @@ import (
 	"strconv"
 	"strings"
 
+	"neotunnel/internal/config"
 	"neotunnel/internal/relay"
 )
 
 // Reserved ports are never forwarded so a typo can't lock you out.
-var Reserved = map[int]string{22: "SSH", 7710: "neotunnel agent", 7711: "neotunnel probe", relay.RelayPort: "neotunnel relay"}
+var Reserved = map[int]string{22: "SSH", 7710: "neotunnel agent", 7711: "neotunnel probe", relay.RelayPort: "neotunnel relay", config.FetchPort: "neotunnel downloads"}
 
 type Rule struct {
 	Iface string
@@ -74,6 +75,14 @@ type Ruleset struct {
 	// Protect lists encrypted tunnels, whose packets are dropped when they
 	// arrive without IPsec.
 	Protect []Protect
+	// Fetch redirects this server's own downloads (nil = off).
+	Fetch *FetchRedirect
+}
+
+// FetchRedirect is the downloads redirect: All takes every program's
+// connections, otherwise only those of terminal and SSH sessions.
+type FetchRedirect struct {
+	All bool
 }
 
 // Return is a tunnel that carries transparent forwards from its far side.
