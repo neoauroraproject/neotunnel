@@ -1,7 +1,6 @@
 <div dir="rtl">
 
-<p align="center"><img src="internal/web/static/logo.svg" width="76" alt="NeoTunnel"></p>
-<h1 align="center">NeoTunnel</h1>
+<p align="center"><img src="docs/logo.jpg" width="240" alt="NeoTunnel"></p>
 <p align="center"><b>تانل‌های میکروتیکی روی اوبونتو، با سرعت کرنل و یک پنل فارسی تمیز</b></p>
 <p align="center">
 <a href="https://github.com/neoauroraproject/neotunnel/releases/latest"><img src="https://img.shields.io/github/v/release/neoauroraproject/neotunnel?style=flat-square&color=f5a524&labelColor=111111" alt="release"></a>

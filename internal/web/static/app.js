@@ -342,7 +342,7 @@
 
   function viewLogin() {
     return html`<div class="login-wrap"><div class="panel login">
-      <div class="brand"><img src="assets/logo.svg" alt=""><div><b>NeoTunnel</b><small>مدیریت تانل‌های سرور</small></div></div>
+      <div class="brand"><img src="assets/logo.png" alt=""><div><b>NeoTunnel</b><small>مدیریت تانل‌های سرور</small></div></div>
       <h1>ورود به پنل</h1>
       <form data-form="login">
         <div class="field"><label for="login-user">نام کاربری</label><input class="input ltr" id="login-user" name="user" autocomplete="username" required></div>
@@ -364,7 +364,7 @@
     return html`<div class="frame">
       <header class="topbar">
         <button class="iconbtn burger" data-act="menu" aria-label="منو" aria-haspopup="dialog" aria-expanded="${S.menu ? "true" : "false"}" aria-controls="nav-sheet">${I.menu(19)}</button>
-        <a class="brand" href="#/dashboard" title="NeoTunnel ${ov.node.version}"><img src="assets/logo.svg" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
+        <a class="brand" href="#/dashboard" title="NeoTunnel ${ov.node.version}"><img src="assets/logo.png" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
         <nav class="tabs" aria-label="صفحه‌ها">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon(18)}<span>${label}</span>${counts[id] ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
         <div class="top-tools">
           <span class="live ${liveCls}" title="${S.live ? (S.paused ? "به‌روزرسانی زنده متوقف است" : "پنل هر ۳ ثانیه تازه می‌شود") : "ارتباط با سرور قطع است"}"><i></i><span>${!S.live ? "قطع ارتباط" : S.paused ? "متوقف" : "زنده"}</span></span>
@@ -395,7 +395,7 @@
     return html`<div class="sheet-scrim ${st}" data-act="menu-close"></div>
       <aside id="nav-sheet" class="sheet ${st}" role="dialog" aria-modal="true" aria-label="منو">
         <header class="sheet-head">
-          <a class="brand" href="#/dashboard"><img src="assets/logo.svg" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
+          <a class="brand" href="#/dashboard"><img src="assets/logo.png" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
           <button class="iconbtn" data-act="menu-close" aria-label="بستن منو">${I.x(18)}</button>
         </header>
         <div class="sheet-node">
