@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"log"
+	"math"
 	"net/netip"
 	"sync"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/eoip"
 	"neotunnel/internal/forward"
+	"neotunnel/internal/health"
+	"neotunnel/internal/metrics"
 	"neotunnel/internal/obfs"
 	"neotunnel/internal/pmtu"
 	"neotunnel/internal/relay"
@@ -155,30 +158,51 @@ func (d *dataPlane) Close() {
 const (
 	sampleEvery = 10 * time.Second
 	saveEvery   = time.Minute
-	probeEvery  = 5 * time.Minute
-	probeMaxAge = 30 * time.Minute
+	// historySaveEvery is how often the graphs history is written; at most
+	// this much of it is lost if the server loses power.
+	historySaveEvery = 5 * time.Minute
+	probeEvery       = 5 * time.Minute
+	probeMaxAge      = 30 * time.Minute
 )
 
-// account samples tunnel counters into the traffic store until ctx ends.
-func account(ctx context.Context, store *traffic.Store, changed func()) {
+// account samples tunnel counters into the traffic store, and the same
+// counters with the system and health readings into the graphs history,
+// until ctx ends.
+func account(ctx context.Context, store *traffic.Store, ms *metrics.Store, tr *health.Tracker, changed func()) {
 	t := time.NewTicker(sampleEvery)
 	defer t.Stop()
-	lastSave := time.Now()
+	lastSave, lastHistory := time.Now(), time.Now()
+	h := newHistory(ms)
 	for {
 		now := time.Now()
 		if name, ok := traffic.TakeResetRequest(); ok {
 			store.Reset(name, now)
 		}
+		h.begin(now)
 		// Speed tests leave the totals. Their requests are written after the
 		// test, so taking them before this sample means their bytes are in.
 		excludes := traffic.TakeExcludes()
 		if st, err := config.Load(); err == nil {
 			ts, fs := st.Effective()
 			names := make([]string, 0, len(ts))
+			carriers := map[string]bool{}
+			for _, tn := range ts {
+				carriers[tn.Over] = true
+			}
+			health := tr.Snapshot()
 			for _, tn := range ts {
 				names = append(names, tn.Name)
 				if ls := engine.TunnelState(tn.Name); ls.Exists {
-					store.Sample(tn.Name, counters(ls), now)
+					c := counters(ls)
+					store.Sample(tn.Name, c, now)
+					h.rate("t:"+tn.Name, c, !carriers[tn.Name])
+				}
+				if hs, ok := health[tn.Name]; ok && hs.Probes > 0 {
+					rtt := math.NaN()
+					if hs.RTTms > 0 {
+						rtt = hs.RTTms
+					}
+					h.record("p:"+tn.Name, rtt, hs.Loss)
 				}
 			}
 			if cs := forward.ReadCounters(); cs != nil {
@@ -186,30 +210,42 @@ func account(ctx context.Context, store *traffic.Store, changed func()) {
 					n := forward.CounterName(f.Proto, f.Ports)
 					names = append(names, traffic.Port+f.Proto+"/"+f.Ports)
 					u, d := cs[n+"u"], cs[n+"d"]
-					store.Sample(traffic.Port+f.Proto+"/"+f.Ports,
-						traffic.Pair{Rx: d.Bytes, Tx: u.Bytes, RxP: d.Packets, TxP: u.Packets}, now)
+					c := traffic.Pair{Rx: d.Bytes, Tx: u.Bytes, RxP: d.Packets, TxP: u.Packets}
+					store.Sample(traffic.Port+f.Proto+"/"+f.Ports, c, now)
+					h.rate("f:"+f.Proto+"/"+f.Ports, c, false)
 				}
 			}
 			store.Keep(names, now)
+			h.keep(names)
 			enforceQuotas(ts, store, now, changed)
 		}
 		if nic := engine.PublicIface(); nic != "" {
 			if ls := engine.State(nic); ls.Exists {
-				store.Sample(traffic.NIC, counters(ls), now)
+				c := counters(ls)
+				store.Sample(traffic.NIC, c, now)
+				h.rate("nic", c, false)
 			}
 		}
 		for _, e := range excludes {
 			store.Subtract(e.Tunnel, e.Pair, now)
 		}
+		h.end()
 		if time.Since(lastSave) >= saveEvery {
 			if err := store.Save(); err != nil {
 				log.Printf("save traffic: %v", err)
 			}
 			lastSave = time.Now()
 		}
+		if time.Since(lastHistory) >= historySaveEvery {
+			if err := ms.Save(); err != nil {
+				log.Printf("save graphs history: %v", err)
+			}
+			lastHistory = time.Now()
+		}
 		select {
 		case <-ctx.Done():
 			store.Save()
+			ms.Save()
 			return
 		case <-t.C:
 		}

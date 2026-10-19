@@ -11,6 +11,7 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/metrics"
 	"neotunnel/internal/safe"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/web"
@@ -48,6 +49,7 @@ func (stub) SetDefaults(config.Defaults) error { return nil }
 func (stub) ProbeMTU(context.Context, string) (web.MTUReport, error) {
 	return web.MTUReport{}, nil
 }
+func (stub) Metrics(string, []string) (metrics.View, error)      { return metrics.View{}, nil }
 func (stub) Traffic() map[string]traffic.Summary                 { return nil }
 func (stub) ResetTraffic(string) error                           { return nil }
 func (stub) System() (web.SystemInfo, error)                     { return web.SystemInfo{}, nil }
@@ -56,10 +58,10 @@ func (stub) Backup() ([]byte, error)                             { return nil, n
 func (stub) SetUser(string) error                                { return nil }
 func (stub) RemoveForward(string, string) (manage.Change, error) { return manage.Change{}, nil }
 func (stub) SetNode(string, string) error                        { return nil }
-func (stub) TestTunnel(context.Context, string, func(string), func(string, float64)) ([]bench.Result, error) {
+func (stub) TestTunnel(context.Context, string, web.SpeedOptions, func(string), func(string, float64)) ([]bench.Result, error) {
 	return nil, nil
 }
-func (stub) Bench(context.Context, string, []string, func(string), func(string, float64), func(bench.Result)) ([]bench.Result, error) {
+func (stub) Bench(context.Context, string, []string, web.SpeedOptions, func(string), func(string, float64), func(bench.Result)) ([]bench.Result, error) {
 	return nil, nil
 }
 func (stub) Login(user, pass string) bool        { return user == "admin" && pass == "right-password" }

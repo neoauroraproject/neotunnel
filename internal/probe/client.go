@@ -145,52 +145,31 @@ func Bandwidth(ctx context.Context, addr string, tok Token, dir Direction, d tim
 }
 
 // BandwidthLive is Bandwidth that also reports the current rate (bits/s,
-// measured locally over the last half second) while it runs.
+// over the last second) while it runs.
+//
+// The result leaves out the start of the run: TCP needs a number of round
+// trips to open its window, and on a long path that ramp would pull the
+// average far below what the link carries once it is up to speed. Uploads
+// count the bytes the far end acknowledged where the kernel tells (Linux),
+// not the bytes written: the first writes only fill socket buffers, which
+// made the live rate jump high and then fall.
 func BandwidthLive(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, streams int, report func(bps float64)) (float64, error) {
 	if streams < 1 {
 		streams = 1
 	}
+	m := &meter{dir: dir}
 	var (
 		wg    sync.WaitGroup
 		mu    sync.Mutex
 		total int64
 		first error
-		moved atomic.Int64
 	)
-	if report != nil {
-		stop := make(chan struct{})
-		defer close(stop)
-		go func() {
-			// Report often, averaged over a short window, so a gauge can
-			// follow the rate smoothly without jumping on every burst.
-			type sample struct {
-				n  int64
-				at time.Time
-			}
-			t := time.NewTicker(200 * time.Millisecond)
-			defer t.Stop()
-			win := []sample{{0, time.Now()}}
-			for {
-				select {
-				case <-stop:
-					return
-				case now := <-t.C:
-					win = append(win, sample{moved.Load(), now})
-					if len(win) > 5 {
-						win = win[len(win)-5:]
-					}
-					a, b := win[0], win[len(win)-1]
-					report(float64(b.n-a.n) * 8 / b.at.Sub(a.at).Seconds())
-				}
-			}
-		}()
-	}
 	start := time.Now()
 	for i := 0; i < streams; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := stream(ctx, addr, tok, dir, d, &moved)
+			n, err := stream(ctx, addr, tok, dir, d, m)
 			mu.Lock()
 			defer mu.Unlock()
 			total += n
@@ -199,17 +178,117 @@ func BandwidthLive(ctx context.Context, addr string, tok Token, dir Direction, d
 			}
 		}()
 	}
-	wg.Wait()
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+
+	// Sample what was delivered five times a second until the run ends.
+	samples := []sample{{0, start}}
+	t := time.NewTicker(200 * time.Millisecond)
+	end := start.Add(d)
+sampling:
+	for {
+		select {
+		case <-finished:
+			break sampling
+		case now := <-t.C:
+			if now.After(end) {
+				break sampling
+			}
+			samples = append(samples, sample{m.delivered(), now})
+			if report != nil {
+				a, b := samples[max(0, len(samples)-6)], samples[len(samples)-1]
+				report(float64(b.n-a.n) * 8 / b.at.Sub(a.at).Seconds())
+			}
+		}
+	}
+	t.Stop()
+	<-finished
 	if total == 0 {
 		if first == nil {
 			first = fmt.Errorf("no data transferred")
 		}
 		return 0, first
 	}
-	return float64(total*8) / time.Since(start).Seconds(), nil
+	rate := float64(total*8) / time.Since(start).Seconds()
+	if steady, ok := steadyRate(samples, start.Add(Warmup(d))); ok && (dir == Download || m.exact) {
+		rate = steady
+	}
+	if report != nil {
+		report(rate)
+	}
+	return rate, nil
 }
 
-func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, moved *atomic.Int64) (int64, error) {
+// Warmup is the start of a run of length d that its result leaves out.
+func Warmup(d time.Duration) time.Duration { return min(3*time.Second, d/4) }
+
+type sample struct {
+	n  int64
+	at time.Time
+}
+
+// steadyRate is the rate between the first sample at or after from and the
+// last one, if they span at least a second.
+func steadyRate(s []sample, from time.Time) (float64, bool) {
+	i := 0
+	for i < len(s) && s[i].at.Before(from) {
+		i++
+	}
+	if i >= len(s) {
+		return 0, false
+	}
+	a, b := s[i], s[len(s)-1]
+	span := b.at.Sub(a.at).Seconds()
+	if span < 1 || b.n <= a.n {
+		return 0, false
+	}
+	return float64(b.n-a.n) * 8 / span, true
+}
+
+// meter counts what a run has delivered so far, over all its streams.
+type meter struct {
+	dir   Direction
+	moved atomic.Int64 // bytes written (upload) or read (download)
+	mu    sync.Mutex
+	conns []*counted
+	exact bool // the kernel reports acknowledged bytes
+}
+
+type counted struct {
+	c     net.Conn
+	acked uint64
+}
+
+func (m *meter) track(c net.Conn) {
+	m.mu.Lock()
+	m.conns = append(m.conns, &counted{c: c})
+	m.mu.Unlock()
+}
+
+// delivered is the bytes that reached the receiver: the bytes read for a
+// download; for an upload the acknowledged bytes, or the written ones where
+// the kernel can't tell.
+func (m *meter) delivered() int64 {
+	if m.dir == Download {
+		return m.moved.Load()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var sum uint64
+	for _, k := range m.conns {
+		// A closed connection keeps the count it had.
+		if n, ok := acked(k.c); ok {
+			k.acked, m.exact = n, true
+		}
+		sum += k.acked
+	}
+	if !m.exact {
+		return m.moved.Load()
+	}
+	return int64(sum)
+}
+
+func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, m *meter) (int64, error) {
 	var dl net.Dialer
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	c, err := dl.DialContext(dctx, "tcp", addr)
@@ -219,6 +298,7 @@ func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.D
 	}
 	defer c.Close()
 	go func() { <-ctx.Done(); c.Close() }()
+	m.track(c)
 
 	hdr := make([]byte, tokenLen+5)
 	copy(hdr, tok[:])
@@ -235,7 +315,7 @@ func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.D
 		c.SetWriteDeadline(deadline.Add(2 * time.Second))
 		for time.Now().Before(deadline) {
 			n, err := c.Write(buf)
-			moved.Add(int64(n))
+			m.moved.Add(int64(n))
 			if err != nil {
 				break
 			}
@@ -252,9 +332,9 @@ func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.D
 		buf := make([]byte, 128<<10)
 		var n int64
 		for {
-			m, err := c.Read(buf)
-			n += int64(m)
-			moved.Add(int64(m))
+			k, err := c.Read(buf)
+			n += int64(k)
+			m.moved.Add(int64(k))
 			if err != nil {
 				if n > 0 || err == io.EOF {
 					err = nil

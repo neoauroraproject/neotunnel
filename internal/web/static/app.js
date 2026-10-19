@@ -102,6 +102,13 @@
     power: (s) => svg('<path d="M12 3v8"/><path d="M6.3 6.6a8 8 0 1 0 11.4 0"/>', s),
     download: (s) => svg('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>', s),
     globe: (s) => svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>', s),
+    bolt: (s) => svg('<path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/>', s),
+    chart: (s) => svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', s),
+    clock: (s) => svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>', s),
+    wave: (s) => svg('<path d="M2 12h3l2.5-6 4 12 3-9 2 3H22"/>', s),
+    drop: (s) => svg('<path d="M12 3.5c3.5 4.5 6 7.7 6 10.5a6 6 0 0 1-12 0c0-2.8 2.5-6 6-10.5z"/>', s),
+    cal: (s) => svg('<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>', s),
+    cpu: (s) => svg('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>', s),
   };
 
   // ---------- formatting ----------
@@ -188,7 +195,14 @@
     open: null, tset: {}, edit: false, fwdEdit: {},
     sec: store("nt-settings") || "node", defs: null,
     safe: store("nt-safe") === "1", safeSeen: store("nt-safe-seen") || "",
-    jobs: [], job: null, pv: {}, upgrading: {}, restarting: {}, prates: {}, dtab: {}, speed: { tunnel: "", peer: "", only: BENCH.map((b) => b[0]) }, mtu: {},
+    jobs: [], job: null, pv: {}, upgrading: {}, restarting: {}, prates: {}, dtab: {}, mtu: {},
+    speed: Object.assign({ tunnel: "", peer: "", only: BENCH.map((b) => b[0]), secs: 10, streams: 8 }, (() => { try { return JSON.parse(store("nt-speed") || "{}"); } catch { return {}; } })()),
+    // Graphs: the dashboard's range and source, the statistics page's range
+    // and subject (the server or one tunnel), the drawer's range.
+    hist: { range: store("nt-hist") || "24h", src: store("nt-hist-src") || "all" },
+    st: { range: store("nt-st") || "24h", subject: "server" },
+    dr: { range: "24h" },
+    paused: false,
   };
   document.documentElement.dataset.theme = S.theme;
 
@@ -310,7 +324,7 @@
   // ---------- views ----------
   const NAV = [
     ["dashboard", "داشبورد", I.home], ["tunnels", "تانل‌ها", I.tunnel], ["servers", "سرورها", I.server],
-    ["ports", "پورت‌ها", I.ports], ["speed", "تست سرعت", I.gauge], ["commands", "دستورها", I.term], ["settings", "تنظیمات", I.gear],
+    ["ports", "پورت‌ها", I.ports], ["stats", "آمار", I.chart], ["speed", "تست سرعت", I.gauge], ["commands", "دستورها", I.term], ["settings", "تنظیمات", I.gear],
   ];
 
   function draw() {
@@ -335,30 +349,31 @@
     </div></div>`;
   }
 
+  // The frame: brand, the pages as one row of tabs, and the few global
+  // controls (connection state, theme, a new tunnel, sign out).
   function viewShell() {
     const ov = S.ov;
     const counts = { tunnels: visible().length, servers: ov.peers.length, ports: ov.forwards.length };
-    const page = { dashboard: viewDashboard, tunnels: viewTunnels, servers: viewServers, ports: viewPorts, speed: viewSpeed, commands: viewCommands, settings: viewSettings }[S.route] || viewDashboard;
+    const page = { dashboard: viewDashboard, tunnels: viewTunnels, servers: viewServers, ports: viewPorts, stats: viewStats, speed: viewSpeed, commands: viewCommands, settings: viewSettings }[S.route] || viewDashboard;
     const [title, sub, tools] = pageHead();
-    return html`<div class="shell">
-      <aside class="rail" aria-label="منو">
-        <div class="brand"><img src="assets/logo.svg" alt=""><div><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></div></div>
-        <nav class="nav">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon()}<span>${label}</span>${counts[id] != null ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
-        <div class="rail-foot">
-          <div class="me"><b>${ov.node.name}</b><span class="ltr">${ov.node.address || "-"}</span></div>
-          <div class="rail-actions">
-            <button class="btn sm ghost icon" data-act="theme" title="${S.theme === "dark" ? "تم روشن" : "تم تیره"}" aria-label="تغییر تم">${S.theme === "dark" ? I.sun(16) : I.moon(16)}</button>
-            <span class="grow"></span>
-            <button class="btn sm ghost" data-act="logout">${I.out(16)} خروج</button>
-          </div>
+    const liveCls = !S.live ? "off" : S.paused ? "paused" : "";
+    return html`<div class="frame">
+      <header class="topbar">
+        <a class="brand" href="#/dashboard" title="NeoTunnel ${ov.node.version}"><img src="assets/logo.svg" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
+        <nav class="tabs" aria-label="صفحه‌ها">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon(18)}<span>${label}</span>${counts[id] ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
+        <div class="top-tools">
+          <span class="live ${liveCls}" title="${S.live ? (S.paused ? "به‌روزرسانی زنده متوقف است" : "پنل هر ۳ ثانیه تازه می‌شود") : "ارتباط با سرور قطع است"}"><i></i><span>${!S.live ? "قطع ارتباط" : S.paused ? "متوقف" : "زنده"}</span></span>
+          <button class="iconbtn" data-act="theme" title="${S.theme === "dark" ? "تم روشن" : "تم تیره"}" aria-label="تغییر تم">${S.theme === "dark" ? I.sun(17) : I.moon(17)}</button>
+          <button class="iconbtn hot" data-act="wizard" title="تانل جدید" aria-label="تانل جدید">${I.plus(18)}</button>
+          <button class="iconbtn" data-act="logout" title="خروج" aria-label="خروج">${I.out(17)}</button>
         </div>
-      </aside>
+      </header>
       <main class="main" data-key="page-${S.route}">
         ${S.route === "dashboard" ? "" : html`<div class="head"><div><h1>${title}</h1><div class="sub">${sub}</div></div>
-          <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط با سرور"}</span>${tools}</div></div>`}
+          <div class="tools">${tools}</div></div>`}
         ${behindNote()}
         ${safeBanner()}
-        ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:16px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => { const t = errText(e); return t !== e ? html`<div>${t}<div class="mono faint small">${e}</div></div>` : html`<div class="mono">${e}</div>`; })}</div>` : ""}
+        ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:14px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => { const t = errText(e); return t !== e ? html`<div>${t}<div class="mono faint small">${e}</div></div>` : html`<div class="mono">${e}</div>`; })}</div>` : ""}
         ${page()}
       </main>
     </div>${S.drawer ? viewDrawer() : ""}`;
@@ -408,6 +423,7 @@
       case "tunnels": return ["تانل‌ها", "روی هر تانل بزنید تا جزئیات و تنظیمات پیشرفته باز شود", add];
       case "servers": return ["سرورها", "سرورهای مقصد که از همین پنل مدیریت می‌شوند", html`<button class="btn" data-act="sync-all">${I.sync(16)} همگام‌سازی همه</button><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button>`];
       case "ports": return ["پورت‌ها", "پورت‌های این سرور و اینکه کاربر از کدام تانل به کجا می‌رسد", html`<button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button>`];
+      case "stats": return ["آمار", "ترافیک، پینگ، پردازنده و حافظه در بازه‌های مختلف. هر نقطه میانگین همان بازه است و خط نازک بالای آن، اوج آن.", ""];
       case "speed": return ["تست سرعت", "پینگ، جیتر، افت بسته و پهنای باند واقعی بین دو سرور", ""];
       case "commands": return ["دستورها", "معادل خط فرمان کارهای پنل، با نام‌ها و آدرس‌های همین سرور", ""];
       case "settings": return ["تنظیمات", "سرور، دسترسی پنل، پیش‌فرض تانل‌ها، شبکه و نگهداری", ""];
@@ -415,41 +431,23 @@
     return ["", "", add];
   }
 
-  // ---------- dashboard: the instrument ----------
-  // A schematic of what is real: this server on one side, each destination
-  // on the other, every tunnel a straight bus between them carrying its live
-  // rate and ping, and each forwarded port a tick on this server's edge.
-  // Monochrome; amber marks only what is moving right now.
+  // ---------- dashboard: the bento ----------
+  // One card per question an operator has: where is traffic going right now
+  // (the flow), which machine is this and is it alive (the node), how hard
+  // it works (load), how the path behaves (ping), what the network card
+  // carries, and how all of it moved over time (history).
   function viewDashboard() {
-    const ov = S.ov, ts = visible(), tr = total();
-    const load = ov.node.cpus ? (ov.node.load[0] / ov.node.cpus) * 100 : 0;
-    const mem = ov.node.mem_total ? (ov.node.mem_used / ov.node.mem_total) * 100 : 0;
-    const [tv, tu] = splitBytes(sumToday()), [mv, mu] = splitBytes(sumMonth());
-    const nic = ov.node.nic ? ov.node.nic_month.rx + ov.node.nic_month.tx : 0;
-    const ok = healthy(), bad = ts.length - ok;
-    const [rv, ru] = splitRate(tr.rx + tr.tx);
-    return html`<div class="dash">
-      <header class="dash-head">
-        <div class="id"><span class="mono up">${ov.node.name}</span><span class="mono faint">${ov.node.address || ""}</span>
-          <span class="faint">روشن ${fmtUptime(ov.node.uptime_s)}</span>${masters().length ? html`<span class="faint">مدیریت از ${masters().map((m) => m.name).join("، ")}</span>` : ""}</div>
-        <div class="tools"><span class="live ${S.live ? "" : "off"}"><i></i>${S.live ? "زنده" : "قطع ارتباط"}</span><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>
-      </header>
-      <section class="readouts">
-        <div class="ro hero"><span class="k">ترافیک لحظه‌ای</span><span class="v mono"><b data-live="total-num">${rv}</b><small data-live="total-unit">${ru}</small></span>
-          <span class="f mono ltr"><i class="rx">↓</i> <span data-live="total-rx">${fmtRate(tr.rx)}</span>  <i class="tx">↑</i> <span data-live="total-tx">${fmtRate(tr.tx)}</span></span></div>
-        <div class="ro"><span class="k">امروز</span><span class="v mono"><b>${tv}</b><small>${tu}</small></span><span class="f">ترافیک کاربران، بدون تست‌ها</span></div>
-        <div class="ro"><span class="k">این ماه</span><span class="v mono"><b>${mv}</b><small>${mu}</small></span><span class="f">${nic ? html`کارت شبکه <span class="mono">${fmtBytes(nic)}</span>` : "مجموع همه‌ی تانل‌ها"}</span></div>
-        <div class="ro"><span class="k">تانل‌ها</span><span class="v mono"><b class="${bad ? "warn" : ""}">${ok}</b><small>/ ${ts.length}</small></span><span class="f">${!ts.length ? "هنوز تانلی نیست" : bad ? `${bad} تانل بررسی لازم دارد` : "ترافیک همه رد می‌شود"}</span></div>
-        <div class="ro"><span class="k">سرور</span><span class="v mono"><b class="${load > 90 ? "bad" : load > 70 ? "warn" : ""}">${load.toFixed(0)}</b><small>% CPU</small></span>
-          <span class="bar"><i style="transform:scaleX(${(Math.min(100, load) / 100).toFixed(3)})"></i></span><span class="f">حافظه <span class="mono">${mem.toFixed(0)}%</span> از ${fmtBytes(ov.node.mem_total)}</span></div>
-      </section>
-      <section class="scheme">${scheme()}</section>
-      <section class="dash-grid">
-        <div class="panel"><header><h2>۲۴ ساعت گذشته</h2><span class="aside">همه‌ی تانل‌ها، هر نقطه ۵ دقیقه</span></header><div class="in">${chart("dash", totalPairs())}</div></div>
-        <div class="panel"><header><h2>تانل‌ها</h2><a class="aside" href="#/tunnels">همه</a></header>${tunnelTable(ts)}</div>
-      </section>
-      ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:16px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}
-    </div>`;
+    const ov = S.ov;
+    return html`<div class="bento">
+      <section class="card b-flow" aria-label="جریان ترافیک">${flowCard()}</section>
+      <section class="card b-node" aria-label="این سرور">${nodeCard()}</section>
+      <section class="card b-det" aria-label="جزئیات">${detailsCard()}</section>
+      <section class="card b-nic" aria-label="کارت شبکه">${nicCard()}</section>
+      <section class="card b-ping" aria-label="پینگ">${pingCard()}</section>
+      <section class="card b-load" aria-label="بار سرور">${loadCard()}</section>
+      <section class="card b-hist" aria-label="تاریخچه‌ی ترافیک">${histCard()}</section>
+    </div>
+    ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:14px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}`;
   }
 
   const healthy = () => visible().filter((t) => { const h = t.health; return t.up && (!h || h.passes) && !(t.limits && t.limits.disabled); }).length;
@@ -479,106 +477,279 @@
     return [...groups.values()];
   }
 
+  const lastVal = (vals) => { for (let i = (vals || []).length - 1; i >= 0; i--) if (vals[i] != null) return vals[i]; return null; };
   const trim = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s);
+  const narrow = () => window.innerWidth < 760;
 
-  function scheme() {
-    const ov = S.ov, groups = destinations();
-    if (!groups.length) return html`<div class="empty">${I.globe(34)}<b>هنوز مقصدی ندارید</b>یک سرور خارج اضافه کنید یا مستقیم یک تانل بسازید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div>`;
-    const rows = [];
-    for (const g of groups) {
-      const first = rows.length;
-      if (g.tunnels.length) g.tunnels.forEach((t) => rows.push({ g, t }));
-      else rows.push({ g, t: null });
-      g.first = first; g.last = rows.length - 1;
-    }
-    const W = 1000, top = 46, rowH = 62, H = Math.max(280, top * 2 + rows.length * rowH);
-    const y = (i) => top + rowH / 2 + i * rowH;
-    const nodeX = 744, nodeW = 196, peerX = 60, peerW = 196, busL = peerX + peerW, busR = nodeX;
-    const now = performance.now() / 1000, phase = (p) => `style="animation-delay:-${(now % p).toFixed(2)}s"`;
-    const o = [];
-    o.push(`<defs><pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".9" class="gd"/></pattern></defs>`);
-    o.push(`<rect width="${W}" height="${H}" fill="url(#grid)"/>`);
-    const corners = (x, y0, w, h) => {
-      const c = 10;
-      return `<path class="brk" d="M${x} ${y0 + c}V${y0}H${x + c}M${x + w - c} ${y0}H${x + w}V${y0 + c}M${x + w} ${y0 + h - c}V${y0 + h}H${x + w - c}M${x + c} ${y0 + h}H${x}V${y0 + h - c}"/>`;
-    };
-
-    // Buses: one per tunnel, straight across.
-    rows.forEach((r, i) => {
-      const yy = y(i);
-      if (!r.t) {
-        o.push(`<line class="bus none" x1="${busL}" y1="${yy}" x2="${busL + 120}" y2="${yy}"/>`);
-        o.push(`<text class="lbl faint" x="${busL + 132}" y="${yy + 4}">${r.g.paired ? "بدون تانل" : "منتظر اتصال"}</text>`);
-        return;
+  // Flow: this server's total on the start side; a ribbon to every tunnel,
+  // as thick as its share of the traffic, orange while it carries some.
+  function flowCard() {
+    const ts = visible(), tr = total(), sum = tr.rx + tr.tx;
+    const head = html`<div class="flow-head"><div><h2 class="flow-title">Traffic<br>flow</h2><div class="sub">ترافیک لحظه‌ای تانل‌ها، دانلود و آپلود با هم</div><div class="flow-total"><b class="ltr">${fmtRate(sum)}</b> مجموع لحظه‌ای</div></div>
+      <button class="btn sm" data-act="wizard">${I.plus(14)} تانل جدید</button></div>`;
+    if (!ts.length) return html`${head}<div class="flow-empty"><div>${I.tunnel(34)}<p style="margin:10px 0 0">هنوز تانلی نیست. یک تانل بسازید تا مسیر ترافیک اینجا دیده شود.</p></div></div>${flowFoot()}`;
+    const rowH = 58, H = Math.max(290, ts.length * rowH + 24), top = (H - ts.length * rowH) / 2;
+    const sx = narrow() ? 90 : 240, ex = narrow() ? 400 : 560; // where ribbons start and end, of 1000
+    const rtl = document.documentElement.dir !== "ltr", X = (x) => (rtl ? 1000 - x : x);
+    const rates = ts.map((t) => { const r = rate(t.name); return r.rx + r.tx; });
+    const bundle = Math.min(130, H * 0.42), gap = 2;
+    const widths = rates.map((r) => (sum > 1500 ? Math.max(5, (r / sum) * bundle) : 7));
+    const tot = widths.reduce((a, w) => a + w, 0) + gap * (ts.length - 1);
+    let a = H / 2 - tot / 2;
+    const defs = [], paths = [];
+    ts.forEach((t, i) => {
+      const w = widths[i], y = top + rowH * (i + 0.5), ew = Math.max(3, w * 0.6);
+      const a0 = a, a1 = a + w; a += w + gap;
+      const b0 = y - ew / 2, b1 = y + ew / 2, dx = (ex - sx) * 0.55;
+      const hot = rates[i] > 1500 && !(t.limits && t.limits.disabled);
+      const d = `M${X(sx)} ${a0.toFixed(1)} C${X(sx + dx)} ${a0.toFixed(1)} ${X(ex - dx)} ${b0.toFixed(1)} ${X(ex)} ${b0.toFixed(1)} L${X(ex)} ${b1.toFixed(1)} C${X(ex - dx)} ${b1.toFixed(1)} ${X(sx + dx)} ${a1.toFixed(1)} ${X(sx)} ${a1.toFixed(1)}Z`;
+      const g = `rg${i}`;
+      defs.push(`<linearGradient id="${g}" gradientUnits="userSpaceOnUse" x1="${X(sx)}" x2="${X(ex)}" y1="0" y2="0">${hot
+        ? `<stop offset="0" stop-color="var(--ribbon)"/><stop offset=".45" stop-color="var(--ribbon)"/><stop offset="1" stop-color="var(--accent)"/>`
+        : `<stop offset="0" stop-color="var(--ribbon)"/><stop offset="1" stop-color="var(--ribbon-2)"/>`}</linearGradient>`);
+      paths.push(`<path class="ribbon" d="${d}" fill="url(#${g})"/>`);
+      if (hot && !reduceMotion) {
+        const m0 = (a0 + a1) / 2, m1 = y;
+        paths.push(`<path class="ribbon-sheen" vector-effect="non-scaling-stroke" stroke-width="1.5" d="M${X(sx)} ${m0.toFixed(1)} C${X(sx + dx)} ${m0.toFixed(1)} ${X(ex - dx)} ${m1.toFixed(1)} ${X(ex)} ${m1.toFixed(1)}" style="animation-delay:-${((i * 0.37) % 2.4).toFixed(2)}s"/>`);
       }
-      const t = r.t, rt = rate(t.name), bps = rt.rx + rt.tx, st = tunHealth(t), off = t.limits && t.limits.disabled;
-      const cls = off ? "off" : st === "bad" ? "down" : st === "warn" ? "wait" : bps > 1500 ? "hot" : "idle";
-      const sel = S.drawer && S.drawer.name === t.name;
-      const mid = (busL + busR) / 2, h = t.health;
-      const ping = off ? "خاموش" : h && h.probes >= 3 ? (h.passes ? ms(h.ping_ms) + (h.loss >= 1 ? ` · ${h.loss.toFixed(0)}%` : "") : "بدون پاسخ") : "";
-      o.push(`<g class="hit row ${cls} ${sel ? "sel" : ""}" role="button" tabindex="0" data-act="arc" data-key="${esc(t.name)}" data-type="tunnel" aria-label="${esc(t.name)}">
-        <rect x="${busL}" y="${yy - rowH / 2}" width="${busR - busL}" height="${rowH}" fill="transparent"/>
-        <line class="bus" x1="${busL}" y1="${yy}" x2="${busR}" y2="${yy}"/>
-        ${cls === "hot" && !reduceMotion ? `<line class="flow" x1="${busR}" y1="${yy}" x2="${busL}" y2="${yy}" ${phase(1.2)}/>` : ""}
-        <circle class="term" cx="${busL}" cy="${yy}" r="3.5"/><circle class="term" cx="${busR}" cy="${yy}" r="3.5"/>
-        <rect class="chip" x="${mid - 74}" y="${yy - 13}" width="148" height="26" rx="4"/>
-        <text class="chip-t" x="${mid}" y="${yy + 4.5}" text-anchor="middle">${esc(trim(t.name, 10))} · ${esc(trim(kindTitle(t), 12))}${t.encrypt || t.obfs ? " ◆" : ""}</text>
-        <text class="rate" x="${busR - 12}" y="${yy - 9}" text-anchor="end" data-live="sum:${esc(t.name)}">${bps > 800 ? fmtRate(bps) : ""}</text>
-        <text class="ping" x="${busL + 12}" y="${yy - 9}">${esc(ping)}</text></g>`);
     });
-
-    // Destinations, each spanning its tunnels' rows.
-    for (const g of groups) {
-      const y0 = y(g.first) - rowH / 2 + 8, h = (g.last - g.first + 1) * rowH - 16;
-      const st = !g.paired ? "warn" : g.tunnels.some((t) => tunHealth(t) === "ok") ? "ok" : g.tunnels.length ? "bad" : "idle";
-      const cy = y0 + h / 2;
-      o.push(`<g class="hit dest" role="button" tabindex="0" data-act="arc" data-key="${esc(g.key)}" data-type="dest" aria-label="${esc(g.name)}">
-        <rect class="blk" x="${peerX}" y="${y0}" width="${peerW}" height="${h}" rx="3"/>${corners(peerX, y0, peerW, h)}
-        <circle class="led ${st}" cx="${peerX + 18}" cy="${cy - (h > 40 ? 8 : 0)}" r="3.5"/>
-        <text class="nm" x="${peerX + 30}" y="${cy - (h > 40 ? 3 : -4)}">${esc(trim(g.name, 18))}</text>
-        ${h > 40 ? `<text class="ip" x="${peerX + 30}" y="${cy + 15}">${esc(g.ip || "")}</text>` : ""}</g>`);
-    }
-
-    // This server, spanning every row, with its ports as ticks on the edge.
-    const ny = top - 6, nh = H - 2 * top + 12, tr = total(), [v, u] = splitRate(tr.rx + tr.tx), ncy = ny + nh / 2;
-    o.push(`<rect class="blk me" x="${nodeX}" y="${ny}" width="${nodeW}" height="${nh}" rx="3"/>${corners(nodeX, ny, nodeW, nh)}`);
-    o.push(`<text class="nm" x="${nodeX + 18}" y="${ncy - 24}">${esc(trim(ov.node.name, 18))}</text>`);
-    o.push(`<text class="big" x="${nodeX + 18}" y="${ncy + 12}"><tspan data-live="total-num">${esc(v)}</tspan><tspan class="unit" dx="6" data-live="total-unit">${esc(u)}</tspan></text>`);
-    o.push(`<text class="ip" x="${nodeX + 18}" y="${ncy + 32}">${esc(ov.node.address || "")}</text>`);
-    const fs = ov.forwards || [];
-    fs.slice(0, 12).forEach((f, i) => {
-      const py = ny + 18 + (fs.length === 1 ? nh / 2 - 18 : ((nh - 36) * i) / Math.max(1, Math.min(fs.length, 12) - 1));
-      const pr = prate(f), on = pr.rx + pr.tx > 800;
-      o.push(`<g class="port ${on ? "hot" : ""}"><line x1="${nodeX + nodeW}" y1="${py}" x2="${nodeX + nodeW + 14}" y2="${py}"/>
-        <text x="${nodeX + nodeW + 20}" y="${py + 4}">${esc(trim(f.ports, 11))}</text></g>`);
+    const [v, u] = splitRate(sum);
+    const outs = ts.map((t, i) => {
+      const r = rate(t.name), off = t.limits && t.limits.disabled, hot = rates[i] > 1500 && !off, st = tunHealth(t);
+      const [rv, ru] = splitRate(r.rx + r.tx);
+      return html`<div class="out ${hot ? "hot" : "cold"}" style="top:${(top + rowH * (i + 0.5)).toFixed(1)}px" role="button" tabindex="0" data-act="arc" data-type="tunnel" data-key="${t.name}" aria-label="${t.name}">
+        <div class="lbl"><small><i class="dot ${off ? "off" : st}"></i> <span class="ltr">${t.name}</span> · ${kindTitle(t)}${t.peer ? html`<span class="pr"> · ${t.peer}</span>` : ""}</small><b>${off ? "خاموش" : html`${rv}<u>${ru}</u>`}</b></div>
+        <button class="pill ${off ? "" : "on"}" data-act="power-ask" data-name="${t.name}" ${t.managed ? "disabled" : ""} aria-pressed="${!off}" title="${t.managed ? "این تانل را سرور اصلی مدیریت می‌کند" : off ? "روشن کردن تانل" : "خاموش کردن تانل"}" aria-label="${off ? "روشن کردن" : "خاموش کردن"} ${t.name}"></button>
+      </div>`;
     });
-    return raw(`<svg class="schematic" viewBox="0 0 ${W} ${H}" role="img" aria-label="نمای زنده‌ی تانل‌ها">${o.join("")}</svg>`);
+    return html`${head}
+      <div class="flow-stage" style="height:${H}px">
+        ${raw(`<svg class="ribbons" viewBox="0 0 1000 ${H}" preserveAspectRatio="none" aria-hidden="true"><defs>${defs.join("")}</defs>${paths.join("")}</svg>`)}
+        <div class="source" style="top:${H / 2}px;width:calc(${sx / 10}% + 28px)"><div class="bar" style="flex:1"><small>مجموع لحظه‌ای</small><b data-live="total-rate">${fmtRate(sum)}</b></div><div class="tile ${sum > 1500 ? "" : "idle"}">${I.bolt(22)}</div></div>
+        <div class="outs" style="width:${(100 - ex / 10).toFixed(1)}%">${outs}</div>
+      </div>
+      ${flowFoot()}`;
   }
 
-  // Every visible tunnel's 5-minute buckets, summed.
-  function totalPairs() {
-    const out = Array.from({ length: 288 }, () => ({ rx: 0, tx: 0 }));
-    for (const t of visible()) {
-      const s = S.traffic[t.name];
-      if (!s || !s.series) continue;
-      s.series.forEach((p, i) => { if (out[i]) { out[i].rx += p.rx; out[i].tx += p.tx; } });
-    }
-    return out;
+  // Under the flow: how long the server has run, and how busy it was over
+  // the last hour.
+  function flowFoot() {
+    const ov = S.ov, load = ov.node.cpus ? (ov.node.load[0] / ov.node.cpus) * 100 : 0;
+    const up = ov.node.uptime_s, d = Math.floor(up / 86400), h = Math.floor((up % 86400) / 3600);
+    const [n, unit] = d ? [d, "روز"] : h ? [h, "ساعت"] : [Math.floor(up / 60), "دقیقه"];
+    const level = load > 70 ? "زیاد" : load > 35 ? "متوسط" : "کم";
+    const m = metrics("1h", ["cpu", "nic"]), s = m && m.series && m.series.cpu;
+    return html`<div class="flow-foot">
+      <div class="ff"><b>${n}<small>${unit}</small></b><span>روشن بودن سرور</span></div>
+      <div class="ff split"><div class="row" style="gap:10px;flex-wrap:nowrap"><b style="font-size:15px">بار ${level}</b>${s ? sparkline(s.a) : ""}</div><span>پردازنده، یک ساعت گذشته</span></div>
+    </div>`;
   }
 
-  function tunnelTable(ts) {
-    if (!ts.length) return html`<div class="empty" style="padding:28px">هنوز تانلی ساخته نشده</div>`;
-    return html`<table class="t inst"><thead><tr><th>تانل</th><th class="hide-sm">مقصد</th><th>پینگ</th><th class="num">↓</th><th class="num">↑</th><th class="num hide-sm">امروز</th></tr></thead><tbody>
-      ${ts.map((t) => { const r = rate(t.name), h = t.health; return html`<tr class="hit" data-act="arc" data-key="${t.name}" data-type="tunnel">
-        <td><span class="state"><i class="dot ${tunHealth(t)}"></i><b>${t.name}</b></span> <span class="faint small">${kindTitle(t)}</span></td>
-        <td class="hide-sm">${t.peer || html`<span class="mono small">${t.far_ip}</span>`}</td>
-        <td class="mono small">${t.limits && t.limits.disabled ? "خاموش" : h && h.probes >= 3 ? (h.passes ? ms(h.ping_ms) : "—") : ""}</td>
-        <td class="num mono small" data-live="rx:${t.name}">${fmtRate(r.rx)}</td><td class="num mono small faint" data-live="tx:${t.name}">${fmtRate(r.tx)}</td>
-        <td class="num mono small hide-sm" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</td></tr>`; })}
-    </tbody></table>`;
+  function sparkline(raw10s) {
+    // Thirty averages: the trend of the hour, not every 10-second wobble.
+    const per = Math.max(1, Math.ceil(raw10s.length / 30)), vals = [];
+    for (let i = 0; i < raw10s.length; i += per) {
+      const g = raw10s.slice(i, i + per).filter((v) => v != null);
+      vals.push(g.length ? g.reduce((a, b) => a + b, 0) / g.length : null);
+    }
+    const pts = vals.map((v, i) => [i, v]).filter(([, v]) => v != null);
+    if (pts.length < 2) return "";
+    const n = vals.length - 1, max = Math.max(5, ...pts.map(([, v]) => v));
+    const x = (i) => (i / n) * 120, y = (v) => 28 - (v / max) * 26;
+    const d = pts.map(([i, v], k) => `${k ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("");
+    const [li, lv] = pts[pts.length - 1];
+    return raw(`<svg class="spark" viewBox="0 0 120 30" aria-hidden="true"><defs><linearGradient id="spark-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".28"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
+      <path class="a" d="${d}L${x(li).toFixed(1)} 30L${x(pts[0][0]).toFixed(1)} 30Z"/><path class="l" d="${d}"/><circle cx="${x(li).toFixed(1)}" cy="${y(lv).toFixed(1)}" r="3"/></svg>`);
+  }
+
+  // The node: this server as an object under weather; its name, whether the
+  // network is tuned, and the switch for live updates.
+  function nodeCard() {
+    const ov = S.ov, n = ov.node, hot = total().rx + total().tx > 1500, on = !S.paused;
+    return html`${raw(nodeScene(hot))}
+      <div class="node-top">
+        <h2 class="node-name">${n.name}</h2>
+        <div>${n.bbr ? html`<span class="node-pill"><i></i>BBR فعال</span>` : html`<a class="node-pill warn" href="#/settings" data-act="goto-sec" data-sec="net">BBR خاموش است</a>`}</div>
+        <div class="node-meta"><span class="ltr">${n.address || "-"}</span> · ${n.cpus} هسته · ${fmtBytes(n.mem_total)}${masters().length ? ` · مدیریت از ${masters().map((m) => m.name).join("، ")}` : ""}</div>
+      </div>
+      <div class="node-foot">
+        <span class="k">به‌روزرسانی زنده</span>
+        <button class="knob ${on ? "on" : ""}" data-act="live-toggle" aria-pressed="${on}" aria-label="${on ? "توقف به‌روزرسانی زنده" : "ادامه‌ی به‌روزرسانی زنده"}" title="${on ? "پنل هر ۳ ثانیه تازه می‌شود؛ برای توقف بزنید" : "متوقف است؛ برای ادامه بزنید"}">${I.power(20)}</button>
+        <span class="k ${on ? "on" : ""}">${on ? "روشن" : "خاموش"}</span>
+      </div>`;
+  }
+
+  // Night, rain, a lightning bolt and the server, its edges lit while
+  // traffic moves. Drawn, not photographed, so it follows the data.
+  function nodeScene(hot) {
+    const led = hot ? "var(--accent)" : "#5a5a60", glow = hot ? 0.75 : 0.18;
+    let rain = "";
+    for (let i = 0; i < 46; i++) {
+      const x = (i * 53) % 420 - 10, y = (i * 97) % 300, l = 14 + (i % 4) * 6;
+      rain += `<line x1="${x}" y1="${y}" x2="${x - 4}" y2="${y + l}"/>`;
+    }
+    return `<svg class="node-scene" viewBox="0 0 400 470" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <defs>
+        <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#2b2b31"/><stop offset=".55" stop-color="#1b1b1f"/><stop offset="1" stop-color="#101012"/></linearGradient>
+        <radialGradient id="cloud" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#4a4a52" stop-opacity=".9"/><stop offset="1" stop-color="#4a4a52" stop-opacity="0"/></radialGradient>
+        <radialGradient id="floor" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="${led}" stop-opacity="${glow * 0.55}"/><stop offset="1" stop-color="${led}" stop-opacity="0"/></radialGradient>
+        <linearGradient id="front" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#4a4a51"/><stop offset="1" stop-color="#242428"/></linearGradient>
+        <linearGradient id="side" x1="0" x2="1"><stop offset="0" stop-color="#2a2a2e"/><stop offset="1" stop-color="#18181b"/></linearGradient>
+        <linearGradient id="topf" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5c5c63"/><stop offset="1" stop-color="#3c3c42"/></linearGradient>
+        <filter id="blur8" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8"/></filter>
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <rect width="400" height="470" fill="url(#sky)"/>
+      <ellipse cx="80" cy="150" rx="150" ry="60" fill="url(#cloud)"/><ellipse cx="320" cy="120" rx="170" ry="70" fill="url(#cloud)"/><ellipse cx="220" cy="200" rx="140" ry="40" fill="url(#cloud)" opacity=".6"/>
+      <polyline points="318,96 300,140 316,142 292,196 306,198 286,250" fill="none" stroke="#ffe3d4" stroke-width="1.6" stroke-linejoin="round" filter="url(#glow)" opacity=".55"/>
+      <g stroke="#c8c8d0" stroke-opacity=".13" stroke-width="1">${rain}</g>
+      <rect y="330" width="400" height="140" fill="#0d0d0f"/>
+      <ellipse cx="200" cy="332" rx="260" ry="16" fill="#1d1d21"/>
+      <ellipse cx="205" cy="372" rx="150" ry="26" fill="url(#floor)"/>
+      <g transform="translate(118 228)">
+        <path d="M14 0 H148 L176 -18 H42 Z" fill="url(#topf)"/>
+        <path d="M148 0 L176 -18 V96 L148 118 Z" fill="url(#side)"/>
+        <rect x="0" y="0" width="150" height="118" rx="10" fill="url(#front)"/>
+        <rect x="12" y="14" width="126" height="22" rx="4" fill="#161619"/>
+        <rect x="18" y="21" width="${hot ? 64 : 30}" height="8" rx="2" fill="${led}" opacity=".85" filter="url(#glow)"/>
+        <g stroke="#1a1a1d" stroke-width="2" stroke-linecap="round"><line x1="16" y1="52" x2="96" y2="52"/><line x1="16" y1="62" x2="96" y2="62"/><line x1="16" y1="72" x2="96" y2="72"/><line x1="16" y1="82" x2="96" y2="82"/></g>
+        <circle cx="122" cy="68" r="13" fill="#1a1a1d"/><circle cx="122" cy="68" r="5" fill="${led}" filter="url(#glow)"/>
+        <path d="M3 108 V12 Q3 3 12 3" fill="none" stroke="${led}" stroke-width="2" filter="url(#glow)" stroke-linecap="round"/>
+        <path d="M148 4 L174 -14" fill="none" stroke="${led}" stroke-width="1.6" filter="url(#glow)" stroke-linecap="round"/>
+        <line x1="10" y1="116" x2="140" y2="116" stroke="${led}" stroke-width="1.6" filter="url(#glow)" stroke-linecap="round"/>
+        <rect x="14" y="118" width="22" height="9" rx="3" fill="#0f0f11"/><rect x="114" y="118" width="22" height="9" rx="3" fill="#0f0f11"/>
+      </g>
+    </svg>`;
+  }
+
+  function detailsCard() {
+    const ov = S.ov, ts = visible().filter((t) => t.health && t.health.probes >= 3 && t.health.passes);
+    const avgPing = ts.length ? ts.reduce((a, t) => a + t.health.ping_ms, 0) / ts.length : null;
+    const avgLoss = ts.length ? ts.reduce((a, t) => a + t.health.loss, 0) / ts.length : null;
+    const ok = healthy(), all = visible().length;
+    const nic = ov.node.nic ? ov.node.nic_month.rx + ov.node.nic_month.tx : sumMonth();
+    const item = (k, v, icon) => html`<div class="det"><div><span>${k}</span><b>${v}</b></div>${icon(16)}</div>`;
+    return html`<div class="det-t"><h2>Details</h2><span class="faint small">جزئیات این سرور</span></div>
+      <div class="det-grid">
+        ${item("تانل‌های سالم", `${ok} / ${all}`, I.tunnel)}
+        ${item("روشن بودن", fmtUptimeShort(ov.node.uptime_s), I.clock)}
+        ${item("میانگین پینگ", avgPing == null ? "—" : ms(avgPing), I.wave)}
+        ${item("افت بسته", avgLoss == null ? "—" : `${avgLoss.toFixed(avgLoss < 1 ? 1 : 0)}%`, I.drop)}
+        ${item("امروز", fmtBytes(sumToday()), I.cal)}
+        ${item(ov.node.nic ? "این ماه، کارت شبکه" : "این ماه", fmtBytes(nic), I.globe)}
+      </div>`;
+  }
+  const fmtUptimeShort = (s) => { const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`; };
+
+  // The network card: a plug in a lens, today's rates on callouts.
+  function nicCard() {
+    const ov = S.ov, nic = ov.node.nic || "nic", m = metrics("1h", ["cpu", "nic"]), s = m && m.series && m.series.nic;
+    const r = { rx: s ? lastVal(s.a) || 0 : 0, tx: s ? lastVal(s.b) || 0 : 0 };
+    const today = ov.node.nic ? ov.node.nic_today.rx + ov.node.nic_today.tx : sumToday();
+    return html`${raw(`<svg class="nic-art" viewBox="0 0 300 190" aria-hidden="true">
+        <defs><linearGradient id="plug" x1="0" x2="1"><stop offset="0" stop-color="#f1f1f4"/><stop offset=".6" stop-color="#bdbdc4"/><stop offset="1" stop-color="#8d8d95"/></linearGradient>
+          <radialGradient id="lens" cx=".45" cy=".4" r=".6"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs>
+        <path d="M-10 196 C 60 170, 70 120, 128 104" fill="none" stroke="#161618" stroke-width="16" stroke-linecap="round"/>
+        <path d="M-10 190 C 58 166, 68 118, 126 100" fill="none" stroke="#4a4a50" stroke-width="3" stroke-linecap="round" opacity=".7"/>
+        <g transform="translate(150 86) rotate(-28)">
+          <rect x="-34" y="-20" width="44" height="40" rx="5" fill="#1d1d20"/>
+          <rect x="6" y="-24" width="52" height="48" rx="6" fill="url(#plug)"/>
+          <g stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"><line x1="50" y1="-16" x2="50" y2="-6"/><line x1="50" y1="-2" x2="50" y2="8"/><line x1="50" y1="12" x2="50" y2="18"/></g>
+          <rect x="16" y="24" width="26" height="8" rx="2" fill="#a0a0a8"/>
+        </g>
+        <circle cx="152" cy="88" r="62" fill="url(#lens)" stroke="#fff" stroke-opacity=".5" stroke-width="1.4"/>
+        <circle cx="152" cy="88" r="70" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="1"/>
+        <circle cx="203" cy="52" r="3" fill="#fff"/><line x1="206" y1="50" x2="236" y2="34" stroke="#fff" stroke-opacity=".6"/>
+        <text x="290" y="28" text-anchor="end" direction="ltr">↓ ${esc(fmtRate(r.rx))}</text><text class="cap" x="290" y="42" text-anchor="end">دریافت</text>
+        <circle cx="100" cy="128" r="3" fill="#fff"/><line x1="97" y1="130" x2="62" y2="150" stroke="#fff" stroke-opacity=".6"/>
+        <text x="14" y="164" direction="ltr">↑ ${esc(fmtRate(r.tx))}</text><text class="cap" x="14" y="178">ارسال</text>
+      </svg>`)}
+      <div class="nic-body"><div><span>کارت شبکه</span><b>${nic}</b></div><div class="today"><span>امروز</span><b>${fmtBytes(today)}</b></div></div>`;
+  }
+
+  // Ping: a die with traces; the average over working tunnels in its centre.
+  function pingCard() {
+    const ts = visible().filter((t) => t.health && t.health.probes >= 3 && t.health.passes);
+    const vals = ts.map((t) => t.health.ping_ms), avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    const lo = vals.length ? Math.min(...vals) : null, hi = vals.length ? Math.max(...vals) : null;
+    const pins = [];
+    for (let k = 0; k < 6; k++) {
+      const y = 62 + k * 14, hot = k === 1 || k === 4;
+      pins.push(`<path d="M104 ${y} H${70 - k * 4} V${y + (k < 3 ? -10 : 10)} H${20 + k * 3}" class="${hot ? "run" : ""}" stroke="${hot ? "var(--accent)" : "var(--card-3)"}"/>`);
+      pins.push(`<path d="M196 ${y} H${230 + k * 4} V${y + (k < 3 ? -10 : 10)} H${282 - k * 3}" class="${k === 2 ? "run" : ""}" stroke="${k === 2 ? "var(--accent)" : "var(--card-3)"}"/>`);
+    }
+    return html`${raw(`<svg class="ping-art" viewBox="0 0 300 196" aria-hidden="true">
+        <defs><linearGradient id="die" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--card-3)"/><stop offset="1" stop-color="var(--card-2)"/></linearGradient></defs>
+        <g fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${pins.join("")}</g>
+        <g stroke="var(--ink-3)" stroke-width="2">${[0, 1, 2, 3, 4, 5].map((k) => `<line x1="96" y1="${62 + k * 14}" x2="104" y2="${62 + k * 14}"/><line x1="196" y1="${62 + k * 14}" x2="204" y2="${62 + k * 14}"/>`).join("")}</g>
+        <rect x="104" y="46" width="92" height="100" rx="12" fill="url(#die)" stroke="var(--line-2)"/>
+        <rect x="116" y="58" width="68" height="40" rx="8" fill="var(--card)" stroke="var(--line)"/>
+        <text class="die-v" x="150" y="85" text-anchor="middle" direction="ltr">${avg == null ? "—" : esc(avg.toFixed(avg < 100 ? 1 : 0))}</text>
+        <text class="die-k" x="150" y="120" text-anchor="middle">PING</text>
+        <text class="die-l" x="150" y="134" text-anchor="middle">MILLISECONDS</text>
+      </svg>`)}
+      <div class="ping-body">${lo == null ? html`<span>پینگی ثبت نشده</span>` : html`<span>کمترین <b>${ms(lo)}</b></span><span>بیشترین <b>${ms(hi)}</b></span>`}
+        <a class="btn sm" href="#/stats">${I.chart(14)} نمودار</a></div>`;
+  }
+
+  // Load: the processor's share in use, on a horseshoe.
+  function loadCard() {
+    const n = S.ov.node, cpu = n.cpus ? Math.min(100, (n.load[0] / n.cpus) * 100) : 0;
+    const m = metrics("1h", ["cpu", "nic"]), s = m && m.series && m.series.cpu;
+    const busy = s ? lastVal(s.a) : null, hot = s ? lastVal(s.b) : null;
+    const v = busy == null ? cpu : busy;
+    const cx = 165, cy = 150, R = 108, a0 = 150, sweep = 240;
+    const pt = (deg) => { const a = (deg * Math.PI) / 180; return [cx + R * Math.cos(a), cy + R * Math.sin(a)]; };
+    const arc = (d0, d1) => { const [x0, y0] = pt(d0), [x1, y1] = pt(d1); return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${R} ${R} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`; };
+    const len = (Math.PI * R * sweep) / 180, f = Math.max(0, Math.min(1, v / 100));
+    const [ex0, ey0] = pt(a0), [ex1, ey1] = pt(a0 + sweep);
+    return html`<div class="load-t"><h2>Server load</h2><span>پردازنده، الان${n.cpus ? ` · ${n.cpus} هسته` : ""}</span></div>
+      ${raw(`<svg class="horse" viewBox="0 0 330 250" role="img" aria-label="پردازنده ${v.toFixed(0)} درصد">
+        <defs><linearGradient id="horse-fill" x1="0" x2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient></defs>
+        <path class="trk" d="${arc(a0, a0 + sweep)}"/>
+        <path class="rest" d="${arc(a0, a0 + sweep)}" stroke-dasharray="${len.toFixed(1)}" stroke-dashoffset="${(-len * f).toFixed(1)}" opacity=".35"/>
+        <path class="val" d="${arc(a0, a0 + sweep)}" stroke-dasharray="${len.toFixed(1)}" stroke-dashoffset="${(len * (1 - f)).toFixed(1)}"/>
+        <path class="bolt" transform="translate(157 104) scale(.7)" d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/>
+        <text class="big" x="${cx}" y="${cy + 22}" text-anchor="middle" direction="ltr">${v.toFixed(0)}%</text>
+        <text class="end" x="${ex0.toFixed(0)}" y="${(ey0 + 34).toFixed(0)}" text-anchor="middle">0%</text>
+        <text class="end" x="${ex1.toFixed(0)}" y="${(ey1 + 34).toFixed(0)}" text-anchor="middle">100%</text>
+      </svg>`)}
+      <div class="load-foot"><span>حافظه<b>${fmtBytes(n.mem_used)} / ${fmtBytes(n.mem_total)}</b></span><span title="یک تانل معمولاً روی یک هسته پردازش می‌شود؛ اگر این عدد نزدیک ۱۰۰ باشد، همان هسته گلوگاه سرعت است">پرکارترین هسته<b>${hot == null ? "—" : hot.toFixed(0) + "%"}</b></span></div>`;
+  }
+
+  // History on the dashboard: all tunnels, or the network card, over a range.
+  function histCard() {
+    const h = S.hist, key = h.src === "nic" ? "nic" : "all";
+    const m = metrics(h.range, ["all", "nic"]), s = m && m.series && m.series[key];
+    return html`<div class="hist-head"><h2>Traffic history</h2><span class="faint small">${h.src === "nic" ? "همه‌ی ترافیک کارت شبکه" : "ترافیک همه‌ی تانل‌ها"}</span><span class="grow"></span>
+        <div class="seg sm" role="radiogroup" aria-label="منبع">${[["all", "تانل‌ها"], ["nic", "کارت شبکه"]].map(([v, l]) => html`<button type="button" role="radio" aria-checked="${h.src === v}" class="${h.src === v ? "on" : ""}" data-act="hist-src" data-value="${v}">${l}</button>`)}</div>
+        ${rangeSeg("hist-range", h.range)}
+        <a class="btn sm" href="#/stats">${I.chart(14)} آمار کامل</a></div>
+      ${rateFigs(s)}
+      <div class="chart-wrap ${m === undefined ? "loading" : ""}">${rateChart("dash-hist", m, s, "tall")}</div>`;
+  }
+
+  const rangeSeg = (act, cur, only) => html`<div class="seg sm" role="radiogroup" aria-label="بازه">${RANGES.filter(([v]) => !only || only.includes(v)).map(([v, l]) => html`<button type="button" role="radio" aria-checked="${cur === v}" class="${cur === v ? "on" : ""}" data-act="${act}" data-value="${v}">${l}</button>`)}</div>`;
+
+  // Average, peak and volume of both directions of a rate series.
+  function rateFigs(s) {
+    const f = (k, v, cls) => html`<div class="fig"><span><i style="background:var(--${cls})"></i>${k}</span><b>${v}</b></div>`;
+    if (!s) return html`<div class="figrow">${["میانگین دانلود", "اوج دانلود", "حجم دانلود", "میانگین آپلود", "اوج آپلود", "حجم آپلود"].map((k, i) => f(k, "—", i < 3 ? "rx" : "tx"))}</div>`;
+    return html`<div class="figrow">
+      ${f("میانگین دانلود", fmtRate(s.avg[0]), "rx")}${f("اوج دانلود", fmtRate(s.peak[0]), "rx")}${f("حجم دانلود", fmtBytes(s.sum[0] / 8), "rx")}
+      ${f("میانگین آپلود", fmtRate(s.avg[1]), "tx")}${f("اوج آپلود", fmtRate(s.peak[1]), "tx")}${f("حجم آپلود", fmtBytes(s.sum[1] / 8), "tx")}</div>`;
+  }
+
+  function rateChart(id, m, s, size) {
+    return tsChart(id, m, s ? [{ name: "دانلود", cls: "rx", vals: s.a, peaks: s.pa }, { name: "آپلود", cls: "tx", vals: s.b, peaks: s.pb }] : [], "bps", { size, legend: true });
   }
 
   // ---------- drawer ----------
+  function drawerChart(t) {
+    const k = "t:" + t.name, m = metrics(S.dr.range, [k]);
+    return rateChart("dr-" + t.name, m, m && m.series && m.series[k], "short");
+  }
+
   function viewDrawer() {
     const d = S.drawer;
     let body = "";
@@ -599,7 +770,7 @@
     } else {
       const t = tunnel(d.name);
       if (!t) { S.drawer = null; return ""; }
-      const r = rate(t.name), fwd = S.ov.forwards.filter((f) => f.tunnel === t.name), tr = S.traffic[t.name];
+      const r = rate(t.name), fwd = S.ov.forwards.filter((f) => f.tunnel === t.name);
       body = html`<header><div><h3>${t.name}</h3><div class="sub">${kindTitle(t)} به ${t.peer || "دستگاه دیگر"} <span class="ltr">${t.far_ip}</span></div></div>
           <button class="btn sm ghost icon" data-act="drawer-close" aria-label="بستن">${I.x(16)}</button></header>
         <div class="body">
@@ -612,7 +783,7 @@
             <div><div class="k">از ابتدا</div><div class="v ltr">${fmtBytes(t.total.rx + t.total.tx)}</div></div>
             <div><div class="k">MTU</div><div class="v ltr">${t.mtu || "-"}</div></div>
           </div>
-          <div><h4>۲۴ ساعت گذشته</h4>${tr ? chart(t.name, tr.series) : html`<div class="muted small">آمار بعد از چند دقیقه کار سرویس جمع می‌شود.</div>`}</div>
+          <div><h4>ترافیک ${rangeSeg("dr-range", S.dr.range, ["1h", "24h", "7d", "30d"])}</h4>${drawerChart(t)}</div>
           <div><h4>لایه‌ها</h4><div class="layers">${(t.stack || []).map((l) => html`<div class="layer"><i class="dot ${l.up ? "ok" : "bad"}"></i><span class="k">${l.name}</span><span class="faint">${l.kind}</span><span class="m">MTU ${l.mtu || "-"}</span></div>`)}</div></div>
           <dl class="kv">
             ${t.here4 ? html`<dt>IPv4 این طرف / آن طرف</dt><dd class="ltr">${t.here4.split("/")[0]} ⇄ ${t.there4}</dd>` : ""}
@@ -625,6 +796,7 @@
           ${t.error ? html`<div class="note bad"><div class="mono">${t.error}</div></div>` : ""}
           <div class="row">
             <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
+            <button class="btn sm" data-act="st-pick" data-name="${t.name}">${I.chart(15)} آمار</button>
             ${t.managed ? "" : html`<button class="btn sm" data-act="mtu" data-name="${t.name}">${I.ruler(15)} بهترین MTU</button>
               <button class="btn sm" data-act="open-tunnel" data-name="${t.name}">${I.gear(15)} تنظیمات</button>`}
           </div>
@@ -635,59 +807,185 @@
     return html`<div class="drawer-scrim${enter}" data-act="drawer-close"></div><aside class="drawer${enter}" role="dialog" aria-modal="true" aria-label="جزئیات">${body}</aside>`;
   }
 
-  // Received / sent over the last 24 hours (two series, one axis, bits/s).
-  function chart(id, series) {
-    const W = 400, H = 150, P = { l: 4, r: 44, t: 8, b: 20 };
-    const rx = series.map((p) => (p.rx * 8) / 300), tx = series.map((p) => (p.tx * 8) / 300);
-    const max = Math.max(1000, ...rx, ...tx), n = series.length;
-    const nice = niceMax(max);
-    const x = (i) => P.l + (i / (n - 1)) * (W - P.l - P.r), y = (v) => P.t + (1 - v / nice) * (H - P.t - P.b);
-    const line = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("");
-    const area = (vals) => `${line(vals)}L${x(n - 1)} ${y(0)}L${x(0)} ${y(0)}Z`;
-    let grid = "";
-    // Lines in the SVG; labels in HTML so they never stretch with it.
-    let labels = "";
-    for (const f of [0, 0.5, 1]) {
-      grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(nice * f)}" y2="${y(nice * f)}" vector-effect="non-scaling-stroke"/>`;
-      labels += `<span class="ya" style="top:${((y(nice * f) / H) * 100).toFixed(2)}%">${fmtRate(nice * f)}</span>`;
+  // ---------- history: fetching and drawing ----------
+  // The daemon keeps every series at five resolutions; a request names a
+  // range and the series it wants. Answers are kept until a newer point
+  // can exist (10 s for the last hour, longer for longer ranges).
+  const RANGES = [["1h", "۱ ساعت"], ["6h", "۶ ساعت"], ["24h", "۲۴ ساعت"], ["7d", "۷ روز"], ["30d", "۳۰ روز"], ["90d", "۹۰ روز"], ["all", "از ابتدا"]];
+  const M = { cache: {}, busy: {} };
+  function metrics(range, keys) {
+    const k = range + "|" + keys.join(","), c = M.cache[k];
+    const ttl = range === "1h" ? 10e3 : range === "6h" || range === "24h" ? 60e3 : 300e3;
+    if ((!c || Date.now() - c.at > ttl) && !M.busy[k]) {
+      M.busy[k] = true;
+      api("GET", `metrics?range=${range}${keys.length ? "&keys=" + encodeURIComponent(keys.join(",")) : ""}`)
+        .then((v) => { M.cache[k] = { at: Date.now(), v }; })
+        .catch(() => { M.cache[k] = { at: Date.now(), v: null }; })
+        .finally(() => { delete M.busy[k]; if (S.modal && !S.modal.passive) return; if (S.edit) patchLive(); else draw(); });
     }
-    labels += `<span class="xa s">۲۴ ساعت پیش</span><span class="xa e">اکنون</span>`;
-    CHARTS[id] = { rx, tx, n, x, y, W, H };
-    return html`<div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span></div>
-      <div class="chart" data-chart="${id}">${raw(`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="نمودار ترافیک ۲۴ ساعت" style="direction:ltr">${grid}
-        <path class="area rx" d="${area(rx)}"/><path class="area tx" d="${area(tx)}"/><path class="line rx" d="${line(rx)}" vector-effect="non-scaling-stroke"/><path class="line tx" d="${line(tx)}" vector-effect="non-scaling-stroke"/>
-        <g class="hover" style="display:none"><line class="cross" y1="${P.t}" y2="${H - P.b}" vector-effect="non-scaling-stroke"/><circle class="mark rx" r="4"/><circle class="mark tx" r="4"/></g></svg>`)}${raw(labels)}<div class="tip" hidden></div></div>`;
+    return c ? c.v : undefined; // undefined: on its way; null: unavailable
+  }
+
+  const fmtU = (v, unit) => v == null || isNaN(v) ? "—" : unit === "bps" ? fmtRate(v) : unit === "%" ? `${v.toFixed(v < 10 ? 1 : 0)}%` : unit === "ms" ? ms(v) : v.toFixed(2);
+  const dtf = (o) => new Intl.DateTimeFormat("fa-IR-u-nu-latn", o);
+  const F = { hm: dtf({ hour: "2-digit", minute: "2-digit", hour12: false }), dm: dtf({ day: "numeric", month: "short" }), dmhm: dtf({ day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }), dmy: dtf({ day: "numeric", month: "long", year: "numeric" }) };
+  // An axis label: the time of day within a day, the date beyond.
+  const axisTime = (unix, span) => (span <= 2 * 86400 ? F.hm : F.dm).format(new Date(unix * 1000));
+  // A tooltip's time: the interval a point covers.
+  const pointTime = (unix, step) => step >= 86400 ? F.dmy.format(new Date(unix * 1000)) : `${F.dmhm.format(new Date(unix * 1000))}${step > 60 ? ` تا ${F.hm.format(new Date((unix + step) * 1000))}` : ""}`;
+
+  // A time series: each line's averages over a 10% wash, its peaks as a
+  // thin line of the same colour above, gaps where nothing was recorded.
+  // One axis and one unit per chart; hovering shows every line at that time.
+  function tsChart(id, v, lines, unit, opts = {}) {
+    const H = opts.size === "tall" ? 240 : opts.size === "short" ? 130 : 190, W = 1000, P = { t: 10, b: 2 };
+    const legend = opts.legend !== false && lines.length > 1 ? html`<div class="legend">${lines.map((l) => html`<span><i class="${l.cls}" style="background:var(--${l.cls})"></i>${l.name}</span>`)}${lines.some((l) => l.peaks) ? html`<span><i class="pk"></i>محدوده‌ی روشن: تا اوج همان بازه</span>` : ""}</div>` : "";
+    const has = v && v.points && lines.some((l) => l.vals && l.vals.some((x) => x != null));
+    if (!has) {
+      const why = v === undefined ? "در حال خواندن…" : v === null ? "سرویس روی این سرور هنوز تاریخچه نگه نمی‌دارد؛ بعد از به‌روزرسانی جمع می‌شود." : "در این بازه داده‌ای ثبت نشده.";
+      return html`${legend}<div class="chart ${opts.size || ""}"><div class="plot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><line class="base" x1="0" x2="${W}" y1="${H - P.b}" y2="${H - P.b}" vector-effect="non-scaling-stroke"/></svg></div><div class="nodata">${why}</div></div><div class="chart-gap"></div>`;
+    }
+    const n = v.points;
+    let max = Math.max(...lines.flatMap((l) => (l.peaks || l.vals).filter((x) => x != null)), unit === "bps" ? 1000 : unit === "%" ? 5 : 1);
+    max = unit === "%" && max > 50 ? 100 : niceMax(max);
+    const x = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W), y = (val) => P.t + (1 - Math.min(val, max) / max) * (H - P.t - P.b);
+    const runs = (vals) => { const out = []; let cur = null; vals.forEach((val, i) => { if (val == null) { cur = null; return; } if (!cur) out.push((cur = [])); cur.push([i, val]); }); return out; };
+    const line = (vals) => runs(vals).map((r) => r.map(([i, val], k) => `${k ? "L" : "M"}${x(i).toFixed(1)} ${y(val).toFixed(1)}`).join("") + (r.length === 1 ? `h2` : "")).join("");
+    // The band between a line's averages and its peaks, where both exist.
+    const band = (vals, peaks) => runs(vals.map((v, i) => (v == null || peaks[i] == null ? null : [v, peaks[i]]))).map((r) =>
+      r.map(([i, [, p]], k) => `${k ? "L" : "M"}${x(i).toFixed(1)} ${y(p).toFixed(1)}`).join("") + r.slice().reverse().map(([i, [v]]) => `L${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("") + "Z").join("");
+    const area = (vals) => runs(vals).map((r) => `M${x(r[0][0]).toFixed(1)} ${y(0)}` + r.map(([i, val]) => `L${x(i).toFixed(1)} ${y(val).toFixed(1)}`).join("") + `L${x(r[r.length - 1][0]).toFixed(1)} ${y(0)}Z`).join("");
+    let grid = "", labels = "";
+    for (const f of [0, 0.5, 1]) {
+      grid += `<line class="${f ? "grid" : "base"}" x1="0" x2="${W}" y1="${y(max * f).toFixed(1)}" y2="${y(max * f).toFixed(1)}" vector-effect="non-scaling-stroke"/>`;
+      labels += `<span class="ya" style="top:${((y(max * f) / H) * 100).toFixed(2)}%">${esc(fmtU(max * f, unit))}</span>`;
+    }
+    const span = v.step * n, ticks = narrow() ? 3 : 5;
+    let xl = "";
+    for (let k = 0; k < ticks; k++) {
+      const i = Math.round((k * (n - 1)) / (ticks - 1));
+      const t = k === ticks - 1 ? "اکنون" : axisTime(v.start + i * v.step, span);
+      xl += `<span class="xa ${k === 0 ? "first" : k === ticks - 1 ? "last" : ""}" style="left:${((x(i) / W) * 100).toFixed(2)}%">${esc(t)}</span>`;
+    }
+    const body = lines.map((l) => `<path class="area ${l.cls}" d="${area(l.vals)}"/>${l.peaks ? `<path class="band ${l.cls}" d="${band(l.vals, l.peaks)}"/>` : ""}<path class="line ${l.cls}" d="${line(l.vals)}" vector-effect="non-scaling-stroke"/>`).join("");
+    CHARTS[id] = { n, x, y, W, H, lines, unit, start: v.start, step: v.step };
+    return html`${legend}<div class="chart ${opts.size || ""}" data-chart="${id}">
+      <div class="plot">${raw(`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(opts.label || "نمودار")}">${grid}${body}
+        <g class="hover" style="display:none"><line class="cross" y1="${P.t}" y2="${H - P.b}" vector-effect="non-scaling-stroke"/>${lines.map((l) => `<circle class="mark ${l.cls}" r="4"/>`).join("")}</g></svg>`)}${raw(xl)}<div class="tip" hidden></div></div>${raw(labels)}</div><div class="chart-gap"></div>`;
   }
   const CHARTS = {};
-  const niceMax = (v) => { const e = 10 ** Math.floor(Math.log10(v)), m = v / e; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * e; };
+  const niceMax = (v) => { if (!(v > 0)) return 1; const e = 10 ** Math.floor(Math.log10(v)), m = v / e; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * e; };
 
   function wireCharts() {
     for (const el of $$("[data-chart]")) {
-      if (el._wired || !CHARTS[el.dataset.chart]) continue;
+      if (el._wired) continue;
       el._wired = true;
-      const svgEl = $("svg", el), g = $(".hover", el), tip = $(".tip", el);
-      const move = (e) => {
-        const c = CHARTS[el.dataset.chart]; if (!c) return;
+      const plot = $(".plot", el);
+      const show = (clientX) => {
+        const c = CHARTS[el.dataset.chart], svgEl = $("svg", el), g = $(".hover", el), tip = $(".tip", el);
+        if (!c || !svgEl || !g) return;
         const box = svgEl.getBoundingClientRect();
-        const px = ((e.clientX - box.left) / box.width) * c.W;
-        let i = Math.round(((px - c.x(0)) / (c.x(c.n - 1) - c.x(0))) * (c.n - 1));
-        i = Math.max(0, Math.min(c.n - 1, i));
+        const i = Math.max(0, Math.min(c.n - 1, Math.round(((clientX - box.left) / box.width) * (c.n - 1))));
         g.style.display = "";
-        $("line", g).setAttribute("x1", c.x(i)); $("line", g).setAttribute("x2", c.x(i));
-        const [m1, m2] = $$("circle", g);
-        m1.setAttribute("cx", c.x(i)); m1.setAttribute("cy", c.y(c.rx[i]));
-        m2.setAttribute("cx", c.x(i)); m2.setAttribute("cy", c.y(c.tx[i]));
-        const mins = (c.n - 1 - i) * 5;
+        const cross = $("line", g); cross.setAttribute("x1", c.x(i)); cross.setAttribute("x2", c.x(i));
+        $$("circle", g).forEach((m, k) => { const val = c.lines[k].vals[i]; m.style.display = val == null ? "none" : ""; if (val != null) { m.setAttribute("cx", c.x(i)); m.setAttribute("cy", c.y(val)); } });
         tip.hidden = false;
-        tip.innerHTML = part(html`<div class="faint">${mins ? (mins >= 60 ? `${Math.floor(mins / 60)} ساعت و ${mins % 60} دقیقه پیش` : `${mins} دقیقه پیش`) : "اکنون"}</div>
-          <div class="s"><i style="background:var(--rx)"></i>دانلود <b class="ltr">${fmtRate(c.rx[i])}</b></div><div class="s"><i style="background:var(--tx)"></i>آپلود <b class="ltr">${fmtRate(c.tx[i])}</b></div>`);
-        const left = (c.x(i) / c.W) * box.width;
-        tip.style.left = Math.min(box.width - tip.offsetWidth, Math.max(0, left - tip.offsetWidth / 2)) + "px";
-        tip.style.top = "-8px";
+        tip.innerHTML = part(html`<div class="t">${pointTime(c.start + i * c.step, c.step)}</div>${c.lines.map((l) => html`<div class="s"><i style="background:var(--${l.cls})"></i>${l.name}<b>${fmtU(l.vals[i], c.unit)}</b>${l.peaks && l.peaks[i] != null ? html`<em>اوج ${fmtU(l.peaks[i], c.unit)}</em>` : ""}</div>`)}`);
+        const px = (c.x(i) / c.W) * box.width;
+        tip.style.left = Math.min(box.width - tip.offsetWidth, Math.max(0, px - tip.offsetWidth / 2)) + "px";
+        tip.style.top = "-12px"; tip.style.transform = "translateY(-100%)";
       };
-      svgEl.addEventListener("pointermove", move);
-      svgEl.addEventListener("pointerleave", () => { g.style.display = "none"; tip.hidden = true; });
+      const hide = () => { const g = $(".hover", el), tip = $(".tip", el); if (g) g.style.display = "none"; if (tip) tip.hidden = true; };
+      plot.addEventListener("pointermove", (e) => show(e.clientX));
+      plot.addEventListener("pointerleave", hide);
+      // Keyboard: arrows move along the time axis.
+      el.tabIndex = 0;
+      let at = -1;
+      el.addEventListener("keydown", (e) => {
+        const c = CHARTS[el.dataset.chart]; if (!c || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+        e.preventDefault();
+        at = e.key === "Home" ? 0 : e.key === "End" ? c.n - 1 : Math.max(0, Math.min(c.n - 1, (at < 0 ? c.n - 1 : at) + (e.key === "ArrowRight" ? 1 : -1)));
+        const box = $("svg", el).getBoundingClientRect();
+        show(box.left + (c.x(at) / c.W) * box.width);
+      });
+      el.addEventListener("blur", hide);
     }
+  }
+
+  // ---------- statistics ----------
+  // One range for the whole page; the subject is the server (network card,
+  // all tunnels, CPU, memory, load and every tunnel side by side) or one
+  // tunnel (its traffic, ping and loss, and its totals since it was made).
+  function viewStats() {
+    const st = S.st, ts = visible();
+    if (st.subject !== "server" && !tunnel(st.subject)) st.subject = "server";
+    const filters = html`<div class="filters">${rangeSeg("st-range", st.range)}
+      <select class="input" data-act="st-subject" aria-label="موضوع">
+        <option value="server" ${st.subject === "server" ? "selected" : ""}>کل سرور</option>
+        ${ts.map((t) => html`<option value="${t.name}" ${st.subject === t.name ? "selected" : ""}>تانل ${t.name} · ${kindTitle(t)}${t.peer ? " به " + t.peer : ""}</option>`)}
+      </select></div>`;
+    return html`${filters}${st.subject === "server" ? statsServer() : statsTunnel(tunnel(st.subject))}`;
+  }
+
+  const sinceText = (unix) => unix ? `از ${F.dmy.format(new Date(unix * 1000))}` : "";
+
+  function statsServer() {
+    const st = S.st, m = metrics(st.range, []), se = (m && m.series) || {}, ts = visible();
+    const pct = (key, a, b, names) => tsChart("st-" + key, m, se[key] ? [{ name: names[0], cls: "rx", vals: se[key][a], peaks: se[key]["p" + a] }].concat(b ? [{ name: names[1], cls: "tx", vals: se[key][b], peaks: se[key]["p" + b] }] : []) : [], key === "load" ? "" : "%", { size: "short" });
+    const loading = m === undefined ? "loading" : "";
+    const rows = ts.map((t) => {
+      const s = se["t:" + t.name], p = se["p:" + t.name];
+      return html`<tr class="hit" data-act="st-pick" data-name="${t.name}"><td><span class="state"><i class="dot ${tunHealth(t)}"></i><b>${t.name}</b></span> <span class="faint small">${kindTitle(t)}</span></td>
+        <td class="num">${s ? fmtRate(s.avg[0]) : "—"}</td><td class="num hide-sm">${s ? fmtRate(s.peak[0]) : "—"}</td><td class="num hide-sm">${s ? fmtRate(s.avg[1]) : "—"}</td>
+        <td class="num">${s ? fmtBytes((s.sum[0] + s.sum[1]) / 8) : "—"}</td><td class="num hide-sm">${p && p.avg[0] ? ms(p.avg[0]) : "—"}</td><td class="num hide-sm">${p ? `${(p.avg[1] || 0).toFixed(1)}%` : "—"}</td>
+        <td class="num hide-sm">${fmtBytes(t.total.rx + t.total.tx)}</td></tr>`;
+    });
+    return html`<div class="stats ${loading}">
+      <div class="panel wide"><header><h2>کارت شبکه</h2><span class="aside">همه‌ی ترافیک سرور، همان چیزی که دیتاسنتر می‌شمارد${se.nic ? " · " + sinceText(se.nic.since) : ""}</span></header><div class="in">${rateFigs(se.nic)}${rateChart("st-nic", m, se.nic, "tall")}</div></div>
+      <div class="panel wide"><header><h2>همه‌ی تانل‌ها</h2><span class="aside">ترافیک کاربران از داخل تانل‌ها</span></header><div class="in">${rateFigs(se.all)}${rateChart("st-all", m, se.all)}</div></div>
+      <div class="panel"><header><h2>پردازنده</h2><span class="aside">${se.cpu ? `میانگین ${fmtU(se.cpu.avg[0], "%")} · پرکارترین هسته تا ${fmtU(se.cpu.peak[1], "%")}` : ""}</span></header><div class="in">${pct("cpu", "a", "b", ["همه‌ی هسته‌ها", "پرکارترین هسته"])}
+        <p class="help" style="margin:0">بسته‌های یک تانل معمولاً روی یک هسته پردازش می‌شوند. اگر «پرکارترین هسته» به ۱۰۰٪ می‌رسد ولی میانگین پایین است، گلوگاه سرعت همان یک هسته است: حالت سرعت «حداکثر» یا مسیرهای موازی کمک می‌کند.</p></div></div>
+      <div class="panel"><header><h2>حافظه</h2><span class="aside">${se.mem ? `میانگین ${fmtU(se.mem.avg[0], "%")}` : ""}</span></header><div class="in">${pct("mem", "a", "b", ["حافظه", "swap"])}</div></div>
+      <div class="panel"><header><h2>Load</h2><span class="aside">میانگین یک‌دقیقه‌ای${S.ov.node.cpus ? ` · ${S.ov.node.cpus} هسته` : ""}</span></header><div class="in">${pct("load", "a", null, ["load"])}</div></div>
+      <div class="panel"><header><h2>حجم روزانه</h2><span class="aside">همه‌ی تانل‌ها، ۳۰ روز گذشته</span></header><div class="in">${dailyBars(ts.map((t) => t.name))}</div></div>
+      <div class="panel wide"><header><h2>تانل‌ها در این بازه</h2><span class="aside">روی هر تانل بزنید تا نمودارهای خودش باز شود</span></header>
+        ${ts.length ? html`<div class="tbl-wrap"><table class="t"><thead><tr><th>تانل</th><th class="num">میانگین ↓</th><th class="num hide-sm">اوج ↓</th><th class="num hide-sm">میانگین ↑</th><th class="num">حجم</th><th class="num hide-sm">پینگ</th><th class="num hide-sm">افت</th><th class="num hide-sm">از ابتدا</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<div class="in muted">تانلی نیست.</div>`}</div>
+    </div>`;
+  }
+
+  function statsTunnel(t) {
+    const st = S.st, keys = ["t:" + t.name, "p:" + t.name], m = metrics(st.range, keys), se = (m && m.series) || {};
+    const s = se[keys[0]], p = se[keys[1]], tr = S.traffic[t.name];
+    const facts = html`<div class="figs" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+      <div><div class="k">امروز</div><div class="v ltr">${fmtBytes(t.today.rx + t.today.tx)}</div></div>
+      <div><div class="k">این ماه</div><div class="v ltr">${fmtBytes(t.month.rx + t.month.tx)}</div></div>
+      <div><div class="k">از ساخت تانل${tr && tr.since ? " (" + F.dm.format(new Date(tr.since * 1000)) + ")" : ""}</div><div class="v ltr">${fmtBytes(t.total.rx + t.total.tx)}</div></div>
+      <div><div class="k">تست‌های سرعت (جدا حساب می‌شود)</div><div class="v ltr">${fmtBytes((t.tests.rx || 0) + (t.tests.tx || 0))}</div></div></div>`;
+    return html`<div class="stats ${m === undefined ? "loading" : ""}">
+      <div class="panel wide"><header><h2>ترافیک ${t.name}</h2><span class="aside">${kindTitle(t)}${t.peer ? " به " + t.peer : ""} · <button class="btn sm ghost" data-act="drawer" data-type="tunnel" data-name="${t.name}">جزئیات تانل</button></span></header>
+        <div class="in">${facts}${rateFigs(s)}${rateChart("st-t", m, s, "tall")}</div></div>
+      <div class="panel"><header><h2>پینگ</h2><span class="aside">${p && p.avg[0] ? `میانگین ${ms(p.avg[0])} · بیشترین ${ms(p.peak[0])}` : ""}</span></header><div class="in">${tsChart("st-ping", m, p ? [{ name: "پینگ", cls: "rx", vals: p.a, peaks: p.pa }] : [], "ms", { size: "short" })}</div></div>
+      <div class="panel"><header><h2>افت بسته</h2><span class="aside">${p ? `میانگین ${(p.avg[1] || 0).toFixed(1)}%` : ""}</span></header><div class="in">${tsChart("st-loss", m, p ? [{ name: "افت", cls: "tx", vals: p.b, peaks: p.pb }] : [], "%", { size: "short" })}</div></div>
+      <div class="panel wide"><header><h2>حجم روزانه</h2><span class="aside">۳۰ روز گذشته</span></header><div class="in">${dailyBars([t.name])}</div></div>
+    </div>`;
+  }
+
+  // Bytes per day for some tunnels, download on upload, from the traffic
+  // accounting (kept 62 days, speed tests left out).
+  function dailyBars(names) {
+    const days = [];
+    for (const n of names) {
+      const s = S.traffic[n];
+      if (!s || !s.days) continue;
+      s.days.forEach((d, i) => { if (!days[i]) days[i] = { date: d.date, rx: 0, tx: 0 }; days[i].rx += d.rx; days[i].tx += d.tx; });
+    }
+    if (!days.length) return html`<div class="muted small">آمار روزانه بعد از چند دقیقه کار سرویس جمع می‌شود.</div>`;
+    const max = Math.max(1, ...days.map((d) => d.rx + d.tx));
+    const label = (d) => F.dm.format(new Date(d.date + "T12:00:00"));
+    return html`<div class="days" role="img" aria-label="حجم روزانه">${days.map((d) => html`<div class="d" title="${label(d)}: دانلود ${fmtBytes(d.rx)} · آپلود ${fmtBytes(d.tx)}">
+        <i class="rx" style="height:${((d.rx / max) * 100).toFixed(2)}%"></i><i class="tx" style="height:${((d.tx / max) * 100).toFixed(2)}%"></i></div>`)}</div>
+      <div class="days-x"><span>${label(days[0])}</span><span>${label(days[days.length - 1])}</span></div>
+      <div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span><span class="faint">بیشترین روز ${fmtBytes(max)}</span></div>`;
   }
 
   // ---------- tunnels ----------
@@ -985,10 +1283,13 @@
   // The page is rendered only when results change. Between renders a frame
   // loop eases the gauge toward the latest sample, so the needle and the
   // trace move continuously although samples arrive five times a second.
-  const G = { v: 0, to: 0, phase: "", seq: -1, hist: [], raf: 0, at: 0, sig: "", seen: {} };
+  const G = { v: 0, to: 0, phase: "", seq: -1, hist: [], raf: 0, at: 0, sig: "", seen: {}, t0: 0, dur: 10, cap: 1e9 };
   const GR = { cx: 160, cy: 160, R: 120, start: 135, sweep: 270 };
   GR.len = (Math.PI * GR.R * GR.sweep) / 180;
-  const gfrac = (bps) => Math.max(0, Math.min(1, Math.log10(1 + bps / 1e6) / Math.log10(1001)));
+  // Log scale to 1 Gbps, or to 10 Gbps once a measurement passes 1.
+  const gfrac = (bps) => Math.max(0, Math.min(1, Math.log10(1 + bps / 1e6) / Math.log10(1 + G.cap / 1e6)));
+  // The start of each direction a result leaves out (see probe.Warmup).
+  const warmup = (secs) => Math.min(3, secs / 4);
   const isBwPhase = (p) => p === "upload" || p === "download";
 
   function viewSpeed() {
@@ -996,13 +1297,22 @@
     if (!sp.tunnel && ts.length) sp.tunnel = ts[0].name;
     if (!sp.peer && ps.length) sp.peer = ps[0].name;
     const j = S.job, running = j && j.status === "running";
+    const warm = warmup(sp.secs);
+    const opt = (key, vals, label) => html`<div class="seg sm" role="radiogroup" aria-label="${label}">${vals.map(([v, l]) => html`<button type="button" role="radio" aria-checked="${sp[key] === v}" class="${sp[key] === v ? "on" : ""}" data-act="speed-opt" data-key="${key}" data-value="${v}" ${running ? "disabled" : ""}>${l}</button>`)}</div>`;
     return html`<div class="speed">
       <div class="panel">${gauge(j)}</div>
       <div class="stack">
+        <div class="panel"><header><h2>اندازه‌گیری</h2><span class="aside">برای تست تانل و مقایسه، هر دو</span></header><div class="in stack">
+          <div class="sopts">
+            <div class="field"><span class="lbl">مدت هر جهت</span>${opt("secs", [[5, "۵ ثانیه"], [10, "۱۰ ثانیه"], [20, "۲۰ ثانیه"], [30, "۳۰ ثانیه"]], "مدت")}</div>
+            <div class="field"><span class="lbl">اتصال هم‌زمان</span>${opt("streams", [[1, "۱"], [4, "۴"], [8, "۸"], [16, "۱۶"], [32, "۳۲"]], "اتصال‌ها")}</div>
+          </div>
+          <p class="help" style="margin:0">هر جهت ${sp.secs} ثانیه با ${sp.streams} اتصال TCP. ${warm} ثانیه‌ی اول هر جهت در نتیجه حساب نمی‌شود، چون TCP در شروع آهسته بالا می‌آید و روی مسیر دور عدد را خیلی کمتر از ظرفیت نشان می‌داد. چند اتصال مثل «Connection Count» در Bandwidth Test میکروتیک ظرفیت کل مسیر را می‌سنجد؛ ۱ اتصال یعنی سرعت یک دانلود تکی.</p>
+        </div></div>
         <div class="panel"><header><h2>تست یک تانل</h2></header><div class="in">
           ${ts.length ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" data-bind="speed.tunnel" aria-label="تانل">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${t.name}، ${kindTitle(t)} به ${t.peer || t.far_ip}، حالت ${profileName(t.settings && t.settings.profile)}</option>`)}</select>
             <button class="btn primary" data-act="run-test" ${running ? "disabled" : ""}>${I.play(15)} شروع</button></div>
-            <p class="help">پینگ، جیتر و افت؛ بعد ۴ ثانیه آپلود و ۴ ثانیه دانلود با ۴ اتصال هم‌زمان.</p>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
+            <p class="help">پینگ، جیتر و افت؛ بعد آپلود و دانلود، هر کدام ${sp.secs} ثانیه.</p>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
         </div></div>
         <div class="panel"><header><h2>مقایسه‌ی انواع تانل</h2><span class="aside">بهترین را برای این مسیر پیدا کنید</span></header><div class="in">
           ${ps.length ? html`<div class="field"><label for="bench-peer">سرور مقصد</label><select id="bench-peer" class="input" data-bind="speed.peer">${ps.map((p) => html`<option value="${p.name}" ${sp.peer === p.name ? "selected" : ""}>${p.name} (${p.address})</option>`)}</select></div>
@@ -1022,9 +1332,9 @@
     const pt = (deg, r = R) => { const a = (deg * Math.PI) / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
     const arc = (a0, a1, r = R) => { const [x0, y0] = pt(a0, r), [x1, y1] = pt(a1, r); return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`; };
     let ticks = "";
-    for (const mbps of [0, 1, 10, 50, 100, 250, 500, 1000]) {
-      const a = start + sweep * gfrac(mbps * 1e6), [x0, y0] = pt(a, R + 12), [x1, y1] = pt(a, R + 18), [tx, ty] = pt(a, R + 32);
-      ticks += `<line class="tick" x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}"/><text x="${tx}" y="${ty + 4}" text-anchor="middle">${mbps >= 1000 ? "1G" : mbps}</text>`;
+    for (const mbps of G.cap > 1e9 ? [0, 10, 100, 500, 1000, 2500, 5000, 10000] : [0, 1, 10, 50, 100, 250, 500, 1000]) {
+      const a = start + sweep * gfrac(mbps * 1e6), [x0, y0] = pt(a, R + 14), [x1, y1] = pt(a, R + 20), [tx, ty] = pt(a, R + 34);
+      ticks += `<line class="tick" x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}"/><text x="${tx}" y="${ty + 4}" text-anchor="middle">${mbps >= 1000 ? mbps / 1000 + "G" : mbps}</text>`;
     }
     const running = j && j.status === "running", res = j && j.kind === "test" && j.results && j.results[0];
     if (!running) { G.to = res && !res.error ? res.down_bps : 0; if (!G.raf) G.v = G.to; }
@@ -1037,7 +1347,8 @@
         <text id="g-big" class="big" x="${cx}" y="${cy + 12}" text-anchor="middle" direction="ltr">${esc(big)}</text>
         <text id="g-unit" class="unit" x="${cx}" y="${cy + 40}" text-anchor="middle" direction="ltr">${esc(unit)}</text>
         <text id="g-what" class="what" x="${cx}" y="${cy + 92}" text-anchor="middle">${esc(what)}</text></svg>`)}
-      ${raw(`<svg class="gtrace" viewBox="0 0 300 48" preserveAspectRatio="none" aria-hidden="true"><path id="g-area" class="area ${G.phase === "upload" ? "tx" : ""}" d="${sparkPath(true)}"/><path id="g-line" class="line ${G.phase === "upload" ? "tx" : ""}" d="${sparkPath(false)}"/></svg>`)}
+      <div class="gtrace-box">${raw(`<svg class="gtrace" viewBox="0 0 300 56" preserveAspectRatio="none" aria-hidden="true"><rect id="g-warm" class="warm" x="0" y="0" height="56" width="${((warmup(G.dur) / G.dur) * 300).toFixed(1)}" style="display:${running && isBwPhase(G.phase) ? "" : "none"}"/><path id="g-area" class="area ${G.phase === "upload" ? "tx" : ""}" d="${sparkPath(true)}"/><path id="g-line" class="line ${G.phase === "upload" ? "tx" : ""}" d="${sparkPath(false)}"/></svg>`)}
+        ${running && isBwPhase(G.phase) ? html`<span class="wl" style="left:0;width:${((warmup(G.dur) / G.dur) * 100).toFixed(1)}%" title="این بخش در نتیجه حساب نمی‌شود: TCP در شروع هر اتصال آهسته بالا می‌آید">گرم شدن</span>` : ""}</div>
       <div class="phases">${ph("ping", "پینگ")}${ph("upload", "آپلود")}${ph("download", "دانلود")}</div>
       ${running ? html`<button class="btn sm danger" style="margin-top:16px" data-act="cancel-job">توقف تست</button>` : ""}
     </div>`;
@@ -1064,15 +1375,15 @@
   }
 
   // The trace: recent samples of this measurement, scaled to their peak.
+  // The trace: this direction so far on a fixed time axis (the whole run),
+  // so a slow start or a drop shows where it happened.
   function sparkPath(area) {
     const h = G.hist;
-    if (h.length < 2) return area ? "" : "M0 47 L300 47";
-    // Spread over the full width from the first sample, so the trace fills
-    // in as the measurement goes instead of creeping in from one edge.
-    const max = Math.max(1, ...h), step = 300 / (h.length - 1), off = 0;
-    const y = (v) => (46 - (v / max) * 40).toFixed(1);
-    let d = h.map((v, i) => `${i ? "L" : "M"}${(off + i * step).toFixed(1)} ${y(v)}`).join(" ");
-    if (area) d += ` L300 48 L${off.toFixed(1)} 48 Z`;
+    if (h.length < 2) return "";
+    const max = Math.max(1, ...h.map((p) => p[1])), dur = Math.max(1, G.dur);
+    const x = (t) => Math.min(300, (t / dur) * 300).toFixed(1), y = (v) => (54 - (v / max) * 46).toFixed(1);
+    let d = h.map(([t, v], i) => `${i ? "L" : "M"}${x(t)} ${y(v)}`).join(" ");
+    if (area) d += ` L${x(h[h.length - 1][0])} 56 L${x(h[0][0])} 56 Z`;
     return d;
   }
 
@@ -1110,6 +1421,7 @@
     for (const id of ["#g-fill", "#g-area", "#g-line"]) { const el = $(id); if (el) el.classList.toggle("tx", G.phase === "upload"); }
     $("#g-area").setAttribute("d", sparkPath(true));
     $("#g-line").setAttribute("d", sparkPath(false));
+    const wr = $("#g-warm"); if (wr) wr.style.display = j && j.status === "running" && isBwPhase(G.phase) ? "" : "none";
   }
 
   const ST = {
@@ -1129,6 +1441,7 @@
     if (/not supported|unknown (link )?kind|Operation not supported/i.test(e)) return "کرنل یکی از سرورها این نوع تانل را ندارد.";
     if (/timeout|deadline/i.test(e)) return "سرور مقصد به‌موقع جواب نداد.";
     if (/refused/.test(e)) return "اتصال رد شد: پورت روی سرور مقابل بسته است.";
+    if (/address already in use|already used by another program|port is in use/i.test(e)) return "پورت روی یکی از دو سرور اشغال است و پورت آزاد دیگری هم پیدا نشد.";
     return e;
   }
   const rstatus = (r) => r.status || (r.error ? "failed" : "done");
@@ -1146,12 +1459,13 @@
       const s = rstatus(r), [label, cls] = ST[s] || ST.done;
       const meta = s === "failed" || s === "skipped" ? html`<span class="err" title="${r.error || ""}">${errText(r.error)}</span>`
         : r.ping_ms ? html`پینگ ${ms(r.ping_ms)}، جیتر ${ms(r.jitter_ms)}، افت ${r.loss.toFixed(0)}٪${r.mtu ? `، MTU ${r.mtu}` : ""}` : "";
+      const moved = r.moved_from ? html`<div class="small moved">پورت <span class="ltr">${r.moved_from}</span> اشغال بود؛ روی پورت <span class="ltr">${r.port}</span> تست شد.</div>` : "";
       const bars = s === "done"
         ? html`<div class="bars"><div class="bar" style="width:${((r.down_bps / max) * 100).toFixed(1)}%" title="دانلود ${fmtRate(r.down_bps)}"></div><div class="bar tx" style="width:${((r.up_bps / max) * 100).toFixed(1)}%" title="آپلود ${fmtRate(r.up_bps)}"></div></div>`
         : html`<div class="bars"><div class="lane ${cls}"><i></i></div></div>`;
       const right = s === "done" ? html`${fmtRate(r.down_bps)}<br><span class="faint">${fmtRate(r.up_bps)}</span>` : html`<span class="st ${cls}">${label}</span>`;
       return html`<div class="r ${best && r.name === best.name ? "best" : ""} ${fresh(r) ? "fresh" : ""}" data-st="${s}">
-        <div><b class="nm"><i class="sd ${cls}"></i>${resultTitle(r)}</b><div class="faint small">${meta}</div></div>
+        <div><b class="nm"><i class="sd ${cls}"></i>${resultTitle(r)}</b><div class="faint small">${meta}</div>${moved}</div>
         ${bars}<div class="small ltr" style="text-align:end">${right}</div></div>`;
     };
     return html`<div class="panel"><header><h2>${j.kind === "bench" ? "مقایسه با " : "تست تانل "}${j.target}</h2><span class="aside">${st}</span></header><div class="in stack">
@@ -1174,8 +1488,8 @@
 
   async function startJob(kind, target, only) {
     try {
-      S.job = await api("POST", "jobs", { kind, target, only });
-      S.pv = {}; G.v = G.to = 0; G.phase = ""; G.seq = -1; G.hist = []; G.sig = ""; G.seen = {};
+      S.job = await api("POST", "jobs", { kind, target, only, seconds: S.speed.secs, streams: S.speed.streams });
+      S.pv = {}; G.v = G.to = 0; G.phase = ""; G.seq = -1; G.hist = []; G.sig = ""; G.seen = {}; G.dur = S.speed.secs; G.cap = 1e9;
       if (S.drawer) S.drawer = null;
       location.hash = "#/speed";
       draw(); pollJob();
@@ -1189,10 +1503,17 @@
     if (!S.job || S.job.status !== "running") return;
     try { S.job = await api("GET", "jobs/" + S.job.id); } catch { /* retry */ }
     const lv = S.job.live || {};
-    if (lv.seq !== G.seq) { G.seq = lv.seq; G.hist = []; S.pv = {}; G.to = 0; }
+    if (lv.seq !== G.seq) { G.seq = lv.seq; G.hist = []; S.pv = {}; G.to = 0; G.t0 = performance.now(); }
     if (lv.phase) {
-      if (lv.phase !== G.phase) { G.phase = lv.phase; G.hist = []; }
-      if (lv.value) { S.pv[lv.phase] = lv.value; if (isBwPhase(lv.phase)) { G.to = lv.value; G.hist.push(lv.value); if (G.hist.length > 60) G.hist.shift(); } }
+      if (lv.phase !== G.phase) { G.phase = lv.phase; G.hist = []; G.t0 = performance.now(); G.sig = ""; }
+      if (lv.value) {
+        S.pv[lv.phase] = lv.value;
+        if (isBwPhase(lv.phase)) {
+          G.to = lv.value; G.hist.push([(performance.now() - G.t0) / 1000, lv.value]);
+          if (G.hist.length > 400) G.hist.shift();
+          if (lv.value > 0.95e9 && G.cap <= 1e9) { G.cap = 1e10; G.sig = ""; }
+        }
+      }
     }
     if (S.route === "speed" && !S.modal) {
       const sig = jobSig(S.job);
@@ -1574,6 +1895,8 @@
     const c = w.checks[checkKey(w, w.mode, true)];
     if (!c || c.state === "run") return html`<div class="check run"><i class="spin"></i><div><b>بررسی اتصال با این تنظیمات…</b><span>تانل چند ثانیه روی هر دو سرور بالا می‌آید و پاک می‌شود.</span></div></div>`;
     if (c.state === "skip") return html`<div class="check">${I.mask(16)}<div><b>NeoObfs پیش از ساخت سنجیده نمی‌شود</b><span>در فضای کاربر اجرا می‌شود؛ بعد از ساخت، با «تست سرعت» همان تانل بررسی کنید.</span></div></div>`;
+    if (c.state === "ok" && c.moved) return html`<div class="check bad">${I.alert(16)}<div><b>پورت <span class="ltr">${c.moved}</span> روی یکی از دو سرور اشغال است</b><span>اتصال روی پورت آزاد <span class="ltr">${c.port}</span> بررسی شد و وصل شد (پینگ ${ms(c.ping)}). تانل با پورت اشغال ساخته نمی‌شود؛ همین پورت را بردارید یا پورت دیگری بدهید.</span>
+      <span><button type="button" class="btn sm primary" data-act="set" data-path="wiz.port" data-value="${c.port}">استفاده از پورت ${c.port}</button></span></div></div>`;
     if (c.state === "ok") return html`<div class="check ok">${I.check(16)}<div><b>با این تنظیمات وصل می‌شود</b><span>پینگ ${ms(c.ping)}${c.loss ? `، افت ${c.loss.toFixed(0)}٪` : ""}${c.mtu ? `، MTU ${c.mtu}` : ""}</span></div></div>`;
     if (c.cfg) return html`<div class="check bad">${I.alert(16)}<div><b>این ترکیب ساخته نمی‌شود</b><span title="${c.err || ""}">${errText(c.err)}</span></div></div>`;
     return html`<div class="check bad">${I.alert(16)}<div><b>با این تنظیمات ترافیک رد نمی‌شود</b><span title="${c.err || ""}">${errText(c.err)}</span><span>${w.mode === "tcp" ? "پورت TCP دیگری بدهید که بین دو سرور باز است." : +w.port ? "پروتکل دیگری امتحان کنید یا NeoObfs را بزنید." : "یک پورت UDP بدهید یا پروتکل دیگری امتحان کنید."}</span></div></div>`;
@@ -1605,7 +1928,7 @@
     req.forward = "";
     try {
       const r = ((await api("POST", "check", req)) || [])[0] || {};
-      w.checks[key] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu } : r.status === "skipped" ? (r.error && /NeoObfs/.test(r.error) ? { state: "skip" } : { state: "bad", err: r.error, cfg: true }) : { state: "bad", err: r.error };
+      w.checks[key] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu, moved: r.moved_from, port: r.port } : r.status === "skipped" ? (r.error && /NeoObfs/.test(r.error) ? { state: "skip" } : { state: "bad", err: r.error, cfg: true }) : { state: "bad", err: r.error };
     } catch (e) {
       if (/در حال اجراست/.test(e.message) && tries < 8) { setTimeout(() => runCheck(opts, tries + 1), 1500); return; }
       w.checks[key] = { state: "bad", err: e.message, cfg: true };
@@ -1752,9 +2075,9 @@
       <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-proxy-go" ${ts.length ? "" : "disabled"}>${I.plus(16)} ساخت پروکسی</button></footer>`;
   }
 
-  function confirmView(title, text, act, data, label) {
+  function confirmView(title, text, act, data, label, icon = I.trash) {
     return html`${modalHead(title)}<div class="body"><div>${text}</div></div>
-      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn danger" data-act="${act}" ${raw(Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" "))}>${I.trash(16)} ${label}</button></footer>`;
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn danger" data-act="${act}" ${raw(Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" "))}>${icon(16)} ${label}</button></footer>`;
   }
 
   // ---------- events ----------
@@ -1788,6 +2111,7 @@
       const only = S.speed.only.filter((x) => x !== t.value);
       S.speed.only = t.checked ? only.concat(t.value) : only;
     }
+    if (t.dataset.act === "st-subject") { S.st.subject = t.value; draw(); }
     if (t.dataset.act === "safe-pref") { S.safe = t.checked; store("nt-safe", S.safe ? "1" : "0"); if (t.closest(".modal")) drawModal(); else draw(); }
     if (t.dataset.act === "def-check") { S.defs[t.dataset.key] = t.checked; S.edit = true; }
     if (t.dataset.act === "st-check") { setPath(t.dataset.path, t.checked); if (!t.closest(".modal")) S.edit = true; }
@@ -1839,6 +2163,7 @@
     set(el) {
       setPath(el.dataset.path, el.dataset.value);
       if (el.dataset.path === "wiz.profile") setTimeout(() => runSpeed(), 0);
+      if (el.dataset.path === "wiz.port") checkSoon(true);
       if (el.closest(".modal")) drawModal(); else { S.edit = el.dataset.path.startsWith("tset") || el.dataset.path.startsWith("defs") ? true : S.edit; draw(); }
     },
     drawer(el) {
@@ -1974,6 +2299,7 @@
     },
     async "tunnel-power"(el) {
       const t = tunnel(el.dataset.name); if (!t) return;
+      if (S.modal) closeModal();
       const l = Object.assign({}, t.limits, { disabled: !t.limits.disabled });
       try { const ch = await api("POST", `tunnels/${encodeURIComponent(t.name)}/limits` + safeQ(), l); await refresh(); reportChange(ch, l.disabled ? "تانل خاموش شد" : "تانل روشن شد"); safeStarted(ch); draw(); }
       catch (e) { toast(e.message, "bad"); }
@@ -2009,6 +2335,25 @@
       try { const r = await api("POST", `peers/${encodeURIComponent(n)}/upgrade`); toast(`${n} به ${r.version} ارتقا یافت و دوباره وصل شد`); }
       catch (e) { toast(e.message, "bad"); }
       delete S.upgrading[n]; await refresh();
+    },
+    // Graph ranges and subjects.
+    "hist-range"(el) { S.hist.range = el.dataset.value; store("nt-hist", S.hist.range); draw(); },
+    "hist-src"(el) { S.hist.src = el.dataset.value; store("nt-hist-src", S.hist.src); draw(); },
+    "st-range"(el) { S.st.range = el.dataset.value; store("nt-st", S.st.range); draw(); },
+    "dr-range"(el) { S.dr.range = el.dataset.value; draw(); },
+    "st-pick"(el) { S.st.subject = el.dataset.name; S.drawer = null; if (S.route === "stats") { draw(); window.scrollTo(0, 0); } else location.hash = "#/stats"; },
+    "live-toggle"() { S.paused = !S.paused; if (!S.paused) refresh(); else draw(); },
+    // The flow card's switches: turning a tunnel off cuts its users, so it
+    // asks first; turning it on doesn't.
+    "power-ask"(el) {
+      const t = tunnel(el.dataset.name); if (!t || t.managed) return;
+      if (t.limits && t.limits.disabled) { actions["tunnel-power"](el); return; }
+      openModal(() => confirmView("خاموش کردن تانل", html`تانل <b>${t.name}</b> روی هر دو سرور خاموش شود؟ اتصال کاربرانی که از آن می‌روند قطع می‌شود.`, "tunnel-power", { name: t.name }, "خاموش کردن", I.power));
+    },
+    "speed-opt"(el) {
+      S.speed[el.dataset.key] = +el.dataset.value;
+      store("nt-speed", JSON.stringify({ secs: S.speed.secs, streams: S.speed.streams }));
+      draw();
     },
     test(el) { startJob("test", el.dataset.name); },
     bench(el) { S.speed.peer = el.dataset.name; startJob("bench", el.dataset.name, S.speed.only); },
@@ -2050,7 +2395,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { if (S.modal) closeModal(); else if (S.drawer) { S.drawer = null; draw(); } return; }
     // SVG nodes act as buttons.
-    if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('g[role="button"]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('g[role="button"], div[role="button"]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
   });
 
   window.addEventListener("hashchange", () => {
@@ -2068,7 +2413,9 @@
       try { const jobs = await api("GET", "jobs"); if (jobs.length) { S.job = jobs[0]; pollJob(); } } catch { /* none */ }
       draw();
     }
-    setInterval(() => { if (S.authed && !document.hidden) refresh(); }, 3000);
+    setInterval(() => { if (S.authed && !document.hidden && !S.paused) refresh(); }, 3000);
+    let resized = 0;
+    window.addEventListener("resize", () => { clearTimeout(resized); resized = setTimeout(() => { if (!S.modal && !S.edit) draw(); }, 150); });
     setInterval(() => { if (S.authed && !document.hidden) refreshTraffic(); }, 30000);
   }
   boot();

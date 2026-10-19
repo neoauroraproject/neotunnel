@@ -2,12 +2,14 @@ package web
 
 import (
 	"context"
+	"time"
 
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
 	"neotunnel/internal/failover"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/metrics"
 	"neotunnel/internal/safe"
 	"neotunnel/internal/traffic"
 )
@@ -36,8 +38,8 @@ type Backend interface {
 	RemoveForward(tunnel, ports string) (manage.Change, error)
 	SetNode(name, address string) error
 	SetDefaults(d config.Defaults) error
-	TestTunnel(ctx context.Context, name string, progress func(string), live func(string, float64)) ([]bench.Result, error)
-	Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error)
+	TestTunnel(ctx context.Context, name string, o SpeedOptions, progress func(string), live func(string, float64)) ([]bench.Result, error)
+	Bench(ctx context.Context, peer string, only []string, o SpeedOptions, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error)
 	// Check brings a would-be tunnel up for a few seconds and reports whether
 	// traffic passes (all: every kind at once).
 	// With speed it also measures bandwidth, a few seconds each way.
@@ -45,6 +47,9 @@ type Backend interface {
 	// ProbeMTU measures the path MTU under a tunnel and remembers it.
 	ProbeMTU(ctx context.Context, name string) (MTUReport, error)
 	Traffic() map[string]traffic.Summary
+	// Metrics is the graphs history: keys (all when empty) over a range
+	// (1h, 6h, 24h, 7d, 30d, 90d or all).
+	Metrics(rng string, keys []string) (metrics.View, error)
 	ResetTraffic(tunnel string) error
 	System() (SystemInfo, error)
 	Boost() error
@@ -67,6 +72,23 @@ type Backend interface {
 	// once the peers confirmed too.
 	KeepSafe(id string) (*safe.Outcome, error)
 	UndoSafe(id string) (*safe.Outcome, error)
+}
+
+// SpeedOptions are a speed test's length per direction and number of
+// connections, as chosen in the panel; zero means the default.
+type SpeedOptions struct {
+	Seconds int `json:"seconds"`
+	Streams int `json:"streams"`
+}
+
+// apply sets the chosen values on o, within what the probe server allows.
+func (s SpeedOptions) apply(o *bench.Options) {
+	if s.Seconds > 0 {
+		o.Duration = time.Duration(min(max(s.Seconds, 3), 30)) * time.Second
+	}
+	if s.Streams > 0 {
+		o.Streams = min(s.Streams, 32)
+	}
 }
 
 // SafeView is a safe change waiting for confirmation, as the panel sees it.

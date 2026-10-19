@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"neotunnel/internal/agent"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
 	"neotunnel/internal/probe"
@@ -168,59 +167,46 @@ func (r *Runner) runWave(ctx context.Context, wave []Candidate, index map[string
 		set(i, res)
 	}
 
-	// Bring the wave up on the peer, each candidate on its own so a kind
-	// its kernel lacks fails alone.
+	// Bring the wave up on both ends, each candidate on its own so a kind
+	// a kernel lacks fails alone.
 	var (
-		peerMu    sync.Mutex
-		peerNames []string
+		upMu      sync.Mutex
 		upWG      sync.WaitGroup
+		peerNames []string
+		names     []string
+		ready     []Candidate
 	)
-	peerErr := make([]error, len(wave))
-	for k, c := range wave {
-		upWG.Add(1)
-		go func(k int, c Candidate) {
-			defer upWG.Done()
-			up, err := r.client.BenchUp(ctx, agent.BenchUpRequest{Self: r.Peer.Name, Tunnels: c.Tunnels, TTL: 300})
-			peerMu.Lock()
-			for _, s := range up.Specs {
-				peerNames = append(peerNames, s.Name)
-			}
-			peerMu.Unlock()
-			peerErr[k] = err
-		}(k, c)
-	}
-	upWG.Wait()
+	mtu := map[string]int{}
 	defer func() {
+		engine.RemoveBench(names)
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		r.client.BenchDown(cctx, peerNames)
 	}()
-	isSelf := func(n string) bool { return n == r.State.Self }
-	var names []string
-	defer func() { engine.RemoveBench(names) }()
-	var ready []Candidate
-	mtu := map[string]int{}
-	for k, c := range wave {
-		if peerErr[k] != nil {
-			fail(c, "peer: "+peerErr[k].Error())
-			continue
-		}
-		specs, errs := engine.RenderTunnels(isSelf, c.Tunnels, engine.RouteSource)
-		if len(errs) > 0 {
-			fail(c, errs[0].Error())
-			continue
-		}
-		for i := range specs {
-			specs[i].Name = agent.BenchIfname(specs[i].Tunnel)
-			names = append(names, specs[i].Name)
-		}
-		if err := engine.ApplyBench(specs, 5*time.Minute); err != nil {
-			fail(c, err.Error())
-			continue
-		}
-		mtu[c.Name] = specs[len(specs)-1].MTU
-		ready = append(ready, c)
+	for _, c := range wave {
+		upWG.Add(1)
+		go func(c Candidate) {
+			defer upWG.Done()
+			up, err := r.bringUp(ctx, c, 300*time.Second)
+			upMu.Lock()
+			defer upMu.Unlock()
+			if err != nil {
+				fail(c, err.Error())
+				return
+			}
+			peerNames = append(peerNames, up.peer...)
+			names = append(names, up.local...)
+			mtu[c.Name] = up.mtu
+			if up.c.Port != c.Port {
+				i := index[c.Name]
+				res := results[i]
+				res.Title, res.Port, res.Moved = up.c.Title, up.c.Port, c.Port
+				set(i, res)
+			}
+			ready = append(ready, up.c)
+		}(c)
 	}
+	upWG.Wait()
 
 	// Phase 1: connectivity for the whole wave at once.
 	var wg sync.WaitGroup

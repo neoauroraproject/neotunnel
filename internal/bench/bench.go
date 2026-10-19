@@ -32,15 +32,21 @@ type Options struct {
 	Live func(phase string, value float64)
 }
 
+// DefaultOptions runs each direction for 10 seconds over 8 connections: long
+// enough to get past TCP's ramp on a long path, and enough connections that
+// one flow's window or one CPU core isn't what gets measured.
 func DefaultOptions() Options {
-	return Options{Pings: 60, Interval: 15 * time.Millisecond, Duration: 4 * time.Second, Streams: 4}
+	return Options{Pings: 60, Interval: 15 * time.Millisecond, Duration: 10 * time.Second, Streams: 8}
 }
 
 type Result struct {
-	Name     string
-	Title    string
-	Mode     string // quick mode that builds this tunnel
-	Port     uint16 // UDP port it ran on, if any
+	Name  string
+	Title string
+	Mode  string // quick mode that builds this tunnel
+	Port  uint16 // UDP or TCP port it ran on, if any
+	// Moved is the port the test was meant to run on when that one was taken
+	// on one of the servers and it ran on Port instead.
+	Moved    uint16
 	MTU      int
 	Latency  probe.LatencyResult
 	Up, Down float64 // bits/s
@@ -56,6 +62,7 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		Title    string  `json:"title"`
 		Mode     string  `json:"mode,omitempty"`
 		Port     uint16  `json:"port,omitempty"`
+		Moved    uint16  `json:"moved_from,omitempty"`
 		MTU      int     `json:"mtu,omitempty"`
 		PingMs   float64 `json:"ping_ms"`
 		JitterMs float64 `json:"jitter_ms"`
@@ -66,7 +73,7 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		Down     float64 `json:"down_bps"`
 		Err      string  `json:"error,omitempty"`
 		Status   string  `json:"status,omitempty"`
-	}{r.Name, r.Title, r.Mode, r.Port, r.MTU, ms(r.Latency.Avg), ms(r.Latency.Jitter), ms(r.Latency.Min), ms(r.Latency.Max),
+	}{r.Name, r.Title, r.Mode, r.Port, r.Moved, r.MTU, ms(r.Latency.Avg), ms(r.Latency.Jitter), ms(r.Latency.Min), ms(r.Latency.Max),
 		r.Latency.Loss(), r.Up, r.Down, r.Err, r.Status})
 }
 
@@ -282,39 +289,21 @@ func (r *Runner) Run(ctx context.Context, c Candidate) Result {
 		return res
 	}
 
-	up, err := r.client.BenchUp(ctx, agent.BenchUpRequest{Self: r.Peer.Name, Tunnels: c.Tunnels, TTL: 600})
-	var peerNames []string
-	for _, s := range up.Specs {
-		peerNames = append(peerNames, s.Name)
-	}
-	defer func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		r.client.BenchDown(cctx, peerNames)
-	}()
+	u, err := r.bringUp(ctx, c, 10*time.Minute)
 	if err != nil {
-		res.Err = "peer: " + err.Error()
-		return res
-	}
-
-	isSelf := func(n string) bool { return n == r.State.Self }
-	specs, errs := engine.RenderTunnels(isSelf, c.Tunnels, engine.RouteSource)
-	if len(errs) > 0 {
-		res.Err = errs[0].Error()
-		return res
-	}
-	var names []string
-	for i := range specs {
-		specs[i].Name = agent.BenchIfname(specs[i].Tunnel)
-		names = append(names, specs[i].Name)
-	}
-	defer engine.RemoveBench(names)
-	if err := engine.ApplyBench(specs, 10*time.Minute); err != nil {
 		res.Err = err.Error()
 		return res
 	}
-	top := specs[len(specs)-1]
-	res.MTU = top.MTU
+	defer func() {
+		engine.RemoveBench(u.local)
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r.client.BenchDown(cctx, u.peer)
+	}()
+	if u.c.Port != c.Port {
+		res.Title, res.Port, res.Moved = u.c.Title, u.c.Port, c.Port
+	}
+	res.MTU = u.mtu
 
 	last := c.Tunnels[len(c.Tunnels)-1]
 	n := last.Net4

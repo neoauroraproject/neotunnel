@@ -23,6 +23,7 @@ import (
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/metrics"
 	"neotunnel/internal/probe"
 	"neotunnel/internal/safe"
 	"neotunnel/internal/traffic"
@@ -63,17 +64,18 @@ func Run(ctx context.Context) error {
 	engine.SetUserspace(dp)
 	defer dp.Close()
 
-	store := traffic.Open()
-	go account(ctx, store, poke)
-	go probeMTUs(ctx, poke)
-
 	tracker := health.New()
 	go monitorHealth(ctx, tracker, poke)
+
+	store := traffic.Open()
+	history := metrics.Open()
+	go account(ctx, store, history, tracker, poke)
+	go probeMTUs(ctx, poke)
 
 	hooks := safeHooks(id)
 	go watchSafe(ctx, hooks, poke)
 
-	startPanel(id, store, tracker, hooks, poke)
+	startPanel(id, store, history, tracker, hooks, poke)
 	go watchPeers(ctx, id)
 
 	hup := make(chan os.Signal, 1)
@@ -144,13 +146,13 @@ func currentProblems() []string {
 }
 
 // startPanel serves the web panel when it is configured.
-func startPanel(id *identity.Identity, store *traffic.Store, tracker *health.Tracker, hooks safe.Hooks, reconcile func()) {
+func startPanel(id *identity.Identity, store *traffic.Store, history *metrics.Store, tracker *health.Tracker, hooks safe.Hooks, reconcile func()) {
 	st, err := config.Load()
 	if err != nil || st.Panel == nil {
 		return
 	}
 	srv := &web.Server{
-		Backend: &web.Live{ID: id, Started: time.Now(), Problems: currentProblems, Store: store, Health: tracker, Reconcile: reconcile, Safe: hooks},
+		Backend: &web.Live{ID: id, Started: time.Now(), Problems: currentProblems, Store: store, History: history, Health: tracker, Reconcile: reconcile, Safe: hooks},
 		Path:    st.Panel.Path,
 		Restart: func() {
 			log.Printf("panel port changed; restarting")

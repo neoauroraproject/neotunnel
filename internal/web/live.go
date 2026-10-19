@@ -22,6 +22,7 @@ import (
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/metrics"
 	"neotunnel/internal/mikrotik"
 	"neotunnel/internal/pmtu"
 	"neotunnel/internal/safe"
@@ -39,6 +40,8 @@ type Live struct {
 	Problems func() []string
 	// Traffic is the daemon's traffic accounting (nil: totals unavailable).
 	Store *traffic.Store
+	// History is the record behind the panel's graphs (nil: no graphs).
+	History *metrics.Store
 	// Health is the daemon's per-tunnel ping/loss tracker.
 	Health *health.Tracker
 	// Reconcile asks the daemon to apply the state now.
@@ -491,12 +494,13 @@ func (l *Live) SetPanelPort(port int) (string, error) {
 	return PanelURL(st), nil
 }
 
-func (l *Live) TestTunnel(ctx context.Context, name string, progress func(string), live func(string, float64)) ([]bench.Result, error) {
+func (l *Live) TestTunnel(ctx context.Context, name string, so SpeedOptions, progress func(string), live func(string, float64)) ([]bench.Result, error) {
 	st, err := manage.Node()
 	if err != nil {
 		return nil, err
 	}
 	o := bench.DefaultOptions()
+	so.apply(&o)
 	o.Live = live
 	r, err := bench.TestTunnel(ctx, l.ID, st, name, o, progress)
 	if err != nil {
@@ -505,7 +509,7 @@ func (l *Live) TestTunnel(ctx context.Context, name string, progress func(string
 	return []bench.Result{r}, nil
 }
 
-func (l *Live) Bench(ctx context.Context, peer string, only []string, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error) {
+func (l *Live) Bench(ctx context.Context, peer string, only []string, so SpeedOptions, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error) {
 	st, err := manage.Node()
 	if err != nil {
 		return nil, err
@@ -525,6 +529,7 @@ func (l *Live) Bench(ctx context.Context, peer string, only []string, progress f
 		want[o] = true
 	}
 	o := bench.DefaultOptions()
+	so.apply(&o)
 	o.Live = live
 	r := &bench.Runner{ID: l.ID, State: st, Peer: *p, Opts: o, Progress: progress}
 	var cands []bench.Candidate
@@ -604,6 +609,14 @@ func (l *Live) Traffic() map[string]traffic.Summary {
 		return map[string]traffic.Summary{}
 	}
 	return l.Store.Summaries(time.Now())
+}
+
+// Metrics returns the graphs history of keys (all when empty) over a range.
+func (l *Live) Metrics(rng string, keys []string) (metrics.View, error) {
+	if l.History == nil {
+		return metrics.View{}, fmt.Errorf("graphs history is kept by the service")
+	}
+	return l.History.Query(rng, keys, time.Now()), nil
 }
 
 func (l *Live) ResetTraffic(tunnel string) error {
@@ -703,7 +716,7 @@ func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all, speed b
 		return nil, fmt.Errorf("server %s is not connected yet", req.Peer)
 	}
 	opts := bench.DefaultOptions()
-	opts.Duration = 3 * time.Second
+	opts.Duration, opts.Streams = 4*time.Second, 4
 	r := &bench.Runner{ID: l.ID, State: st, Peer: *p, Opts: opts, CheckOnly: !speed || all}
 	if all {
 		return r.Compare(ctx, bench.Candidates(st.Self, p.Name, st.Address, p.Address), nil), nil

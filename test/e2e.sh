@@ -204,6 +204,29 @@ for _ in $(seq 15); do ip netns exec $HUB ping -c 1 -W 1 "$(inner $EDGE nt-c2)" 
 api -d '{"peer":"edge","mode":"tcp","encrypt":"aes-gcm-128"}' "$base/api/check" | tee "$WORK/tcpcheck.json" | grep -q '"status":"passed"' || { cat "$WORK/tcpcheck.json"; fail "panel check of a tcp tunnel"; }
 pass "TCP transport carries ping and bandwidth, reconnects, and passes the panel check"
 
+# 12b'. A comparison whose test port is taken on the far end moves to a free
+#       port instead of failing (another program holds TCP 40420 on edge).
+ip netns exec $EDGE python3 -c 'import socket,time; s=socket.socket(); s.bind(("0.0.0.0",40420)); s.listen(); time.sleep(120)' &
+busy=$!
+sleep 0.5
+job=$(api -d '{"kind":"bench","target":"edge","only":["tcp"],"seconds":3,"streams":2}' "$base/api/jobs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') || fail "start a comparison from the panel"
+for _ in $(seq 90); do
+  api "$base/api/jobs/$job" > "$WORK/job.json"
+  python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["status"] != "running" else 1)' "$WORK/job.json" && break
+  sleep 1
+done
+python3 - "$WORK/job.json" <<'EOF' || { cat "$WORK/job.json"; fail "comparison with a busy test port"; }
+import json, sys
+j = json.load(open(sys.argv[1]))
+r = [x for x in j["results"] if x["name"] == "tcp"][0]
+assert j["status"] == "done", j["status"]
+assert r.get("status") == "done", r
+assert r.get("moved_from") == 40420 and r.get("port") not in (None, 40420), r
+assert r["down_bps"] > 0 and r["up_bps"] > 0, r
+EOF
+kill $busy 2>/dev/null
+pass "TCP comparison moved off the busy port 40420 and measured both directions"
+
 # 12c. Lanes: one GRE tunnel on 4 parallel GRE tunnels (distinct keys), the
 #      far end's address reached by a multipath route over all of them; a
 #      speed test, a NAT and a transparent forward through it, then back to
@@ -380,6 +403,17 @@ fi
 # 16. Panel: traffic totals, MTU measurement, changing a tunnel's settings.
 sleep 11  # one traffic sample
 api "$base/api/traffic" | grep -q '"t1"' || fail "no traffic totals for t1"
+api "$base/api/metrics?range=1h&keys=cpu,nic,t:t1,p:t1" > "$WORK/metrics.json"
+python3 - "$WORK/metrics.json" <<'EOF' || { head -c 600 "$WORK/metrics.json"; fail "graphs history"; }
+import json, sys
+v = json.load(open(sys.argv[1]))
+assert v["step"] == 10 and v["points"] == 360, (v["step"], v["points"])
+for k in ("cpu", "t:t1", "p:t1"):
+    s = v["series"][k]
+    assert any(x is not None for x in s["a"]), k
+assert v["series"]["p:t1"]["avg"][0] > 0
+EOF
+pass "graphs history records CPU, tunnel traffic and ping"
 api -X POST "$base/api/tunnels/t1/mtu" | grep -q '"path_mtu":1500' || fail "MTU probe"
 api -X PATCH -d '{"encrypt":"aes-gcm-256"}' "$base/api/tunnels/e1" | grep -q error && fail "update tunnel settings"
 for i in $(seq 1 50); do

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"neotunnel/internal/bench"
@@ -131,6 +132,15 @@ func (s *Server) routes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/traffic", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, b.Traffic())
 	}))
+	m.HandleFunc("GET /api/metrics", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		var keys []string
+		if k := q.Get("keys"); k != "" {
+			keys = strings.Split(k, ",")
+		}
+		v, err := b.Metrics(q.Get("range"), keys)
+		reply(w, v, err)
+	}))
 	m.HandleFunc("POST /api/traffic/reset", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Tunnel string }
 		if readJSON(r, &req) != nil {
@@ -219,6 +229,7 @@ func (s *Server) routes(m *http.ServeMux) {
 		var req struct {
 			Kind, Target string
 			Only         []string
+			SpeedOptions
 		}
 		if readJSON(r, &req) != nil {
 			fail(w, http.StatusBadRequest, "bad request")
@@ -226,9 +237,9 @@ func (s *Server) routes(m *http.ServeMux) {
 		}
 		j, err := s.jobs.start(req.Kind, req.Target, func(ctx context.Context, log func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error) {
 			if req.Kind == "test" {
-				return b.TestTunnel(ctx, req.Target, log, live)
+				return b.TestTunnel(ctx, req.Target, req.SpeedOptions, log, live)
 			}
-			return b.Bench(ctx, req.Target, req.Only, log, live, partial)
+			return b.Bench(ctx, req.Target, req.Only, req.SpeedOptions, log, live, partial)
 		})
 		if err != nil {
 			fail(w, http.StatusConflict, err.Error())
