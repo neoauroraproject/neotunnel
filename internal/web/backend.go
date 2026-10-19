@@ -295,4 +295,7 @@ type HealthView struct {
 	Loss   float64 `json:"loss"`
 	Passes bool    `json:"passes"`
 	Last   int64   `json:"last"`
+	// Probes is how many probes the figures come from; the panel trusts
+	// them from 3 on.
+	Probes int `json:"probes"`
 }

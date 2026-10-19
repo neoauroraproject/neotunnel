@@ -413,7 +413,8 @@ for k in ("cpu", "t:t1", "p:t1"):
     assert any(x is not None for x in s["a"]), k
 assert v["series"]["p:t1"]["avg"][0] > 0
 EOF
-pass "graphs history records CPU, tunnel traffic and ping"
+api "$base/api/overview" | python3 -c 'import json,sys; t=[t for t in json.load(sys.stdin)["tunnels"] if t["name"]=="t1"][0]; sys.exit(0 if (t.get("health") or {}).get("probes",0)>=3 else 1)' || fail "overview reports no probe count for t1's health"
+pass "graphs history records CPU, tunnel traffic and ping; the overview counts health probes"
 api -X POST "$base/api/tunnels/t1/mtu" | grep -q '"path_mtu":1500' || fail "MTU probe"
 api -X PATCH -d '{"encrypt":"aes-gcm-256"}' "$base/api/tunnels/e1" | grep -q error && fail "update tunnel settings"
 for i in $(seq 1 50); do

@@ -231,7 +231,7 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 		ls := engine.TunnelState(t.Name)
 		v.Up, v.MTU, v.Rx, v.Tx = ls.Up, ls.MTU, ls.RxBytes, ls.TxBytes
 		if h, ok := hs[t.Name]; ok && h.Probes > 0 {
-			v.Health = &HealthView{Ping: h.AvgMs, Loss: h.Loss, Passes: h.Passes, Last: h.Last}
+			v.Health = &HealthView{Ping: h.AvgMs, Loss: h.Loss, Passes: h.Passes, Last: h.Last, Probes: h.Probes}
 		}
 		if s, ok := sums[t.Name]; ok {
 			v.Total, v.Today, v.Month, v.Tests = s.Total, s.Today, s.Month, s.Tests

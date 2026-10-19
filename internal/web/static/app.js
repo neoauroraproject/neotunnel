@@ -126,6 +126,8 @@
     return `${(n / 1024 ** i).toFixed(i ? (n / 1024 ** i >= 100 ? 0 : 1) : 0)} ${u[i]}`;
   };
   const splitBytes = (n) => fmtBytes(n).split(" ");
+  // "46.4 Mbps" as a figure with its unit set smaller.
+  const unitSmall = (s) => { const [v, u] = s.split(" "); return html`${v}<small>${u || ""}</small>`; };
   const fmtUptime = (s) => {
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
     if (d) return `${d} روز و ${h} ساعت`;
@@ -768,9 +770,9 @@
         <circle cx="152" cy="88" r="62" fill="url(#lens)" stroke="#fff" stroke-opacity=".5" stroke-width="1.4"/>
         <circle cx="152" cy="88" r="70" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="1"/>
         <circle cx="203" cy="52" r="3" fill="#fff"/><line x1="206" y1="50" x2="236" y2="34" stroke="#fff" stroke-opacity=".6"/>
-        <text x="290" y="28" text-anchor="end" direction="ltr">↓ ${esc(fmtRate(r.rx))}</text><text class="cap" x="290" y="42" text-anchor="end">دریافت</text>
+        <text x="290" y="28" text-anchor="end" direction="ltr">↓ ${esc(fmtRate(r.rx))}</text><text class="cap" x="290" y="42" text-anchor="end" direction="ltr">دریافت</text>
         <circle cx="100" cy="128" r="3" fill="#fff"/><line x1="97" y1="130" x2="62" y2="150" stroke="#fff" stroke-opacity=".6"/>
-        <text x="14" y="164" direction="ltr">↑ ${esc(fmtRate(r.tx))}</text><text class="cap" x="14" y="178">ارسال</text>
+        <text x="14" y="164" direction="ltr">↑ ${esc(fmtRate(r.tx))}</text><text class="cap" x="14" y="178" direction="ltr">ارسال</text>
       </svg>`)}
       <div class="nic-body"><div><span>کارت شبکه</span><b>${nic}</b></div><div class="today"><span>امروز</span><b>${fmtBytes(today)}</b></div></div>`;
   }
@@ -794,7 +796,7 @@
         <rect x="116" y="58" width="68" height="40" rx="8" fill="var(--card)" stroke="var(--line)"/>
         <text class="die-v" x="150" y="85" text-anchor="middle" direction="ltr">${avg == null ? "—" : esc(avg.toFixed(avg < 100 ? 1 : 0))}</text>
         <text class="die-k" x="150" y="120" text-anchor="middle">PING</text>
-        <text class="die-l" x="150" y="134" text-anchor="middle">MILLISECONDS</text>
+        <text class="die-l" x="150" y="134" text-anchor="middle">AVG · MS</text>
       </svg>`)}
       <div class="ping-body">${lo == null ? html`<span>پینگی ثبت نشده</span>` : html`<span>کمترین <b>${ms(lo)}</b></span><span>بیشترین <b>${ms(hi)}</b></span>`}
         <a class="btn sm" href="#/stats">${I.chart(14)} نمودار</a></div>`;
@@ -1117,7 +1119,7 @@
         <div class="tc-top"><span class="state"><i class="dot ${busy ? "busy" : st}"></i>${busy ? "در حال ری‌استارت…" : label}</span>${ping ? html`<span class="faint small ltr">${ping}</span>` : ""}</div>
         <div class="tc-name"><b>${t.name}</b><span>${kindTitle(t)}${t.base_port ? ` · ${t.kind === "tcp" ? "TCP" : "UDP"} ${t.base_port}` : ""}</span></div>
         <div class="tc-dest">${I.server(14)} ${t.peer || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
-        <div class="tc-rates"><div><span class="faint small">دانلود</span><b class="ltr" data-live="rx:${t.name}">${fmtRate(r.rx)}</b></div><div><span class="faint small">آپلود</span><b class="ltr" data-live="tx:${t.name}">${fmtRate(r.tx)}</b></div><div><span class="faint small">امروز</span><b class="ltr" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</b></div></div>
+        <div class="tc-rates"><div><span class="faint small">دانلود</span><b class="ltr" data-live="rx:${t.name}">${unitSmall(fmtRate(r.rx))}</b></div><div><span class="faint small">آپلود</span><b class="ltr" data-live="tx:${t.name}">${unitSmall(fmtRate(r.tx))}</b></div><div><span class="faint small">امروز</span><b class="ltr" data-live="today:${t.name}">${unitSmall(fmtBytes(t.today.rx + t.today.tx))}</b></div></div>
         <div class="tc-tags">${profileTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}</div>
       </button>
       <footer class="tc-foot">
@@ -1449,7 +1451,7 @@
     const [big, unit, what] = gaugeText(j);
     const ph = (k, label) => html`<div class="phase ${running && G.phase === k ? "now" : ""}" data-ph="${k}"><b>${phaseValue(j, k)}</b>${label}</div>`;
     return html`<div class="gauge-box ${running ? "running" : ""}">
-      ${raw(`<svg class="gauge" viewBox="0 0 320 290" role="img" aria-label="سرعت لحظه‌ای">${ticks}
+      ${raw(`<svg class="gauge" viewBox="-24 0 368 290" role="img" aria-label="سرعت لحظه‌ای">${ticks}
         <path class="track" d="${arc(start, start + sweep)}"/>
         <path id="g-fill" class="fill ${G.phase === "upload" ? "tx" : ""}" d="${arc(start, start + sweep)}" stroke-dasharray="${len.toFixed(1)}" stroke-dashoffset="${(len * (1 - gfrac(G.v))).toFixed(1)}"/>
         <text id="g-big" class="big" x="${cx}" y="${cy + 12}" text-anchor="middle" direction="ltr">${esc(big)}</text>
