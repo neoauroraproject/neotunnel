@@ -307,6 +307,13 @@
   const prate = (f) => S.prates[fwdKey(f)] || { rx: 0, tx: 0 };
   const total = () => visible().reduce((a, t) => ({ rx: a.rx + rate(t.name).rx, tx: a.tx + rate(t.name).tx }), { rx: 0, tx: 0 });
   const peer = (name) => S.ov && S.ov.peers.find((p) => p.name === name);
+  // Display names: a label when one is set, else the name, which is the ID
+  // and never changes (renaming a tunnel or server only sets its label).
+  const tname = (t) => t.label || t.name;
+  const plabel = (p) => p.label || p.name;
+  const nodeName = () => S.ov.node.label || S.ov.node.name;
+  const pname = (name) => { if (!name) return ""; const p = peer(name); return p ? plabel(p) : S.ov && name === S.ov.node.name ? nodeName() : name; };
+  const tlabel = (name) => { const t = tunnel(name); return t ? tname(t) : name; };
   const status = (t) => {
     if (t.limits && t.limits.disabled) return ["off", "خاموش"];
     if (t.blocked) return ["warn", "حجم ماهانه تمام شد"];
@@ -427,7 +434,7 @@
           <button class="iconbtn" data-act="menu-close" aria-label="بستن منو">${I.x(18)}</button>
         </header>
         <div class="sheet-node">
-          <div><b>${ov.node.name}</b><span class="ltr">${ov.node.address || "-"}</span></div>
+          <div><b>${nodeName()}</b><span class="ltr">${ov.node.address || "-"}</span></div>
           <span class="live ${liveCls}"><i></i><span>${!S.live ? "قطع ارتباط" : S.paused ? "متوقف" : "زنده"}</span></span>
         </div>
         <nav class="sheet-nav" aria-label="صفحه‌ها">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon(20)}<span>${label}</span>${counts[id] ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
@@ -546,13 +553,13 @@
   function behindNote() {
     const ps = (S.ov.peers || []).filter((p) => p.paired && !p.in_sync);
     const old = (S.ov.peers || []).filter((p) => p.paired && p.version && p.version !== S.ov.node.version && !S.upgrading[p.name]);
-    const oldNote = old.length ? html`<div class="note warn behind">${I.alert(16)}<div class="grow">${old.map((p) => html`<b>${p.name}</b> `)} نسخه‌ی قدیمی‌تری (${old.map((p) => p.version).join("، ")}) از این سرور (<span class="ltr">${S.ov.node.version}</span>) دارد؛ تنظیمات تازه را نمی‌شناسد و ممکن است تانل یا فوروارد کار نکند.</div>
-      ${old.map((p) => html`<button class="btn sm primary" data-act="upgrade" data-name="${p.name}">${I.upgrade(14)} ارتقای ${p.name}</button>`)}</div>` : "";
+    const oldNote = old.length ? html`<div class="note warn behind">${I.alert(16)}<div class="grow">${old.map((p) => html`<b>${plabel(p)}</b> `)} نسخه‌ی قدیمی‌تری (${old.map((p) => p.version).join("، ")}) از این سرور (<span class="ltr">${S.ov.node.version}</span>) دارد؛ تنظیمات تازه را نمی‌شناسد و ممکن است تانل یا فوروارد کار نکند.</div>
+      ${old.map((p) => html`<button class="btn sm primary" data-act="upgrade" data-name="${p.name}">${I.upgrade(14)} ارتقای ${plabel(p)}</button>`)}</div>` : "";
     if (!ps.length) return oldNote;
-    return html`<div class="note warn behind">${I.alert(16)}<div class="grow">${ps.length === 1 ? html`سرور <b>${ps[0].name}</b> آخرین تغییرات را نگرفته است.` : html`${ps.length} سرور آخرین تغییرات را نگرفته‌اند: ${ps.map((p) => p.name).join("، ")}.`}
+    return html`<div class="note warn behind">${I.alert(16)}<div class="grow">${ps.length === 1 ? html`سرور <b>${plabel(ps[0])}</b> آخرین تغییرات را نگرفته است.` : html`${ps.length} سرور آخرین تغییرات را نگرفته‌اند: ${ps.map((p) => p.name).join("، ")}.`}
       <span class="faint"> اگر دوباره ارسال نشد، لینک تغییرات را روی همان سرور اجرا کنید.</span></div>
       <button class="btn sm" data-act="sync-all">${I.sync(14)} ارسال دوباره</button>
-      ${ps.map((p) => html`<button class="btn sm primary" data-act="setup" data-name="${p.name}">${I.term(14)} لینک تغییرات${ps.length > 1 ? " " + p.name : ""}</button>`)}</div>${oldNote}`;
+      ${ps.map((p) => html`<button class="btn sm primary" data-act="setup" data-name="${p.name}">${I.term(14)} لینک تغییرات${ps.length > 1 ? " " + plabel(p) : ""}</button>`)}</div>${oldNote}`;
   }
 
   function pageHead() {
@@ -604,12 +611,12 @@
     const ov = S.ov, groups = new Map();
     for (const t of visible()) {
       const key = t.peer || t.far_ip;
-      if (!groups.has(key)) groups.set(key, { key, name: t.peer || "دستگاه دیگر", ip: t.far_ip, tunnels: [], paired: true });
+      if (!groups.has(key)) groups.set(key, { key, name: pname(t.peer) || "دستگاه دیگر", ip: t.far_ip, tunnels: [], paired: true });
       groups.get(key).tunnels.push(t);
     }
     for (const p of ov.peers) {
-      if (!groups.has(p.name)) groups.set(p.name, { key: p.name, name: p.name, ip: p.address, tunnels: [], paired: p.paired });
-      const g = groups.get(p.name); g.paired = p.paired; g.ip = p.address; g.version = p.version;
+      if (!groups.has(p.name)) groups.set(p.name, { key: p.name, name: plabel(p), ip: p.address, tunnels: [], paired: p.paired });
+      const g = groups.get(p.name); g.name = plabel(p); g.paired = p.paired; g.ip = p.address; g.version = p.version;
     }
     for (const m of masters()) if (!groups.has(m.name)) groups.set(m.name, { key: m.name, name: m.name, ip: m.address.replace(/:\d+$/, ""), tunnels: [], paired: m.paired });
     return [...groups.values()];
@@ -659,9 +666,9 @@
     const outs = ts.map((t, i) => {
       const r = rate(t.name), off = t.limits && t.limits.disabled, hot = rates[i] > 1500 && !off, st = tunHealth(t);
       const [rv, ru] = splitRate(r.rx + r.tx);
-      return html`<div class="out ${hot ? "hot" : "cold"}" style="top:${(top + rowH * (i + 0.5)).toFixed(1)}px" role="button" tabindex="0" data-act="arc" data-type="tunnel" data-key="${t.name}" aria-label="${t.name}">
-        <div class="lbl"><small><i class="dot ${off ? "off" : st}"></i> <span class="ltr">${t.name}</span> · ${kindTitle(t)}${t.peer ? html`<span class="pr"> · ${t.peer}</span>` : ""}</small><b>${off ? "خاموش" : html`${rv}<u>${ru}</u>`}</b></div>
-        <button class="pill ${off ? "" : "on"}" data-act="power-ask" data-name="${t.name}" ${t.managed ? "disabled" : ""} aria-pressed="${!off}" title="${t.managed ? "این تانل را سرور اصلی مدیریت می‌کند" : off ? "روشن کردن تانل" : "خاموش کردن تانل"}" aria-label="${off ? "روشن کردن" : "خاموش کردن"} ${t.name}"></button>
+      return html`<div class="out ${hot ? "hot" : "cold"}" style="top:${(top + rowH * (i + 0.5)).toFixed(1)}px" role="button" tabindex="0" data-act="arc" data-type="tunnel" data-key="${t.name}" aria-label="${tname(t)}">
+        <div class="lbl"><small><i class="dot ${off ? "off" : st}"></i> <bdi>${tname(t)}</bdi> · ${kindTitle(t)}${t.peer ? html`<span class="pr"> · ${pname(t.peer)}</span>` : ""}</small><b>${off ? "خاموش" : html`${rv}<u>${ru}</u>`}</b></div>
+        <button class="pill ${off ? "" : "on"}" data-act="power-ask" data-name="${t.name}" ${t.managed ? "disabled" : ""} aria-pressed="${!off}" title="${t.managed ? "این تانل را سرور اصلی مدیریت می‌کند" : off ? "روشن کردن تانل" : "خاموش کردن تانل"}" aria-label="${off ? "روشن کردن" : "خاموش کردن"} ${tname(t)}"></button>
       </div>`;
     });
     return html`${head}
@@ -710,7 +717,7 @@
     const ov = S.ov, n = ov.node, hot = total().rx + total().tx > 1500, on = !S.paused;
     return html`${raw(nodeScene(hot))}
       <div class="node-top">
-        <h2 class="node-name">${n.name}</h2>
+        <h2 class="node-name">${n.label || n.name}</h2>
         <div>${n.bbr ? html`<span class="node-pill"><i></i>BBR فعال</span>` : html`<a class="node-pill warn" href="#/settings" data-act="goto-sec" data-sec="net">BBR خاموش است</a>`}</div>
         <div class="node-meta"><span class="ltr">${n.address || "-"}</span> · ${n.cpus} هسته · ${fmtBytes(n.mem_total)}${masters().length ? ` · مدیریت از ${masters().map((m) => m.name).join("، ")}` : ""}</div>
       </div>
@@ -904,7 +911,7 @@
           ${p ? html`<dl class="kv"><dt>وضعیت</dt><dd>${!p.paired ? "منتظر اجرای دستور اتصال" : p.in_sync ? "متصل و همگام" : "عقب از آخرین تغییرات"}</dd>
             <dt>نسخه</dt><dd class="ltr">${p.version || "-"} ${p.arch || ""}</dd><dt>آخرین ارتباط</dt><dd>${ago(p.last_seen)}</dd></dl>` : ""}
           <div><h4>تانل‌ها</h4>${g.tunnels.length ? html`<div class="layers">${g.tunnels.map((t) => html`<button class="layer" style="cursor:pointer;text-align:start;font:inherit;color:inherit" data-act="drawer" data-type="tunnel" data-name="${t.name}">
-              <i class="dot ${status(t)[0]}"></i><span class="k">${t.name}</span><span class="faint">${kindTitle(t)}</span><span class="m ltr" data-live="rx:${t.name}">${fmtRate(rate(t.name).rx)}</span></button>`)}</div>`
+              <i class="dot ${status(t)[0]}"></i><span class="k">${tname(t)}</span><span class="faint">${kindTitle(t)}</span><span class="m ltr" data-live="rx:${t.name}">${fmtRate(rate(t.name).rx)}</span></button>`)}</div>`
             : html`<div class="muted small">هنوز تانلی به این مقصد نیست.</div>`}</div>
           <div class="row">${p ? html`<button class="btn sm" data-act="setup" data-name="${p.name}">${I.term(15)} دستور اتصال</button>` : ""}
             <button class="btn sm primary" data-act="wizard" data-peer="${p ? p.name : ""}">${I.plus(15)} تانل به این مقصد</button></div>
@@ -913,7 +920,7 @@
       const t = tunnel(d.name);
       if (!t) { S.drawer = null; return ""; }
       const r = rate(t.name), fwd = S.ov.forwards.filter((f) => f.tunnel === t.name);
-      body = html`<header><div><h3>${t.name}</h3><div class="sub">${kindTitle(t)} به ${t.peer || "دستگاه دیگر"} <span class="ltr">${t.far_ip}</span></div></div>
+      body = html`<header><div><h3>${tname(t)}</h3><div class="sub">${kindTitle(t)} به ${pname(t.peer) || "دستگاه دیگر"} <span class="ltr">${t.far_ip}</span></div></div>
           <button class="btn sm ghost icon" data-act="drawer-close" aria-label="بستن">${I.x(16)}</button></header>
         <div class="body">
           <div class="row">${stateEl(t)}${healthTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : ""}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.managed ? html`<span class="tag warn">از سرور اصلی</span>` : ""}</div>
@@ -1064,7 +1071,7 @@
     const filters = html`<div class="filters">${rangeSeg("st-range", st.range)}
       <select class="input" data-act="st-subject" aria-label="موضوع">
         <option value="server" ${st.subject === "server" ? "selected" : ""}>کل سرور</option>
-        ${ts.map((t) => html`<option value="${t.name}" ${st.subject === t.name ? "selected" : ""}>تانل ${t.name} · ${kindTitle(t)}${t.peer ? " به " + t.peer : ""}</option>`)}
+        ${ts.map((t) => html`<option value="${t.name}" ${st.subject === t.name ? "selected" : ""}>تانل ${tname(t)} · ${kindTitle(t)}${t.peer ? " به " + pname(t.peer) : ""}</option>`)}
       </select></div>`;
     return html`${filters}${st.subject === "server" ? statsServer() : statsTunnel(tunnel(st.subject))}`;
   }
@@ -1077,7 +1084,7 @@
     const loading = m === undefined ? "loading" : "";
     const rows = ts.map((t) => {
       const s = se["t:" + t.name], p = se["p:" + t.name];
-      return html`<tr class="hit" data-act="st-pick" data-name="${t.name}"><td><span class="state"><i class="dot ${tunHealth(t)}"></i><b>${t.name}</b></span> <span class="faint small">${kindTitle(t)}</span></td>
+      return html`<tr class="hit" data-act="st-pick" data-name="${t.name}"><td><span class="state"><i class="dot ${tunHealth(t)}"></i><b>${tname(t)}</b></span> <span class="faint small">${kindTitle(t)}</span></td>
         <td class="num">${s ? fmtRate(s.avg[0]) : "—"}</td><td class="num hide-sm">${s ? fmtRate(s.peak[0]) : "—"}</td><td class="num hide-sm">${s ? fmtRate(s.avg[1]) : "—"}</td>
         <td class="num">${s ? fmtBytes((s.sum[0] + s.sum[1]) / 8) : "—"}</td><td class="num hide-sm">${p && p.avg[0] ? ms(p.avg[0]) : "—"}</td><td class="num hide-sm">${p ? `${(p.avg[1] || 0).toFixed(1)}%` : "—"}</td>
         <td class="num hide-sm">${fmtBytes(t.total.rx + t.total.tx)}</td></tr>`;
@@ -1104,7 +1111,7 @@
       <div><div class="k">از ساخت تانل${tr && tr.since ? " (" + F.dm.format(new Date(tr.since * 1000)) + ")" : ""}</div><div class="v ltr">${fmtBytes(t.total.rx + t.total.tx)}</div></div>
       <div><div class="k">تست‌های سرعت (جدا حساب می‌شود)</div><div class="v ltr">${fmtBytes((t.tests.rx || 0) + (t.tests.tx || 0))}</div></div></div>`;
     return html`<div class="stats ${m === undefined ? "loading" : ""}">
-      <div class="panel wide"><header><h2>ترافیک ${t.name}</h2><span class="aside">${kindTitle(t)}${t.peer ? " به " + t.peer : ""} · <button class="btn sm ghost" data-act="drawer" data-type="tunnel" data-name="${t.name}">جزئیات تانل</button></span></header>
+      <div class="panel wide"><header><h2>ترافیک ${tname(t)}</h2><span class="aside">${kindTitle(t)}${t.peer ? " به " + pname(t.peer) : ""} · <button class="btn sm ghost" data-act="drawer" data-type="tunnel" data-name="${t.name}">جزئیات تانل</button></span></header>
         <div class="in">${facts}${rateFigs(s)}${rateChart("st-t", m, s, "tall")}</div></div>
       <div class="panel"><header><h2>پینگ</h2><span class="aside">${p && p.avg[0] ? `میانگین ${ms(p.avg[0])} · بیشترین ${ms(p.peak[0])}` : ""}</span></header><div class="in">${tsChart("st-ping", m, p ? [{ name: "پینگ", cls: "rx", vals: p.a, peaks: p.pa }] : [], "ms", { size: "short" })}</div></div>
       <div class="panel"><header><h2>افت بسته</h2><span class="aside">${p ? `میانگین ${(p.avg[1] || 0).toFixed(1)}%` : ""}</span></header><div class="in">${tsChart("st-loss", m, p ? [{ name: "افت", cls: "tx", vals: p.b, peaks: p.pb }] : [], "%", { size: "short" })}</div></div>
@@ -1136,7 +1143,7 @@
     if (!ts.length) return html`<div class="panel"><div class="empty">${I.tunnel(32)}<b>هیچ تانلی وجود ندارد</b>با چند کلیک یک تانل 6to4 بسازید؛ اگر مسیر پروتکل‌ها را می‌بندد، روی پورت UDP یا با NeoObfs اجرایش کنید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div></div>`;
     const open = ts.find((t) => t.name === S.open);
     return html`<div class="tcards">${ts.map(tunnelCard)}</div>
-      ${open ? html`<section class="panel tdetail" data-key="td-${open.name}"><header><h2>${open.name}</h2><span class="aside">${kindTitle(open)} به ${open.peer || open.far_ip}</span>
+      ${open ? html`<section class="panel tdetail" data-key="td-${open.name}"><header><h2>${tname(open)}</h2>${open.managed ? "" : renameBtn("tunnel", open.name)}<span class="aside">${kindTitle(open)} به ${pname(open.peer) || open.far_ip}${open.label ? html` · شناسه <span class="ltr">${open.name}</span>` : ""}</span>
         <button class="btn sm ghost icon" data-act="toggle-tunnel" data-name="${open.name}" style="margin-inline-start:auto" aria-label="بستن">${I.x(16)}</button></header>${tunnelDetail(open)}</section>` : ""}`;
   }
 
@@ -1149,8 +1156,8 @@
     return html`<article class="tcard ${open ? "open" : ""} ${off ? "off" : ""}" data-key="tc-${t.name}">
       <button class="tc-main" data-act="toggle-tunnel" data-name="${t.name}" aria-expanded="${open}">
         <div class="tc-top"><span class="state"><i class="dot ${busy ? "busy" : st}"></i>${busy ? "در حال ری‌استارت…" : label}</span>${ping ? html`<span class="faint small ltr">${ping}</span>` : ""}</div>
-        <div class="tc-name"><b>${t.name}</b><span>${kindTitle(t)}${t.base_port ? ` · ${t.kind === "tcp" ? "TCP" : "UDP"} ${t.base_port}` : ""}</span></div>
-        <div class="tc-dest">${I.server(14)} ${t.peer || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
+        <div class="tc-name"><b>${tname(t)}</b><span>${kindTitle(t)}${t.base_port ? ` · ${t.kind === "tcp" ? "TCP" : "UDP"} ${t.base_port}` : ""}</span></div>
+        <div class="tc-dest">${I.server(14)} ${pname(t.peer) || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
         <div class="tc-rates"><div><span class="faint small">دانلود</span><b class="ltr" data-live="rx:${t.name}">${unitSmall(fmtRate(r.rx))}</b></div><div><span class="faint small">آپلود</span><b class="ltr" data-live="tx:${t.name}">${unitSmall(fmtRate(r.tx))}</b></div><div><span class="faint small">امروز</span><b class="ltr" data-live="today:${t.name}">${unitSmall(fmtBytes(t.today.rx + t.today.tx))}</b></div></div>
         <div class="tc-tags">${profileTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}</div>
       </button>
@@ -1206,7 +1213,7 @@
       </div>` : ""}
       ${tab === "limits" ? html`<div class="dpane" data-key="lim-${t.name}">${limitsBlock(t, st)}</div>` : ""}
       ${tab === "settings" || t.managed ? html`<div class="dpane" data-key="set-${t.name}">
-      ${t.managed ? html`<div class="note">این تانل را سرور اصلی (${t.peer || ""}) تعریف کرده؛ تنظیماتش را از همان‌جا تغییر دهید.</div>` : html`<form class="stack" data-form="tunnel-settings" data-name="${t.name}">
+      ${t.managed ? html`<div class="note">این تانل را سرور اصلی (${pname(t.peer)}) تعریف کرده؛ تنظیماتش را از همان‌جا تغییر دهید.</div>` : html`<form class="stack" data-form="tunnel-settings" data-name="${t.name}">
         ${profileField(`tset.${t.name}`, st.profile, base.kind)}
         ${LANE_KINDS.includes(t.kind) ? lanesField(`tset.${t.name}`, st.lanes) : ""}
         <div class="field"><span class="lbl">رمزنگاری</span>
@@ -1230,7 +1237,7 @@
     const fs = (S.ov.forwards || []).filter((f) => f.tunnel === t.name || f.backup === t.name);
     if (t.managed) return "";
     return html`<div class="tfwd"><div class="tfwd-h"><b>پورت‌ها</b>${fs.length ? "" : html`<span class="faint small">هنوز پورتی از این تانل فوروارد نشده</span>`}<span class="grow"></span><button class="btn sm ghost" data-act="add-forward" data-tunnel="${t.name}">${I.plus(14)} فوروارد</button></div>
-      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">${f.mode === "socks" ? proxyAt(f) : `→ ${f.target}:${f.to || f.ports}`}</span>${fwdModeLabel(f)}${f.backup === t.name ? html`<span class="tag">پشتیبانِ ${f.tunnel}</span>` : ""}${fwdPath(f)}<span class="grow"></span>${f.mode === "socks" ? "" : html`<button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button>`}</div>`; })}</div>`;
+      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">${f.mode === "socks" ? proxyAt(f) : `→ ${f.target}:${f.to || f.ports}`}</span>${fwdModeLabel(f)}${f.backup === t.name ? html`<span class="tag">پشتیبانِ ${tlabel(f.tunnel)}</span>` : ""}${fwdPath(f)}<span class="grow"></span>${f.mode === "socks" ? "" : html`<button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button>`}</div>`; })}</div>`;
   }
 
   // Speed limit and monthly quota, with how much of the quota is used.
@@ -1304,7 +1311,7 @@
       : stale ? ["bad", "در دسترس نیست"]
       : p.in_sync ? ["ok", "متصل و همگام"] : ["warn", "عقب از تغییرات"];
     return html`<article class="peer ${up ? "busy" : ""}">
-      <header><div><b>${p.name}</b><span class="ltr faint small">${p.address}</span></div><span class="state"><i class="dot ${cls}"></i>${label}</span></header>
+      <header><div><span class="pname"><b>${plabel(p)}</b>${renameBtn("server", p.name)}</span><span class="ltr faint small">${p.address}${p.label ? ` · ${p.name}` : ""}</span></div><span class="state"><i class="dot ${cls}"></i>${label}</span></header>
       <dl>
         <div><dt>نسخه</dt><dd class="ltr">${p.version || "-"} ${outdated && !up ? html`<span class="tag warn">قدیمی</span>` : p.paired && p.version ? html`<span class="tag">به‌روز</span>` : ""}</dd></div>
         <div><dt>تانل‌ها</dt><dd>${p.tunnels}</dd></div>
@@ -1344,13 +1351,13 @@
   function backupField(path, obj, name) {
     const cs = backupChoices(name);
     if (!cs.length && !obj.backup) return html`<div class="field full"><span class="lbl">تانل پشتیبان</span><span class="help">برای مسیر پشتیبان، یک تانل دیگر به همین سرور بسازید؛ اگر تانل اصلی ترافیک رد نکرد، این پورت خودکار از آن می‌رود.</span></div>`;
-    return html`<div class="field full"><label for="${path}-bk">تانل پشتیبان</label><select id="${path}-bk" class="input" data-bind="${path}.backup"><option value="">بدون پشتیبان</option>${cs.map((x) => html`<option value="${x.name}" ${obj.backup === x.name ? "selected" : ""}>${x.name} (${kindTitle(x)})</option>`)}</select>
+    return html`<div class="field full"><label for="${path}-bk">تانل پشتیبان</label><select id="${path}-bk" class="input" data-bind="${path}.backup"><option value="">بدون پشتیبان</option>${cs.map((x) => html`<option value="${x.name}" ${obj.backup === x.name ? "selected" : ""}>${tname(x)} (${kindTitle(x)})</option>`)}</select>
       <span class="help">اگر تانل اصلی ۳ پینگ پشت‌سرهم (حدود ۲۵ ثانیه) جواب ندهد، پورت به تانل پشتیبان می‌رود و وقتی اصلی حدود یک دقیقه سالم ماند برمی‌گردد. اتصال‌های باز روی همان مسیر قبلی می‌مانند.</span></div>`;
   }
   // Which of its tunnels a forward with a backup runs on now.
   const fwdPath = (f) => !f.backup ? "" : f.active === f.backup
-    ? html`<span class="tag warn" title="تانل اصلی ${f.tunnel} ترافیک رد نمی‌کند">${I.alert ? I.alert(12) : ""} روی پشتیبان ${f.backup}${f.since ? " · " + ago(f.since) : ""}</span>`
-    : html`<span class="tag" title="پشتیبان: ${f.backup}"><i class="dot ok"></i> مسیر اصلی · پشتیبان ${f.backup}</span>`;
+    ? html`<span class="tag warn" title="تانل اصلی ${tlabel(f.tunnel)} ترافیک رد نمی‌کند">${I.alert ? I.alert(12) : ""} روی پشتیبان ${tlabel(f.backup)}${f.since ? " · " + ago(f.since) : ""}</span>`
+    : html`<span class="tag" title="پشتیبان: ${tlabel(f.backup)}"><i class="dot ok"></i> مسیر اصلی · پشتیبان ${tlabel(f.backup)}</span>`;
   // A forward's recent moves between its tunnels, newest first.
   function switchHistory(f) {
     const ss = (f.switches || []).slice().reverse();
@@ -1395,7 +1402,7 @@
     const head = html`<header><h2>پروکسی داخلی (SOCKS5 / HTTP)</h2><span class="aside">برای برنامه‌های همین سرور که باید از سرور مقصد به اینترنت بروند</span><span class="grow"></span><button class="btn sm primary" data-act="add-proxy">${I.plus(14)} پروکسی جدید</button></header>`;
     if (!ps.length) return html`<div class="panel" style="margin-bottom:16px">${head}<div class="in"><p class="muted" style="margin:0">برنامه‌ای روی این سرور دارید که مستقیم به جایی وصل نمی‌شود (مثلاً تلگرام)؟ یک پروکسی بسازید و آدرسش را در تنظیمات آن برنامه بدهید؛ اتصال‌هایش از داخل تانل به سرور مقصد می‌روند و از آنجا به اینترنت.</p></div></div>`;
     return html`<div class="panel" style="margin-bottom:16px">${head}<div class="in proxies">${ps.map((f) => html`<div class="proxy">
-        <div class="proxy-h"><b class="ltr">${proxyAt(f)}</b><span class="faint">از تانل</span> ${f.tunnel} <span class="faint">به</span> ${f.peer || ""}
+        <div class="proxy-h"><b class="ltr">${proxyAt(f)}</b><span class="faint">از تانل</span> ${tlabel(f.tunnel)} <span class="faint">به</span> ${pname(f.peer)}
           ${f.auth ? html`<span class="tag">با رمز</span>` : html`<span class="tag">فقط همین سرور</span>`}${fwdPath(f)}<span class="grow"></span>
           <button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف پروکسی">${I.trash(15)}</button></div>
         ${["socks5", "http"].map((sc) => html`<div class="code small">${proxyURL(f, sc)}<button class="btn sm ghost icon" data-act="copy" data-text="${proxyURL(f, sc)}" aria-label="کپی">${I.copy(14)}</button></div>`)}
@@ -1412,7 +1419,7 @@
         return html`<tr>
           <td><b class="ltr">${f.ports}</b><div class="faint small"><span class="ltr">${f.public}</span></div></td>
           <td class="hide-sm">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</td>
-          <td>${f.tunnel} <span class="faint">به</span> ${f.peer || ""}<div class="faint small"><span class="ltr">${f.target}:${f.to || f.ports}</span></div>${f.backup ? html`<div style="margin-top:4px">${fwdPath(f)}</div>` : ""}</td>
+          <td>${tlabel(f.tunnel)} <span class="faint">به</span> ${pname(f.peer)}<div class="faint small"><span class="ltr">${f.target}:${f.to || f.ports}</span></div>${f.backup ? html`<div style="margin-top:4px">${fwdPath(f)}</div>` : ""}</td>
           <td>${fwdModeLabel(f)}</td>
           <td style="text-align:end;white-space:nowrap"><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button> <button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد">${I.trash(15)}</button></td></tr>`;
       })}
@@ -1452,12 +1459,12 @@
           <p class="help" style="margin:0">هر جهت ${sp.secs} ثانیه با ${sp.streams} اتصال TCP. ${warm} ثانیه‌ی اول هر جهت در نتیجه حساب نمی‌شود، چون TCP در شروع آهسته بالا می‌آید و روی مسیر دور عدد را خیلی کمتر از ظرفیت نشان می‌داد. چند اتصال مثل «Connection Count» در Bandwidth Test میکروتیک ظرفیت کل مسیر را می‌سنجد؛ ۱ اتصال یعنی سرعت یک دانلود تکی.</p>
         </div></div>
         <div class="panel"><header><h2>تست یک تانل</h2></header><div class="in">
-          ${ts.length ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" data-bind="speed.tunnel" aria-label="تانل">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${t.name}، ${kindTitle(t)} به ${t.peer || t.far_ip}، حالت ${profileName(t.settings && t.settings.profile)}</option>`)}</select>
+          ${ts.length ? html`<div class="row" style="flex-wrap:nowrap"><select class="input" data-bind="speed.tunnel" aria-label="تانل">${ts.map((t) => html`<option value="${t.name}" ${sp.tunnel === t.name ? "selected" : ""}>${tname(t)}، ${kindTitle(t)} به ${pname(t.peer) || t.far_ip}، حالت ${profileName(t.settings && t.settings.profile)}</option>`)}</select>
             <button class="btn primary" data-act="run-test" ${running ? "disabled" : ""}>${I.play(15)} شروع</button></div>
             <p class="help">پینگ، جیتر و افت؛ بعد آپلود و دانلود، هر کدام ${sp.secs} ثانیه.</p>` : html`<div class="muted">اول یک تانل بسازید.</div>`}
         </div></div>
         <div class="panel"><header><h2>مقایسه‌ی انواع تانل</h2><span class="aside">بهترین را برای این مسیر پیدا کنید</span></header><div class="in">
-          ${ps.length ? html`<div class="field"><label for="bench-peer">سرور مقصد</label><select id="bench-peer" class="input" data-bind="speed.peer">${ps.map((p) => html`<option value="${p.name}" ${sp.peer === p.name ? "selected" : ""}>${p.name} (${p.address})</option>`)}</select></div>
+          ${ps.length ? html`<div class="field"><label for="bench-peer">سرور مقصد</label><select id="bench-peer" class="input" data-bind="speed.peer">${ps.map((p) => html`<option value="${p.name}" ${sp.peer === p.name ? "selected" : ""}>${plabel(p)} (${p.address})</option>`)}</select></div>
             <div class="row" style="margin-top:12px">${BENCH.map(([id, label]) => html`<label class="switch"><input type="checkbox" data-act="bench-only" value="${id}" ${sp.only.includes(id) ? "checked" : ""}>${label}</label>`)}</div>
             <div class="row" style="margin-top:14px"><button class="btn primary" data-act="run-bench" ${running ? "disabled" : ""}>${I.play(15)} شروع مقایسه</button><span class="help">اول اتصال همه با هم چند ثانیه بررسی می‌شود، بعد سرعت فقط برای آن‌هایی که وصل شدند. تانل‌های فعلی دست نمی‌خورند.</span></div>`
             : html`<div class="muted">برای مقایسه، سرور مقصد باید متصل باشد.</div>`}
@@ -1698,7 +1705,8 @@
   function setNode() {
     const ov = S.ov;
     return html`<div class="panel"><header><h2>این سرور</h2></header><div class="in"><form data-form="node" class="stack">
-      <div class="grid2"><div class="field"><label for="s-name">نام سرور</label><input id="s-name" class="input ltr" name="name" value="${ov.node.name}"><span class="help">در نقشه و دستورهای اتصال دیده می‌شود. حروف کوچک انگلیسی، عدد و خط تیره.</span></div>
+      <div class="grid2"><div class="field"><label for="s-label">نام نمایشی</label><input id="s-label" class="input" name="label" dir="auto" maxlength="40" value="${ov.node.label || ""}" placeholder="${ov.node.name}"><span class="help">نامی که در پنل و منوها دیده می‌شود؛ هر زبانی، هر وقت. تانل‌ها را تغییر نمی‌دهد.</span></div>
+      <div class="field"><label for="s-name">شناسه‌ی سرور</label><input id="s-name" class="input ltr" name="name" value="${ov.node.name}"><span class="help">در دستورهای اتصال و برای سرورهای دیگر. حروف کوچک انگلیسی، عدد و خط تیره؛ تا وقتی تانل دارد عوض نمی‌شود.</span></div>
       <div class="field"><label for="s-ip">IP عمومی</label><input id="s-ip" class="input ltr" name="address" value="${ov.node.address}"><span class="help">سرورهای مقصد با این IP به این سرور وصل می‌شوند.</span></div></div>
       <div class="form-foot"><button class="btn primary" type="submit">ذخیره</button></div></form></div></div>`;
   }
@@ -1819,7 +1827,7 @@
     const ts = visible();
     return html`<div class="panel"><header><h2>آمار ترافیک</h2></header><div class="in stack">
       <p class="help" style="margin:0">سرویس هر ۱۰ ثانیه شمارنده‌ی هر تانل را می‌خواند و مجموع روزانه، ماهانه و کل را نگه می‌دارد؛ ساخت دوباره‌ی تانل یا ریبوت آن را صفر نمی‌کند. سابقه‌ی روزانه تا ۶۲ روز می‌ماند.</p>
-      ${ts.length ? html`<table class="t"><thead><tr><th>تانل</th><th class="num">امروز</th><th class="num">این ماه</th><th class="num">از ابتدا</th><th></th></tr></thead><tbody>${ts.map((t) => html`<tr><td>${t.name}</td><td class="num">${fmtBytes(t.today.rx + t.today.tx)}</td><td class="num">${fmtBytes(t.month.rx + t.month.tx)}</td><td class="num">${fmtBytes(t.total.rx + t.total.tx)}</td>
+      ${ts.length ? html`<table class="t"><thead><tr><th>تانل</th><th class="num">امروز</th><th class="num">این ماه</th><th class="num">از ابتدا</th><th></th></tr></thead><tbody>${ts.map((t) => html`<tr><td>${tname(t)}</td><td class="num">${fmtBytes(t.today.rx + t.today.tx)}</td><td class="num">${fmtBytes(t.month.rx + t.month.tx)}</td><td class="num">${fmtBytes(t.total.rx + t.total.tx)}</td>
         <td style="text-align:end"><button class="btn sm ghost" data-act="reset-traffic" data-name="${t.name}">صفر کردن</button></td></tr>`)}</tbody></table>` : html`<div class="muted">تانلی نیست.</div>`}
       <div class="form-foot"><button class="btn danger" data-act="reset-traffic" data-name="">صفر کردن آمار همه‌ی تانل‌ها</button></div>
     </div></div>`;
@@ -1890,7 +1898,7 @@
 
   function setupView(s, intro) {
     const where = `${s.peer} (${s.address})`;
-    return html`${modalHead("دستور اتصال " + s.peer)}
+    return html`${modalHead("دستور اتصال " + pname(s.peer))}
       <div class="body">
         ${intro || (s.paired ? html`<div class="note ok">این سرور متصل است و تغییرات خودکار روی آن اعمال می‌شود. اگر روزی در دسترس نبود، دستور زیر را روی <b>${where}</b> اجرا کنید تا همه‌چیز یکجا اعمال شود.</div>`
           : html`<div class="note warn">این سرور هنوز وصل نشده. یکی از دستورهای زیر را روی <b>${where}</b> با دسترسی root اجرا کنید؛ بعد از آن هر تغییری خودکار روی آن هم اعمال می‌شود.</div>`)}
@@ -1904,7 +1912,7 @@
 
   // RouterOS commands for a MikroTik at the far end of a tunnel.
   function mikrotikView(name, commands) {
-    return html`${modalHead("دستورهای میکروتیک " + name)}
+    return html`${modalHead("دستورهای میکروتیک " + tlabel(name))}
       <div class="body">
         <div class="note">این دستورها را در ترمینال روتر (RouterOS 7) بچسبانید تا آن سر تانل با همین تنظیمات (MTU، کلید، آدرس داخلی) ساخته شود.</div>
         ${codeBlock("RouterOS v7", commands.trimEnd(), "")}
@@ -1921,12 +1929,12 @@
   function reportChange(ch, okMsg) {
     const failed = (ch.peers || []).filter((p) => !p.ok);
     (ch.errors || []).forEach((e) => toast(e, "bad"));
-    (ch.peers || []).filter((p) => p.ok).forEach((p) => toast(`${p.peer} به‌روز شد`));
+    (ch.peers || []).filter((p) => p.ok).forEach((p) => toast(`${pname(p.peer)} به‌روز شد`));
     if (failed.length && failed[0].setup) {
       const p = failed[0], notPaired = /not paired/.test(p.error || "");
       openModal(() => setupView(p.setup, html`<div class="note ${notPaired ? "warn" : "bad"}">${okMsg ? html`<b>${okMsg}.</b> ` : ""}${notPaired
-        ? html`سرور <b>${p.peer}</b> هنوز وصل نشده. دستور زیر را روی آن اجرا کنید تا آن طرف تانل هم ساخته شود.`
-        : html`سرور <b>${p.peer}</b> در دسترس نبود (<span class="ltr small">${p.error}</span>). با اجرای دستور زیر روی آن، همه‌ی تغییرات یکجا اعمال می‌شود.`}</div>`));
+        ? html`سرور <b>${pname(p.peer)}</b> هنوز وصل نشده. دستور زیر را روی آن اجرا کنید تا آن طرف تانل هم ساخته شود.`
+        : html`سرور <b>${pname(p.peer)}</b> در دسترس نبود (<span class="ltr small">${p.error}</span>). با اجرای دستور زیر روی آن، همه‌ی تغییرات یکجا اعمال می‌شود.`}</div>`));
       return;
     }
     if (okMsg) toast(okMsg);
@@ -1967,7 +1975,7 @@
     return html`<p class="lead">تانل بین این سرور و کجا ساخته شود؟</p>
       <div class="choices">
         ${ov.peers.map((p) => html`<button type="button" class="choice ${w.dest === "peer" && w.peer === p.name ? "on" : ""}" data-act="wiz-dest" data-dest="peer" data-name="${p.name}">
-          <b>${I.server(16)} ${p.name}</b><span class="ltr">${p.address}</span><span class="state"><i class="dot ${p.paired ? "ok" : "warn"}"></i>${p.paired ? "متصل؛ هر انتخاب زنده بررسی می‌شود" : "منتظر اتصال"}</span></button>`)}
+          <b>${I.server(16)} ${plabel(p)}</b><span class="ltr">${p.address}</span><span class="state"><i class="dot ${p.paired ? "ok" : "warn"}"></i>${p.paired ? "متصل؛ هر انتخاب زنده بررسی می‌شود" : "منتظر اتصال"}</span></button>`)}
         <button type="button" class="choice ${w.dest === "new" ? "on" : ""}" data-act="wiz-dest" data-dest="new"><b>${I.plus(16)} سرور جدید</b><span>سرور خارج که NeoTunnel روی آن نصب می‌شود</span></button>
         <button type="button" class="choice ${w.dest === "remote" ? "on" : ""}" data-act="wiz-dest" data-dest="remote"><b>${I.globe(16)} دستگاه دیگر</b><span>مثلاً میکروتیک؛ فقط این طرف ساخته می‌شود</span></button>
       </div>
@@ -2274,7 +2282,7 @@
     const t = tunnel(f.tunnel), remote = t && !t.peer;
     return html`${modalHead("فوروارد پورت جدید")}
       <div class="body">${ts.length ? html`<div class="grid2">
-          <div class="field full"><label for="f-t">از طریق تانل</label><select id="f-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${x.name} به ${x.peer || x.far_ip} (${x.there4 || x.there6})</option>`)}</select></div>
+          <div class="field full"><label for="f-t">از طریق تانل</label><select id="f-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${tname(x)} به ${pname(x.peer) || x.far_ip} (${x.there4 || x.there6})</option>`)}</select></div>
           <div class="field"><label for="f-p">پورت(های) این سرور</label><input id="f-p" class="input ltr" data-bind="form.ports" value="${f.ports || ""}" placeholder="443, 2053-2096"></div>
           <div class="field"><label for="f-to">پورت مقصد (اختیاری)</label><input id="f-to" class="input ltr" type="number" data-bind="form.to" value="${f.to || ""}" placeholder="همان پورت"></div>
           <div class="field"><span class="lbl">پروتکل</span><div class="seg">${fwdProtos(f.mode).map((p) => html`<button type="button" class="${fwdProto(f.mode, f.proto || "both") === p ? "on" : ""}" data-act="set" data-path="form.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
@@ -2292,7 +2300,7 @@
     const open = f.access === "all";
     return html`${modalHead("پروکسی جدید")}
       <div class="body">${ts.length ? html`<div class="grid2">
-          <div class="field full"><label for="p-t">از طریق تانل</label><select id="p-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${x.name} به ${x.peer} (${kindTitle(x)})</option>`)}</select>
+          <div class="field full"><label for="p-t">از طریق تانل</label><select id="p-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${tname(x)} به ${pname(x.peer)} (${kindTitle(x)})</option>`)}</select>
             <span class="help">اتصال‌ها از داخل همین تانل به ${tunnel(f.tunnel) ? tunnel(f.tunnel).peer : "سرور مقصد"} می‌روند و از آنجا به اینترنت؛ مقصد، IP آن سرور را می‌بیند.</span></div>
           <div class="field"><label for="p-port">پورت</label><div class="pf"><input id="p-port" class="input ltr" type="number" min="1" max="65535" data-bind="form.ports" value="${f.ports || ""}" placeholder="1080"><button type="button" class="btn sm" data-act="random-port" data-path="form.ports" data-proto="tcp" title="یک پورت آزاد تصادفی بین ۲۰۰۰۰ و ۶۰۰۰۰">${I.dice(14)} تصادفی</button></div>
             <span class="help">یک پورت هم SOCKS5 است هم HTTP.</span></div>
@@ -2303,6 +2311,18 @@
           ${backupField("form", f, f.tunnel)}
         </div>` : html`<div class="muted">پروکسی به تانلی نیاز دارد که سرور مقصدش NeoTunnel دارد؛ اول یکی بسازید.</div>`}</div>
       <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-proxy-go" ${ts.length ? "" : "disabled"}>${I.plus(16)} ساخت پروکسی</button></footer>`;
+  }
+
+  // Renaming changes only the display name; the ID (name) stays, so the
+  // running tunnel and everything keyed by it are untouched.
+  const renameBtn = (kind, name) => html`<button type="button" class="btn sm ghost icon rename" data-act="rename" data-kind="${kind}" data-name="${name}" title="تغییر نام" aria-label="تغییر نام">${I.edit(14)}</button>`;
+  function renameView() {
+    const m = S.modal, t = m.kind === "tunnel" ? tunnel(m.name) : null, p = m.kind === "server" ? peer(m.name) : null;
+    const cur = (t || p || {}).label || "";
+    return html`${modalHead(m.kind === "tunnel" ? "تغییر نام تانل" : "تغییر نام سرور")}<form data-form="label"><div class="body stack">
+        <div class="field"><label for="r-label">نام نمایشی</label><input id="r-label" class="input" name="label" dir="auto" maxlength="40" value="${cur}" placeholder="${m.name}" autocomplete="off">
+        <span class="help">شناسه <span class="ltr">${m.name}</span> می‌ماند و تانل‌ها، کلیدها و پورت‌ها با همان کار می‌کنند؛ فقط نامی که در پنل می‌بینید عوض می‌شود.${m.kind === "tunnel" ? " سرور مقصد هم همین نام را می‌بیند." : ""} خالی بگذارید تا خود شناسه نشان داده شود.</span></div></div>
+      <footer><span class="grow"></span><button class="btn ghost" type="button" data-act="close">انصراف</button><button class="btn primary" type="submit">${I.check(16)} ذخیره</button></footer></form>`;
   }
 
   function confirmView(title, text, act, data, label, icon = I.trash) {
@@ -2364,7 +2384,14 @@
     const d = Object.fromEntries(new FormData(e.target));
     try {
       if (form === "login") { await api("POST", "login", { user: d.user, password: d.password }); S.authed = true; await refresh(); refreshTraffic().then(draw); return; }
-      if (form === "node") { await api("POST", "settings/node", { name: d.name.trim(), address: d.address.trim() }); toast("ذخیره شد"); }
+      if (form === "node") {
+        if ((d.label || "").trim() !== (S.ov.node.label || "")) await api("POST", "labels", { kind: "self", label: d.label });
+        await api("POST", "settings/node", { name: d.name.trim(), address: d.address.trim() }); await refresh(); toast("ذخیره شد");
+      }
+      if (form === "label") {
+        const m = S.modal, ch = await api("POST", "labels", { kind: m.kind, name: m.name, label: d.label });
+        closeModal(); await refresh(); reportChange(ch, "نام ذخیره شد"); return;
+      }
       if (form === "user") { await api("POST", "settings/user", { user: d.user.trim() }); toast("نام کاربری عوض شد"); }
       if (form === "password") {
         if (d.next !== d.again) throw new Error("تکرار رمز با رمز جدید یکی نیست");
@@ -2545,12 +2572,13 @@
       try { const ch = await api("POST", `tunnels/${encodeURIComponent(t.name)}/limits` + safeQ(), l); S.edit = false; await refresh(); reportChange(ch, "محدودیت‌ها ذخیره شد"); safeStarted(ch); draw(); }
       catch (e) { toast(e.message, "bad"); }
     },
-    "del-tunnel"(el) { openModal(() => confirmView("حذف تانل", html`تانل <b>${el.dataset.name}</b> با لایه‌های زیرین و فورواردهایش، روی هر دو سرور حذف شود؟`, "del-tunnel-go", { name: el.dataset.name }, "حذف تانل")); },
+    rename(el) { openModal(renameView, { kind: el.dataset.kind, name: el.dataset.name }); },
+    "del-tunnel"(el) { openModal(() => confirmView("حذف تانل", html`تانل <b>${tlabel(el.dataset.name)}</b> با لایه‌های زیرین و فورواردهایش، روی هر دو سرور حذف شود؟`, "del-tunnel-go", { name: el.dataset.name }, "حذف تانل")); },
     async "del-tunnel-go"(el) {
       try { const ch = await api("DELETE", "tunnels/" + encodeURIComponent(el.dataset.name)); closeModal(); S.open = null; S.drawer = null; await refresh(); reportChange(ch, "تانل حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
     },
-    "del-server"(el) { openModal(() => confirmView("حذف سرور", html`سرور <b>${el.dataset.name}</b> و تانل‌های این سرور به آن حذف شوند؟ روی خود آن سرور چیزی پاک نمی‌شود.`, "del-server-go", { name: el.dataset.name }, "حذف سرور")); },
+    "del-server"(el) { openModal(() => confirmView("حذف سرور", html`سرور <b>${pname(el.dataset.name)}</b> و تانل‌های این سرور به آن حذف شوند؟ روی خود آن سرور چیزی پاک نمی‌شود.`, "del-server-go", { name: el.dataset.name }, "حذف سرور")); },
     async "del-server-go"(el) {
       try { const ch = await api("DELETE", "peers/" + encodeURIComponent(el.dataset.name)); closeModal(); await refresh(); reportChange(ch, "سرور حذف شد"); }
       catch (e) { toast(e.message, "bad"); }
@@ -2583,7 +2611,7 @@
     "power-ask"(el) {
       const t = tunnel(el.dataset.name); if (!t || t.managed) return;
       if (t.limits && t.limits.disabled) { actions["tunnel-power"](el); return; }
-      openModal(() => confirmView("خاموش کردن تانل", html`تانل <b>${t.name}</b> روی هر دو سرور خاموش شود؟ اتصال کاربرانی که از آن می‌روند قطع می‌شود.`, "tunnel-power", { name: t.name }, "خاموش کردن", I.power));
+      openModal(() => confirmView("خاموش کردن تانل", html`تانل <b>${tname(t)}</b> روی هر دو سرور خاموش شود؟ اتصال کاربرانی که از آن می‌روند قطع می‌شود.`, "tunnel-power", { name: t.name }, "خاموش کردن", I.power));
     },
     "speed-opt"(el) {
       S.speed[el.dataset.key] = +el.dataset.value;

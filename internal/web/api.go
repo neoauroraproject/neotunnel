@@ -362,6 +362,15 @@ func (s *Server) routes(m *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}))
 
+	m.HandleFunc("POST /api/labels", s.changing(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Kind, Name, Label string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		ch, err := b.SetLabel(req.Kind, req.Name, req.Label)
+		reply(w, ch, err)
+	}))
 	m.HandleFunc("POST /api/settings/node", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Name, Address string }
 		if readJSON(r, &req) != nil {

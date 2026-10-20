@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
@@ -108,7 +109,8 @@ func (s *session) header() string {
 	var b strings.Builder
 	b.WriteString("\n " + accent("◆ NeoTunnel") + " " + dim(version.Version) + "   " + dim(strings.TrimPrefix(version.Channel, "https://")) + "\n")
 	b.WriteString(line + "\n")
-	b.WriteString(" " + dim("server ") + "  " + bold(st.Self) + "  " + pad(st.Address, 22-len(st.Self)) + dim("service ") + " " + svc + "\n")
+	self := shown(st.Label, st.Self)
+	b.WriteString(" " + dim("server ") + "  " + bold(self) + "  " + pad(st.Address, 22-utf8.RuneCountInString(self)) + dim("service ") + " " + svc + "\n")
 	b.WriteString(" " + dim("tunnels") + "  " + pad(fmt.Sprintf("%d of %d up", up, len(ts)), 24) + dim("servers ") + " " + fmt.Sprintf("%d of %d connected", paired, len(st.Peers)) + "\n")
 	for _, m := range st.Masters() {
 		state := green("connected")
@@ -291,7 +293,7 @@ func (s *session) createTunnel(peer string) {
 			if !p.Paired() {
 				state = "not connected yet"
 			}
-			items = append(items, item{p.Name, p.Address + " · " + state, false})
+			items = append(items, item{shown(p.Label, p.Name), p.Address + " · " + state, false})
 		}
 		items = append(items,
 			item{"New server", "NeoTunnel gets installed on it with one command", false},
@@ -600,7 +602,29 @@ func tunnelItem(st *config.State, t config.Tunnel) item {
 	if p := stackPort(st, t); p != 0 {
 		hint += fmt.Sprintf(" · udp %d", p)
 	}
-	return item{t.Name, hint, false}
+	if t.Label != "" {
+		hint += " · " + t.Name
+	}
+	return item{shown(t.Label, t.Name), hint, false}
+}
+
+// shown is a display name: the label when set, else the ID.
+func shown(label, id string) string {
+	if label != "" {
+		return label
+	}
+	return id
+}
+
+// nodeLabel is a server's display name: a peer's or this node's label.
+func nodeLabel(st *config.State, name string) string {
+	if p, ok := st.Peer(name); ok {
+		return shown(p.Label, p.Name)
+	}
+	if st.IsSelf(name) {
+		return shown(st.Label, st.Self)
+	}
+	return name
 }
 
 func farName(st *config.State, t config.Tunnel) string {
@@ -609,7 +633,7 @@ func farName(st *config.State, t config.Tunnel) string {
 		me = 1
 	}
 	if n := t.Sides[1-me].Node; n != "" {
-		return n
+		return nodeLabel(st, n)
 	}
 	for _, n := range manage.Stack(st, t.Name) {
 		if bt, ok := st.Tunnel(n); ok && bt.Over == "" {
@@ -720,7 +744,7 @@ func (s *session) servers() {
 			case p.AppliedRevision != st.Revision:
 				state = "connected, behind"
 			}
-			items = append(items, item{p.Name, p.Address + " · " + state, false})
+			items = append(items, item{shown(p.Label, p.Name), p.Address + " · " + state, false})
 		}
 		items = append(items, item{"+ Add a server", "", false})
 		sel = s.choose("Destination servers", items, sel)
@@ -958,7 +982,7 @@ func (s *session) speed() {
 			}
 			items := make([]item, len(ps))
 			for i, p := range ps {
-				items[i] = item{p.Name, p.Address, false}
+				items[i] = item{shown(p.Label, p.Name), p.Address, false}
 			}
 			if c := s.choose("Compare with which server?", items, 0); c >= 0 {
 				name := ps[c].Name

@@ -15,8 +15,11 @@ import (
 const SchemaVersion = 1
 
 type State struct {
-	Schema   int    `json:"schema"`
-	Self     string `json:"self"`     // this node's name
+	Schema int    `json:"schema"`
+	Self   string `json:"self"` // this node's name
+	// Label is this node's display name in the panel and menus (empty =
+	// Self). Self stays its ID: tunnels, keys and peers know it by that.
+	Label    string `json:"label,omitempty"`
 	Revision uint64 `json:"revision"` // bumped on every local change
 	ULA48    string `json:"ula48,omitempty"`
 	Address  string `json:"address,omitempty"` // this node's public IP, used in setup links
@@ -92,7 +95,9 @@ type MasterRef struct {
 }
 
 type Peer struct {
-	Name      string `json:"name"`
+	Name string `json:"name"`
+	// Label is the display name (empty = Name); Name stays the peer's ID.
+	Label     string `json:"label,omitempty"`
 	Address   string `json:"address"` // public IP/host the peer is reached at
 	AgentPort int    `json:"agent_port"`
 	PublicKey string `json:"public_key,omitempty"` // empty until paired
@@ -122,6 +127,10 @@ func (p Peer) Paired() bool { return p.PublicKey != "" }
 
 type Tunnel struct {
 	Name string `json:"name"`
+	// Label is the display name (empty = Name). Name stays the tunnel's
+	// ID: interfaces, keys and ports derive from it, so renaming only
+	// changes the label and never touches the running tunnel.
+	Label string `json:"label,omitempty"`
 	// Origin, MasterName and MasterKey are set on the copies of a master's
 	// tunnels this node runs (see Masters): the name both ends know when
 	// Name is a local one, and whose tunnel it is.

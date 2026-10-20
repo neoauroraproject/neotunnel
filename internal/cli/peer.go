@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,13 +14,18 @@ import (
 )
 
 func nodeCmd() *cobra.Command {
-	var name, address string
+	var name, address, label string
 	cmd := &cobra.Command{
 		Use:   "node",
 		Short: "Show or set this node's name and public address",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name != "" || address != "" {
 				if err := manage.SetNode(name, address); err != nil {
+					return err
+				}
+			}
+			if cmd.Flags().Changed("label") {
+				if err := manage.SetSelfLabel(label); err != nil {
 					return err
 				}
 			}
@@ -32,6 +38,9 @@ func nodeCmd() *cobra.Command {
 				return err
 			}
 			title("This node")
+			if st.Label != "" {
+				fmt.Printf("  label    %s\n", bold(st.Label))
+			}
 			fmt.Printf("  name     %s\n  address  %s\n  key      %s\n", bold(st.Self), st.Address, dim(identity.Fingerprint(id.PublicString())))
 			for _, m := range st.Masters() {
 				state := green("paired")
@@ -43,14 +52,15 @@ func nodeCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&name, "name", "", "node name")
+	cmd.Flags().StringVar(&name, "name", "", "node name (its ID; can't change while it has tunnels)")
+	cmd.Flags().StringVar(&label, "label", "", "display name, in any language (an empty one clears it)")
 	cmd.Flags().StringVar(&address, "address", "", "public IP other servers reach this node at")
 	return cmd
 }
 
 func peerCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "peer", Short: "Manage the servers this node controls"}
-	cmd.AddCommand(peerAddCmd(), peerListCmd(), peerRemoveCmd(), peerConnectCmd(), peerSyncCmd(), peerUpgradeCmd())
+	cmd.AddCommand(peerAddCmd(), peerListCmd(), peerRenameCmd(), peerRemoveCmd(), peerConnectCmd(), peerSyncCmd(), peerUpgradeCmd())
 	return cmd
 }
 
@@ -110,7 +120,27 @@ func printPeers(st *config.State) {
 		if !p.LastSeen.IsZero() {
 			seen = dim(" seen " + p.LastSeen.Local().Format("2006-01-02 15:04"))
 		}
-		fmt.Printf("  %-16s %-16s %s %s%s\n", bold(p.Name), p.Address, state, dim(p.Version), seen)
+		label := ""
+		if p.Label != "" {
+			label = " " + p.Label
+		}
+		fmt.Printf("  %-16s %-16s %s %s%s%s\n", bold(p.Name), p.Address, state, dim(p.Version), seen, label)
+	}
+}
+
+func peerRenameCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rename <name> [display name]",
+		Short: "Set a peer's display name (its name stays its ID; no display name clears it)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			label := strings.Join(args[1:], " ")
+			if err := manage.SetPeerLabel(args[0], label); err != nil {
+				return err
+			}
+			success("%s now shows as %s", args[0], shown(strings.TrimSpace(label), args[0]))
+			return nil
+		},
 	}
 }
 

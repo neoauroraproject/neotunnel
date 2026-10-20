@@ -37,6 +37,9 @@ type Backend interface {
 	UpdateForward(req manage.ForwardRequest) (manage.Change, error)
 	RemoveForward(tunnel, ports string) (manage.Change, error)
 	SetNode(name, address string) error
+	// SetLabel changes a display name: of a "tunnel", a "server" (peer) or
+	// "self" (this server; name is ignored). IDs stay as they are.
+	SetLabel(kind, name, label string) (manage.Change, error)
 	SetDefaults(d config.Defaults) error
 	TestTunnel(ctx context.Context, name string, o SpeedOptions, progress func(string), live func(string, float64)) ([]bench.Result, error)
 	Bench(ctx context.Context, peer string, only []string, o SpeedOptions, progress func(string), live func(string, float64), partial func(bench.Result)) ([]bench.Result, error)
@@ -151,6 +154,7 @@ type Overview struct {
 
 type NodeInfo struct {
 	Name     string     `json:"name"`
+	Label    string     `json:"label,omitempty"`
 	Address  string     `json:"address"`
 	Address6 string     `json:"address6,omitempty"`
 	AESNI    bool       `json:"aes_ni"`
@@ -178,6 +182,7 @@ type MasterInfo struct {
 
 type TunnelView struct {
 	Name    string `json:"name"`
+	Label   string `json:"label,omitempty"`
 	Kind    string `json:"kind"`
 	Mode    string `json:"mode,omitempty"`
 	Layer   int    `json:"layer"`
@@ -255,6 +260,7 @@ type SysctlView struct {
 
 type PeerView struct {
 	Name     string `json:"name"`
+	Label    string `json:"label,omitempty"`
 	Address  string `json:"address"`
 	Address6 string `json:"address6,omitempty"`
 	AESNI    *bool  `json:"aes_ni,omitempty"`

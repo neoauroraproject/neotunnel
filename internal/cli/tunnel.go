@@ -16,7 +16,7 @@ import (
 
 func tunnelCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "tunnel", Short: "Add, list and remove tunnels"}
-	cmd.AddCommand(tunnelAddCmd(), tunnelSetCmd(), tunnelLimitCmd(), tunnelPowerCmd(true), tunnelPowerCmd(false), tunnelListCmd(), tunnelRemoveCmd(), tunnelMikroTikCmd(), kindsCmd())
+	cmd.AddCommand(tunnelAddCmd(), tunnelSetCmd(), tunnelLimitCmd(), tunnelPowerCmd(true), tunnelPowerCmd(false), tunnelListCmd(), tunnelRenameCmd(), tunnelRemoveCmd(), tunnelMikroTikCmd(), kindsCmd())
 	return cmd
 }
 
@@ -121,6 +121,9 @@ func printTunnel(st *config.State, t config.Tunnel) {
 	}
 	ls := engine.TunnelState(t.Name)
 	extra := ""
+	if t.Label != "" {
+		extra += " " + t.Label
+	}
 	if t.Over != "" {
 		extra += dim(" over " + t.Over)
 	}
@@ -142,7 +145,7 @@ func printTunnel(st *config.State, t config.Tunnel) {
 	if t.MasterName != "" {
 		extra += dim(" (managed by " + t.MasterName + ")")
 	}
-	fmt.Printf("  %s %-10s %-8s → %s%s\n", onOff(ls.Up), bold(t.Name), t.Kind, far, extra)
+	fmt.Printf("  %s %-10s %-8s → %s%s\n", onOff(ls.Up), bold(t.Name), t.Kind, nodeLabel(st, far), extra)
 	for _, n := range []string{t.Net4, t.Net6} {
 		if n == "" {
 			continue
@@ -172,6 +175,26 @@ func tunnelMikroTikCmd() *cobra.Command {
 				return err
 			}
 			fmt.Print(out)
+			return nil
+		},
+	}
+}
+
+func tunnelRenameCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rename <name> [display name]",
+		Short: "Set a tunnel's display name (its name stays its ID; no display name clears it)",
+		Long: "The display name shows in the panel and menus, in any language. The tunnel's\n" +
+			"name stays its ID, so the running tunnel, its keys and ports are untouched.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			label := strings.Join(args[1:], " ")
+			ch, err := manage.SetTunnelLabel(args[0], label)
+			if err != nil {
+				return err
+			}
+			printChange(ch)
+			success("%s now shows as %s", args[0], shown(strings.TrimSpace(label), args[0]))
 			return nil
 		},
 	}

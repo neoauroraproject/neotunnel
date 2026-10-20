@@ -133,6 +133,7 @@ curl -fsSL https://raw.githubusercontent.com/neoauroraproject/neotunnel/main/ins
 - **سقف سرعت**: هر دو سر روی ارسال خود محدود می‌کنند (TBF در کرنل)، پس دانلود و آپلود هر دو محدود می‌شوند.
 - **حجم ماهانه**: وقتی پر شد تانل تا اول ماه بعد خاموش می‌شود و بعد خودش برمی‌گردد.
 - **روشن/خاموش**: تانل بدون از دست رفتن تنظیمات روی هر دو سرور پایین می‌آید.
+- **تغییر نام**: هر تانل و هر سرور یک نام نمایشی دارد که هر وقت بخواهید، به هر زبانی، عوض می‌شود (دکمه‌ی مداد کنار نام). نام اصلی شناسه‌ی آن می‌ماند و رابط‌ها، کلیدها و پورت‌ها با همان کار می‌کنند، پس تانل قطع نمی‌شود.
 
 ### حالت سرعت
 
@@ -222,6 +223,7 @@ sudo neotunnel bench germany                                                 # �
 | `tunnel add\|set\|list\|remove\|kinds` | مدیریت تانل‌ها و تنظیمات پیشرفته |
 | `tunnel enable\|disable\|limit <name>` | روشن/خاموش، سقف سرعت و حجم ماهانه |
 | `tunnel set <name> --profile lean\|balanced\|max` | حالت سرعت |
+| `tunnel rename <name> "نام"` / `peer rename <name> "نام"` / `node --label "نام"` | نام نمایشی (شناسه همان می‌ماند) |
 | `forward add\|set <tunnel> <ports> [--to] [--proto] [--mode nat\|transparent\|proxy]` | فوروارد پورت |
 | `peer add\|list\|link\|sync\|upgrade\|remove` | سرورهای مقصد |
 | `test <tunnel>` / `bench <server>` / `mtu <tunnel>` | تست سرعت، مقایسه، بهترین MTU |

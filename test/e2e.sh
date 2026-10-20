@@ -84,6 +84,21 @@ ip -n $EDGE -d link show nt-t1 | grep -q ip6tnl || fail "ipip6 missing on edge"
 ip netns exec $HUB ping -c 3 -W 2 10.77.0.2 >/dev/null || fail "ping through 6to4 (IPv4 over ipip6 over sit)"
 pass "6to4 stack up, IPv4 ping through it works"
 
+# 2b. Display names: renaming changes only the label, on both servers; the
+#     running tunnel (same interfaces) keeps passing traffic.
+idx_hub=$(ip -n $HUB -o link show nt-t1 | cut -d: -f1)
+idx_edge=$(ip -n $EDGE -o link show nt-t1 | cut -d: -f1)
+in_hub tunnel rename t1 "آلمان اصلی" >/dev/null || fail "rename tunnel"
+in_hub peer rename edge "سرور مقصد" >/dev/null || fail "rename peer"
+in_hub node --label "ایران" >/dev/null || fail "rename this node"
+in_hub tunnel list | grep -q "آلمان اصلی" || fail "tunnel list shows no display name"
+grep -q '"label": "آلمان اصلی"' "$WORK/edge/state.json" || fail "the tunnel's display name did not reach edge"
+[ "$(ip -n $HUB -o link show nt-t1 | cut -d: -f1)" = "$idx_hub" ] || fail "renaming recreated nt-t1 on hub"
+[ "$(ip -n $EDGE -o link show nt-t1 | cut -d: -f1)" = "$idx_edge" ] || fail "renaming recreated nt-t1 on edge"
+ip netns exec $HUB ping -c 2 -W 2 10.77.0.2 >/dev/null || fail "ping after renaming"
+in_hub peer list | grep -q "edge.*in sync" || fail "peer not in sync after renaming"
+pass "display names: tunnel, peer and node renamed; the tunnel stays up on the same interfaces"
+
 # 3. Changes on the master reach the peer by themselves.
 out=$(in_hub tunnel add v1 --kind vxlan --peer edge 2>&1)
 grep -q "edge updated" <<<"$out" || { echo "$out"; fail "push to peer"; }

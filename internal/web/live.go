@@ -106,7 +106,7 @@ func (l *Live) Overview() (Overview, error) {
 	}
 	ov := Overview{
 		Node: NodeInfo{
-			Name: st.Self, Address: st.Address, Address6: engine.PublicIPv6(), AESNI: sysinfo.AESNI(), Version: version.Version, Arch: version.Arch(),
+			Name: st.Self, Label: st.Label, Address: st.Address, Address6: engine.PublicIPv6(), AESNI: sysinfo.AESNI(), Version: version.Version, Arch: version.Arch(),
 			Key: identity.Fingerprint(l.ID.PublicString()),
 		},
 		Revision: st.Revision,
@@ -171,7 +171,7 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 		}
 		far := t.Sides[1-me]
 		v := TunnelView{
-			Name: t.Name, Kind: string(t.Kind), Mode: t.Mode, Over: t.Over, Carrier: carriers[t.Name],
+			Name: t.Name, Label: t.Label, Kind: string(t.Kind), Mode: t.Mode, Over: t.Over, Carrier: carriers[t.Name],
 			Peer: far.Node, FarIP: far.Endpoint, Port: t.Port,
 			Limits: manage.LimitsOf(t), Blocked: engine.Blocked(t.Name),
 		}
@@ -267,7 +267,7 @@ func peerViews(st *config.State) []PeerView {
 	out := []PeerView{}
 	for _, p := range st.Peers {
 		v := PeerView{
-			Name: p.Name, Address: p.Address, Address6: p.Address6, AESNI: p.AESNI, Paired: p.Paired(),
+			Name: p.Name, Label: p.Label, Address: p.Address, Address6: p.Address6, AESNI: p.AESNI, Paired: p.Paired(),
 			InSync: p.Paired() && p.AppliedRevision == st.Revision, Applied: p.AppliedRevision,
 			Version: p.Version, Arch: p.Arch,
 		}
@@ -434,6 +434,18 @@ func (l *Live) RemoveForward(tunnel, ports string) (manage.Change, error) {
 }
 
 func (l *Live) SetNode(name, address string) error { return manage.SetNode(name, address) }
+
+func (l *Live) SetLabel(kind, name, label string) (manage.Change, error) {
+	switch kind {
+	case "tunnel":
+		return manage.SetTunnelLabel(name, label)
+	case "server":
+		return manage.Change{}, manage.SetPeerLabel(name, label)
+	case "self":
+		return manage.Change{}, manage.SetSelfLabel(label)
+	}
+	return manage.Change{}, fmt.Errorf("unknown kind %q", kind)
+}
 
 func (l *Live) SetDefaults(d config.Defaults) error { return manage.SetDefaults(d) }
 
