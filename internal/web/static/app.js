@@ -634,7 +634,10 @@
       <button class="btn sm" data-act="wizard">${I.plus(14)} تانل جدید</button></div>`;
     if (!ts.length) return html`${head}<div class="flow-empty"><div>${I.tunnel(34)}<p style="margin:10px 0 0">هنوز تانلی نیست. یک تانل بسازید تا مسیر ترافیک اینجا دیده شود.</p></div></div>${flowFoot()}`;
     const rowH = 58, H = Math.max(290, ts.length * rowH + 24), top = (H - ts.length * rowH) / 2;
-    const sx = narrow() ? 90 : 240, ex = narrow() ? 400 : 560; // where ribbons start and end, of 1000
+    // Of the stage's 1000: the source box ends at src and the list starts
+    // at out, or nearer its edge when CSS caps its width. The ribbons' own
+    // box spans the gap between them (CSS), and they run across all of it.
+    const src = narrow() ? 90 : 240, out = narrow() ? 400 : 560, sx = 0, ex = 1000;
     const rtl = document.documentElement.dir !== "ltr", X = (x) => (rtl ? 1000 - x : x);
     const rates = ts.map((t) => { const r = rate(t.name); return r.rx + r.tx; });
     // The ribbons fill the total's box edge to edge, at every rate: the box
@@ -672,10 +675,10 @@
       </div>`;
     });
     return html`${head}
-      <div class="flow-stage" style="height:${H}px">
+      <div class="flow-stage" style="height:${H}px;--src:${src / 10}%;--out:${100 - out / 10}%">
         ${raw(`<svg class="ribbons" viewBox="0 0 1000 ${H}" preserveAspectRatio="none" aria-hidden="true"><defs>${defs.join("")}</defs>${paths.join("")}</svg>`)}
-        <div class="source" style="top:${H / 2}px;height:${box}px;width:calc(${sx / 10}% + 28px)"><div class="bar" style="flex:1"><small>مجموع لحظه‌ای</small><b data-live="total-rate">${fmtRate(sum)}</b></div><div class="tile ${sum > 1500 ? "" : "idle"}">${I.bolt(22)}</div></div>
-        <div class="outs" style="width:${(100 - ex / 10).toFixed(1)}%">${outs}</div>
+        <div class="source" style="top:${H / 2}px;height:${box}px"><div class="bar" style="flex:1"><small>مجموع لحظه‌ای</small><b data-live="total-rate">${fmtRate(sum)}</b></div><div class="tile ${sum > 1500 ? "" : "idle"}">${I.bolt(22)}</div></div>
+        <div class="outs">${outs}</div>
       </div>
       ${flowFoot()}`;
   }
