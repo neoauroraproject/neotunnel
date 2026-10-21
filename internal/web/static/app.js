@@ -2690,7 +2690,13 @@
       catch (e) { toast(e.message, "bad"); }
     },
     rename(el) { openModal(renameView, { kind: el.dataset.kind, name: el.dataset.name }); },
-    "del-tunnel"(el) { openModal(() => confirmView("حذف تانل", html`تانل <b>${tlabel(el.dataset.name)}</b> با لایه‌های زیرین و فورواردهایش، روی هر دو سرور حذف شود؟`, "del-tunnel-go", { name: el.dataset.name }, "حذف تانل")); },
+    "del-tunnel"(el) {
+      const n = el.dataset.name, fs = S.ov.forwards || [];
+      const moved = fs.filter((f) => f.tunnel === n && f.backup).map((f) => html`<span class="ltr">${f.ports}</span> به ${tlabel(f.backup)}`);
+      const gone = fs.filter((f) => f.tunnel === n && !f.backup).length;
+      const note = moved.length ? html`<p class="help" style="margin:10px 0 0">پورت‌هایی که پشتیبان دارند حذف نمی‌شوند و روی پشتیبانشان می‌مانند: ${moved.map((m, i) => html`${i ? "، " : ""}${m}`)}.${gone ? ` ${gone} فوروارد بدون پشتیبان حذف می‌شود.` : ""}</p>` : "";
+      openModal(() => confirmView("حذف تانل", html`تانل <b>${tlabel(n)}</b> با لایه‌های زیرین و فورواردهایش، روی هر دو سرور حذف شود؟${note}`, "del-tunnel-go", { name: n }, "حذف تانل"));
+    },
     async "del-tunnel-go"(el) {
       try { const ch = await api("DELETE", "tunnels/" + encodeURIComponent(el.dataset.name)); closeModal(); S.open = null; S.drawer = null; await refresh(); reportChange(ch, "تانل حذف شد"); }
       catch (e) { toast(e.message, "bad"); }

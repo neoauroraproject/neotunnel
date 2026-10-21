@@ -764,14 +764,21 @@ func removeTunnels(s *config.State, names []string) {
 		}
 	}
 	s.Tunnels = ts
+	// A forward goes with its tunnel, unless it has a backup that stays: then
+	// the backup becomes its tunnel and the port keeps working. A forward
+	// that loses its backup just runs without one.
 	var fs []config.Forward
 	for _, f := range s.Forwards {
-		if !drop[f.Tunnel] {
-			if drop[f.Backup] {
-				f.Backup = ""
+		if drop[f.Tunnel] {
+			if f.Backup == "" || drop[f.Backup] {
+				continue
 			}
-			fs = append(fs, f)
+			f.Tunnel, f.Backup = f.Backup, ""
 		}
+		if drop[f.Backup] {
+			f.Backup = ""
+		}
+		fs = append(fs, f)
 	}
 	s.Forwards = fs
 }
