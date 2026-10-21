@@ -99,6 +99,7 @@ func Run(ctx context.Context) error {
 
 	startPanel(id, store, history, tracker, hooks, poke)
 	go watchPeers(ctx, id)
+	go watchGuard(ctx)
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)

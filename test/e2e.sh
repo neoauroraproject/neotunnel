@@ -617,6 +617,35 @@ api -X PATCH -d '{}' "$base/api/tunnels/g1" | grep -q error && fail "reset g1 se
 [ "$(mtu_of $EDGE nt-g1)" = "$g1mtu" ] || fail "g1 MTU not back to automatic"
 pass "safe apply: change that cut the agent path reverted on both servers"
 
+# 16c2. Firewall (guard) on hub. The client (198.18.0.2, not an Iranian
+#       address) stands in for the internet; edge is a peer. With config
+#       ports from Iran only and ping closed: the client gets no ping and
+#       no forward, but the panel; the peer's tunnels keep working; a port a
+#       program starts listening on is opened within seconds; an allowed
+#       address gets the forward; turning it on from the panel without a
+#       confirmation turns it off again by itself; off removes the table.
+in_hub guard on --iface veth-hub,veth-ci --icmp closed --config-iran >/dev/null || fail "guard on"
+ip netns exec $HUB nft list table inet neotunnel_guard >/dev/null || fail "guard table missing"
+ip netns exec $CLIENT ping -c 2 -W 1 198.18.0.1 >/dev/null 2>&1 && fail "guard: the client still gets ping"
+[ "$(http_code http://198.18.0.1:8080/)" = 200 ] && fail "guard: a config port answers a non-Iranian client"
+[ "$(ip netns exec $CLIENT curl -sk -o /dev/null -m 5 -w '%{http_code}' "https://198.18.0.1:$PANEL_PORT/")" = 404 ] || fail "guard: the panel is not reachable"
+ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-g1)" >/dev/null || fail "guard: tunnel to the peer stopped"
+ip netns exec $HUB python3 -m http.server 18555 --directory "$WORK/www" >/dev/null 2>&1 &
+newsrv=$!
+wait_for 15 sh -c "[ \"\$(ip netns exec $CLIENT curl -s -o /dev/null -m 2 -w '%{http_code}' http://198.18.0.1:18555/)\" = 200 ]" || fail "guard: a new listening port was not opened"
+kill $newsrv
+api -d '{"on":true,"config_iran":true,"icmp":"closed","allow":["198.18.0.0/24"],"ifaces":["veth-hub","veth-ci"]}' "$base/api/guard" >/dev/null
+api -X POST "$base/api/guard/confirm" | grep -q '"ok":true' || fail "guard: confirm"
+wait_for 10 sh -c "[ \"\$(ip netns exec $CLIENT curl -s -o /dev/null -m 2 -w '%{http_code}' http://198.18.0.1:8080/)\" = 200 ]" || fail "guard: the allowed client does not get the forward"
+in_hub guard status | grep -q "Iran only" || { in_hub guard status; fail "guard status does not list the Iran-only ports"; }
+in_hub guard off >/dev/null || fail "guard off"
+ip netns exec $HUB nft list table inet neotunnel_guard >/dev/null 2>&1 && fail "guard off left its table"
+api -d '{"on":true,"icmp":"closed","ifaces":["veth-hub","veth-ci"]}' "$base/api/guard" | grep -q '"confirm_by":[1-9]' || fail "guard: turned on from the panel without a confirmation deadline"
+wait_for 80 sh -c "! ip netns exec $HUB nft list table inet neotunnel_guard >/dev/null 2>&1" || fail "guard: not turned off without a confirmation"
+grep -q "firewall turned off again" "$WORK/hub.log" || fail "guard: the automatic turn-off was not logged"
+ip netns exec $CLIENT ping -c 2 -W 1 198.18.0.1 >/dev/null || fail "guard: ping still closed after it turned off"
+pass "firewall: closes ping and config ports to others, keeps the panel and peers, opens new listeners, turns itself off without a confirmation"
+
 # 16d. A second main server: hub2 manages edge too. Its first tunnel is
 #      also called t1 and, before it can know about edge, gets the same inner
 #      subnet as hub's t1. edge accepts the second setup key, runs hub2's t1

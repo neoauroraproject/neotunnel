@@ -42,7 +42,43 @@ type State struct {
 	// Fetch sends this server's own downloads from listed sites through a
 	// tunnel (nil = off).
 	Fetch *Fetch `json:"fetch,omitempty"`
+	// Guard is the firewall for this server's public interface (nil = off;
+	// see package guard).
+	Guard *Guard `json:"guard,omitempty"`
 }
+
+// Guard keeps everything on the public interface closed except what this
+// server uses: SSH, the panel, its peers, its forwards and the ports
+// programs listen on, each open to everyone or to Iranian addresses only.
+type Guard struct {
+	On bool `json:"on"`
+	// ConfigIran: forwards and Xray inbounds accept Iranian addresses only.
+	ConfigIran bool `json:"config_iran,omitempty"`
+	// ICMP is who gets an answer to ping: "closed" (default; peers only),
+	// "iran" or "open". The ICMP that path MTU discovery needs always passes.
+	ICMP string `json:"icmp,omitempty"`
+	// Ports overrides a port's scope, by "tcp/443": "all", "iran" or
+	// "closed".
+	Ports map[string]string `json:"ports,omitempty"`
+	// Allow is always let in, Block always kept out (but never from SSH or
+	// the panel): IPs, CIDR ranges or geoip:ir.
+	Allow []string `json:"allow,omitempty"`
+	Block []string `json:"block,omitempty"`
+	// Ifaces names the interfaces to guard; empty = the public ones (the
+	// one with this server's address and those with a default route).
+	Ifaces []string `json:"ifaces,omitempty"`
+	// ConfirmBy (unix) is set when the guard is turned on from the panel:
+	// unless the panel confirms it can still reach the server by then, the
+	// daemon turns the guard off again.
+	ConfirmBy int64 `json:"confirm_by,omitempty"`
+}
+
+// Guard scopes.
+const (
+	ScopeAll    = "all"
+	ScopeIran   = "iran"
+	ScopeClosed = "closed"
+)
 
 // Defaults pre-fill the advanced options of new tunnels and forwards.
 type Defaults struct {

@@ -14,6 +14,7 @@ import (
 	"neotunnel/internal/failover"
 	"neotunnel/internal/firewall"
 	"neotunnel/internal/forward"
+	"neotunnel/internal/guard"
 	"neotunnel/internal/relay"
 	"neotunnel/internal/sysctl"
 )
@@ -139,6 +140,9 @@ func Apply(st *config.State) Result {
 	}
 	res.Errors = append(res.Errors, ferrs...)
 	if err := forward.Apply(rules); err != nil {
+		res.Errors = append(res.Errors, err)
+	}
+	if err := ApplyGuard(st); err != nil {
 		res.Errors = append(res.Errors, err)
 	}
 	res.Errors = append(res.Errors, syncReturns(rules.Returns, specs)...)
@@ -351,7 +355,19 @@ func Down() error {
 	removeIPsec()
 	syncLanes(nil)
 	syncReturns(nil, nil)
+	guard.Remove()
 	return forward.Apply(forward.Ruleset{})
+}
+
+// ApplyGuard brings the firewall in line with the settings and with what
+// the server listens on now (see package guard); with the guard off it
+// removes the table.
+func ApplyGuard(st *config.State) error {
+	if st.Guard == nil || !st.Guard.On {
+		return guard.Remove()
+	}
+	in, _ := guard.Build(st)
+	return guard.Apply(in)
 }
 
 // benchUserspace has the daemon's data plane run a temporary user-space

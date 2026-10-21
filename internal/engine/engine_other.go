@@ -18,6 +18,7 @@ func Apply(*config.State) Result                 { return Result{Errors: []error
 func ApplyBench([]LinkSpec, time.Duration) error { return errLinux }
 func RemoveBench([]string)                       {}
 func Down() error                                { return errLinux }
+func ApplyGuard(*config.State) error             { return nil }
 func Doctor(*config.State, bool) []Finding       { return nil }
 func DoctorFOU(*config.State, bool) []Finding    { return nil }
 func PublicIface() string                        { return "" }

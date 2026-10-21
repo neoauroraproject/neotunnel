@@ -1776,10 +1776,10 @@
   }
 
   // ---------- settings ----------
-  const SECS = [["node", "این سرور"], ["access", "دسترسی پنل"], ["defaults", "پیش‌فرض تانل‌ها"], ["net", "شبکه و سرعت"], ["fetch", "دانلودهای سرور"], ["traffic", "ترافیک"], ["maint", "پشتیبان و نگهداری"], ["about", "درباره"]];
+  const SECS = [["node", "این سرور"], ["access", "دسترسی پنل"], ["defaults", "پیش‌فرض تانل‌ها"], ["net", "شبکه و سرعت"], ["guard", "فایروال"], ["fetch", "دانلودهای سرور"], ["traffic", "ترافیک"], ["maint", "پشتیبان و نگهداری"], ["about", "درباره"]];
 
   function viewSettings() {
-    const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, fetch: setFetch, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
+    const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, guard: setGuard, fetch: setFetch, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
     return html`<div class="settings">
       <nav class="snav" aria-label="بخش‌های تنظیمات">${SECS.map(([k, l]) => html`<button class="${S.sec === k ? "on" : ""}" data-act="sec" data-sec="${k}">${l}</button>`)}</nav>
       <div class="spane" data-key="sec-${S.sec}">${pane()}</div></div>`;
@@ -1872,6 +1872,51 @@
       <dl class="kv"><dt>از تانل</dt><dd>${st.tunnel}</dd><dt>مستقیم</dt><dd>${st.direct}</dd><dt>ناموفق</dt><dd>${st.failed}</dd></dl>
       ${st.recent.length ? html`<table class="t"><thead><tr><th>سایت</th><th>مسیر</th><th>زمان</th></tr></thead><tbody>${st.recent.map((r) => html`<tr><td class="ltr small" style="text-align:start">${r.host}</td><td><span class="tag ${via[r.via][1]}">${via[r.via][0]}</span>${r.error ? html` <span class="faint small ltr">${r.error}</span>` : ""}</td><td class="small">${ago(r.at / 1000)}</td></tr>`)}</tbody></table>` : html`<div class="muted">هنوز اتصالی نبوده.</div>`}
     </div></div>`;
+  }
+
+  // The firewall (package guard): what stays open on the public interface.
+  const SCOPES = [["all", "همه"], ["iran", "فقط ایران"], ["closed", "بسته"]];
+  const isXray = (p) => /^(xray|v2ray|sing-box)/i.test(p || "");
+  function setGuard() {
+    const v = S.gv;
+    if (!v) { loadGuard(); return html`<div class="panel"><div class="in muted">در حال خواندن…</div></div>`; }
+    const g = S.gd || (S.gd = Object.assign({}, v.settings, { ports: Object.assign({}, v.settings.ports || {}), allow: (v.settings.allow || []).join("\n"), block: (v.settings.block || []).join("\n") }));
+    const st = v.status, on = v.settings.on, geo = st.geo || {};
+    const state = on && st.confirm_by ? html`<span class="state"><i class="dot warn"></i>در انتظار تأیید</span>`
+      : on ? html`<span class="state"><i class="dot ok"></i>روشن · ${st.dropped.toLocaleString("en")} بسته رد شد</span>`
+      : html`<span class="state"><i class="dot"></i>خاموش</span>`;
+    const auto = (p) => (g.config_iran && (p.forward || isXray(p.process)) ? "iran" : "all");
+    const what = (p) => [p.forward ? "فوروارد" : "", p.process || ""].filter(Boolean).join(" · ") || "-";
+    const label = (sc) => SCOPES.find(([k]) => k === sc)[1];
+    const rows = st.ports.map((p) => {
+      const k = p.proto + "/" + p.port, cur = g.ports[k] || "auto";
+      return html`<tr><td class="ltr" style="text-align:start">${p.port}/${p.proto}</td><td class="small">${what(p)}</td><td><select class="input sm" data-act="gd-port" data-key="${k}" aria-label="دسترسی پورت ${p.port}"><option value="auto" ${cur === "auto" ? "selected" : ""}>خودکار (${label(auto(p))})</option>${SCOPES.map(([val, l]) => html`<option value="${val}" ${cur === val ? "selected" : ""}>${l}</option>`)}</select></td></tr>`;
+    });
+    return html`<div class="panel"><header><h2>فایروال</h2><span class="aside">${state}</span></header><div class="in stack">
+      <p class="help" style="margin:0">همه‌چیز روی کارت شبکه‌ی عمومی (<span class="ltr">${(st.ifaces || []).join(", ") || "-"}</span>) بسته می‌شود، جز آنچه این سرور واقعاً استفاده می‌کند. پورت‌هایی که برنامه‌ها روی آن‌ها گوش می‌دهند هر چند ثانیه خودکار پیدا می‌شوند: اینباند تازه‌ی 3x-ui روی پورت تصادفی خودش باز می‌شود و پورتی که کسی رویش نیست بسته می‌ماند. تانل‌ها و ترافیک داخلشان دست نمی‌خورند.</p>
+      <label class="switch"><input type="checkbox" data-act="gd-check" data-key="on" ${g.on ? "checked" : ""}>فایروال روشن</label>
+      <div class="note">همیشه باز است و بسته نمی‌شود: SSH (پورت <span class="ltr">${(st.ssh || []).join(", ")}</span>)، پنل (پورت <span class="ltr">${st.panel || "-"}</span>)، و همه‌ی ترافیک از ${st.peers} آدرس سرورهای مقصد و تانل‌ها. اگر بعد از روشن کردن، پنل تا ۶۰ ثانیه جواب ندهد، فایروال خودش خاموش می‌شود. از ترمینال: <code class="ltr">sudo neotunnel guard off</code></div>
+      <label class="switch"><input type="checkbox" data-act="gd-check" data-key="config_iran" ${g.config_iran ? "checked" : ""}>پورت‌های کانفیگ (فورواردها و اینباندهای Xray) فقط از ایران (<span class="ltr">geoip:ir</span>)</label>
+      <div class="field"><span class="lbl">پینگ (ICMP)</span><div class="seg">${[["closed", "بسته"], ["iran", "فقط ایران"], ["open", "باز"]].map(([val, l]) => html`<button type="button" class="${(g.icmp || "closed") === val ? "on" : ""}" data-act="set" data-path="gd.icmp" data-value="${val}">${l}</button>`)}</div><span class="help">سرورهای مقصد همیشه جواب می‌گیرند. پیام‌هایی که یافتن MTU مسیر به آن‌ها نیاز دارد هم همیشه رد می‌شوند.</span></div>
+      <div class="form-foot"><button class="btn primary" data-act="save-guard">ذخیره</button><button class="btn ghost" data-act="guard-refresh">تازه‌سازی</button></div>
+    </div></div>
+    <div class="panel"><header><h2>پورت‌های باز</h2><span class="aside">${st.ports.length} پورت</span></header><div class="in">
+      ${st.ports.length ? html`<div class="tbl-wrap"><table class="t"><thead><tr><th>پورت</th><th>چه چیزی</th><th>چه کسی وصل شود</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<div class="muted">برنامه‌ای روی پورت عمومی گوش نمی‌دهد.</div>`}
+      <p class="help" style="margin:10px 0 0">«خودکار» یعنی فورواردها و اینباندهای Xray طبق کلید «فقط از ایران» و بقیه برای همه باز. پورت‌های خود NeoTunnel فقط برای سرورهای مقصد بازند و اینجا نیستند.</p>
+    </div></div>
+    <div class="panel"><header><h2>فهرست آدرس‌ها</h2></header><div class="in stack">
+      <div class="grid2"><div class="field"><label for="g-allow">همیشه مجاز</label><textarea id="g-allow" class="input ltr" rows="4" data-bind="gd.allow" placeholder="198.51.100.7&#10;203.0.113.0/24&#10;geoip:ir">${g.allow}</textarea><span class="help">به همه‌ی پورت‌ها دسترسی دارند.</span></div>
+      <div class="field"><label for="g-block">همیشه مسدود</label><textarea id="g-block" class="input ltr" rows="4" data-bind="gd.block" placeholder="192.0.2.0/24">${g.block}</textarea><span class="help">جز SSH و پنل، به هیچ‌جا دسترسی ندارند.</span></div></div>
+      <span class="help">هر خط یک IP، یک رنج (CIDR) یا <span class="ltr">geoip:ir</span>.</span>
+      <div class="form-foot"><button class="btn primary" data-act="save-guard">ذخیره</button></div>
+    </div></div>
+    <div class="panel"><header><h2>فهرست IP ایران</h2><span class="aside">${geo.source === "downloaded" ? "به‌روزشده " + F.dm.format(new Date(geo.updated * 1000)) : "نسخه‌ی همراه برنامه"}</span></header><div class="in"><div class="row">
+      <span class="grow">${(geo.ranges || 0).toLocaleString("en")} رنج IPv4 و IPv6، همان داده‌ی <span class="ltr">geoip:ir</span> در Xray. هفته‌ای یک بار خودکار به‌روز می‌شود.</span>
+      <button class="btn sm" data-act="guard-geo" ${S.gGeo ? "disabled" : ""}>${S.gGeo ? "در حال دانلود…" : "به‌روزرسانی الان"}</button></div></div></div>`;
+  }
+
+  async function loadGuard() {
+    try { S.gv = await api("GET", "guard"); if (S.route === "settings" && S.sec === "guard") draw(); } catch (e) { toast(e.message, "bad"); }
   }
 
   async function loadFetch() {
@@ -2439,7 +2484,7 @@
   // data-bind paths: "wiz.port", "form.ports", "tset.<name>.mtu", "fwdEdit.<k>.mode", "defs.padding".
   function setPath(path, value) {
     const parts = path.split(".");
-    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs, fwdEditor: S.fwdEditor, fe: S.fe, ce: S.ce };
+    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs, fwdEditor: S.fwdEditor, fe: S.fe, ce: S.ce, gd: S.gd };
     let obj = roots[parts[0]];
     if (!obj) return;
     if (parts[0] === "fwdEdit") { obj = obj[parts.slice(1, -1).join(".")]; if (!obj) return; obj[parts[parts.length - 1]] = value; return; }
@@ -2470,6 +2515,8 @@
     if (t.dataset.act === "safe-pref") { S.safe = t.checked; store("nt-safe", S.safe ? "1" : "0"); if (t.closest(".modal")) drawModal(); else draw(); }
     if (t.dataset.act === "def-check") { S.defs[t.dataset.key] = t.checked; S.edit = true; }
     if (t.dataset.act === "fe-check") { S.fe[t.dataset.key] = t.checked; S.edit = true; }
+    if (t.dataset.act === "gd-check") { S.gd[t.dataset.key] = t.checked; S.edit = true; draw(); }
+    if (t.dataset.act === "gd-port") { if (t.value === "auto") delete S.gd.ports[t.dataset.key]; else S.gd.ports[t.dataset.key] = t.value; S.edit = true; }
     if (t.dataset.act === "fe-group") { const g = S.fe.groups.filter((x) => x !== t.value); S.fe.groups = t.checked ? g.concat(t.value) : g; S.edit = true; }
     if (t.dataset.act === "restore-file" && t.files && t.files[0]) inspectBackup(t.files[0]);
     if (t.dataset.act === "st-check") { setPath(t.dataset.path, t.checked); if (!t.closest(".modal")) S.edit = true; }
@@ -2746,7 +2793,30 @@
     "run-test"() { startJob("test", S.speed.tunnel); },
     "run-bench"() { startJob("bench", S.speed.peer, S.speed.only); },
     async "cancel-job"() { if (S.job) await api("POST", `jobs/${S.job.id}/cancel`).catch(() => {}); },
-    sec(el) { S.sec = el.dataset.sec; store("nt-settings", S.sec); S.edit = false; S.defs = null; S.fetch = S.fe = S.cert = S.ce = S.restore = null; draw(); },
+    sec(el) { S.sec = el.dataset.sec; store("nt-settings", S.sec); S.edit = false; S.defs = null; S.fetch = S.fe = S.cert = S.ce = S.restore = S.gv = S.gd = null; draw(); },
+    async "save-guard"() {
+      const g = S.gd, was = S.gv && S.gv.settings.on;
+      const lines = (t) => String(t || "").split(/[\s,]+/).filter(Boolean);
+      const body = { on: !!g.on, config_iran: !!g.config_iran, icmp: g.icmp || "closed", ports: g.ports, allow: lines(g.allow), block: lines(g.block), ifaces: g.ifaces || [] };
+      try {
+        S.gv = await api("POST", "guard", body); S.gd = null; S.edit = false; draw();
+        if (S.gv.status.error) { toast(S.gv.status.error, "bad"); return; }
+        if (body.on && !was) {
+          // A request that gets through proves the panel still reaches the
+          // server; without it the daemon turns the firewall off again.
+          setTimeout(async () => {
+            try { await api("POST", "guard/confirm"); await loadGuard(); toast("فایروال روشن شد و پنل در دسترس ماند"); }
+            catch (e) { toast("تأیید فایروال انجام نشد؛ تا یک دقیقه‌ی دیگر خودش خاموش می‌شود", "bad"); }
+          }, 2500);
+        } else toast("ذخیره شد");
+      } catch (e) { toast(e.message, "bad"); }
+    },
+    async "guard-refresh"() { S.gd = null; S.edit = false; await loadGuard(); },
+    async "guard-geo"() {
+      S.gGeo = true; draw();
+      try { const r = await api("POST", "guard/geo"); toast("فهرست ایران به‌روز شد: " + r.ranges + " رنج"); await loadGuard(); } catch (e) { toast(e.message, "bad"); }
+      S.gGeo = false; draw();
+    },
     async "save-fetch"() {
       const f = S.fe;
       const body = { on: !!f.on, tunnel: f.tunnel || "", groups: f.groups, domains: f.domains.split(/[\s,]+/).filter(Boolean), strict: !!f.strict, all: !!f.all };

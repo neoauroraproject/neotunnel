@@ -56,6 +56,7 @@ func (s *Server) routes(m *http.ServeMux) {
 	b := s.Backend
 	s.safeRoutes(m)
 	s.updateRoutes(m)
+	s.guardRoutes(m)
 	m.HandleFunc("GET /api/overview", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		ov, err := b.Overview()
 		reply(w, ov, err)
