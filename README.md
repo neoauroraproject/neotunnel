@@ -7,7 +7,7 @@
 <a href="https://github.com/neoauroraproject/neotunnel/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/neoauroraproject/neotunnel/ci.yml?branch=main&style=flat-square&label=tests&labelColor=111111" alt="tests"></a>
 <img src="https://img.shields.io/badge/Ubuntu-20.04%2B-ececec?style=flat-square&labelColor=111111" alt="ubuntu">
 <a href="LICENSE"><img src="https://img.shields.io/github/license/neoauroraproject/neotunnel?style=flat-square&color=ececec&labelColor=111111" alt="license"></a>
-<img src="https://komarev.com/ghpvc/?username=neoauroraproject&repo=neotunnel&label=Views&color=orange&style=flat-square" alt="views">
+<a href="https://hits.sh/github.com/neoauroraproject/neotunnel/"><img src="https://hits.sh/github.com/neoauroraproject/neotunnel.svg?style=flat-square&label=views&color=f5a524&labelColor=111111" alt="views"></a>
 <a href="https://t.me/neoaurora"><img src="https://img.shields.io/badge/Telegram-NeoAurora-26a5e4?style=flat-square&logo=telegram&labelColor=111111" alt="telegram"></a>
 </p>
 
@@ -239,10 +239,10 @@ sudo neotunnel bench germany                                                 # �
 | پورت | کاربرد |
 |---|---|
 | پورت پنل (تصادفی) | پنل وب روی یک آدرس مخفی؛ رمز با bcrypt و قفل بعد از ۵ تلاش ناموفق |
-| 7710/tcp | ارتباط سرورها: TLS 1.3 دوطرفه با کلیدهای pin‌شده |
+| یک پورت TCP تصادفی برای هر سرور | ارتباط سرورها: TLS 1.3 دوطرفه با کلیدهای pin‌شده. هر سرور یک بار پورتی تصادفی برای خودش انتخاب می‌کند و سرور اصلی آن را یاد می‌گیرد؛ سرورهایی که از قبل نصب بودند 7710 را هم برای سازگاری باز نگه می‌دارند |
 | 7711/tcp+udp | ترافیک تست سرعت، فقط برای نشست‌هایی که سرور اصلی باز کرده |
 
-اگر ufw فعال باشد، پورت‌ها و پروتکل‌های لازم (از جمله GRE از سمت سرور مقابل) خودکار باز می‌شوند. پورت‌های 22، 7710 و 7711 هرگز فوروارد نمی‌شوند.
+اگر ufw فعال باشد، پورت‌ها و پروتکل‌های لازم (از جمله GRE از سمت سرور مقابل) خودکار باز می‌شوند. پورت‌های 22، 7710، 7711 و پورت ارتباط خود سرور هرگز فوروارد نمی‌شوند.
 
 ## سؤال‌های رایج
 
@@ -282,16 +282,27 @@ sudo test/e2e.sh dist/neotunnel-linux-amd64   # تست کامل روی کرنل 
 
 <div dir="rtl">
 
-## حمایت مالی
-
-اگر NeoTunnel برایتان مفید بوده و می‌خواهید از ادامه‌ی توسعه‌اش حمایت کنید، می‌توانید از این راه کمک کنید:
-
-If you find NeoTunnel helpful and want to support its development, you can donate via:
-
 </div>
 
-* **USDT (BEP20):**
-  `0xacA935a5955a756BedaE4738304274EdeE0223D5`
+<h2 align="center" id="حمایت-مالی">💛 حمایت مالی</h2>
+
+<p align="center" dir="rtl">اگر NeoTunnel برایتان مفید بوده و می‌خواهید از ادامه‌ی توسعه‌اش حمایت کنید، از این راه کمک کنید.</p>
+<p align="center" dir="ltr"><sub>If you find NeoTunnel helpful and want to support its development, you can donate here.</sub></p>
+
+<div align="center">
+<table>
+<tr><td align="center">
+<br>
+<img src="https://img.shields.io/badge/USDT-BEP20%20(BNB%20Smart%20Chain)-26A17B?style=for-the-badge&logo=tether&logoColor=white&labelColor=111111" alt="USDT on BEP20"><br><br>
+<code>0xacA935a5955a756BedaE4738304274EdeE0223D5</code><br><br>
+<sub dir="rtl">فقط USDT و فقط روی شبکه‌ی BEP20 بفرستید</sub><br>
+<sub dir="ltr">Send USDT on BEP20 only</sub>
+<br><br>
+</td></tr>
+</table>
+</div>
+
+<p align="center" dir="rtl">⭐ ستاره دادن به پروژه هم کمک بزرگی است</p>
 
 <div dir="rtl">
 
