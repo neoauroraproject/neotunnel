@@ -17,12 +17,19 @@ import (
 )
 
 const (
-	// FailAfter is how many probes in a row the primary must lose before
-	// its forwards move to the backup (the daemon probes every 8 s).
+	// FailAfter is how many bad probe rounds in a row (losing
+	// health.BadLoss or more; a round every 8 s) the active tunnel must
+	// have before its forwards move.
 	FailAfter = 3
-	// RecoverAfter is how many probes in a row the primary must pass before
-	// its forwards come back, so a tunnel that flaps doesn't drag them along.
-	RecoverAfter = 6
+	// RecoverAfter is how many good rounds in a row the primary must have
+	// before its forwards come back, so a tunnel that flaps doesn't drag
+	// them along.
+	RecoverAfter = 8
+	// MinStay is the least time between two switches of a forward.
+	MinStay = time.Minute
+	// Margin is how much lower (in loss points) a tunnel that is itself bad
+	// must lose than the active one to be worth moving to.
+	Margin = 20.0
 	// MaxHistory is how many switches are kept per forward.
 	MaxHistory = 20
 )
@@ -106,29 +113,47 @@ func Route(fs []config.Forward, ts []config.Tunnel, ps Paths) []config.Forward {
 // Decide returns the tunnel a forward should run on, given the one it runs
 // on now and the tunnels' health, with the reason when it changes.
 //
-//   - On the primary: move to the backup once the primary lost FailAfter
-//     probes in a row and the backup's last probe got through.
-//   - On the backup: come back once the primary passed RecoverAfter probes
-//     in a row, or at once when the backup failed too and the primary's last
-//     probe got through.
+//   - On the primary: move to the backup once the primary had FailAfter bad
+//     rounds in a row (most of its probes lost, not just all of them) and
+//     the backup is better: healthy or merely degraded, or, bad itself,
+//     losing at least Margin points less.
+//   - On the backup: come back once the primary had RecoverAfter good
+//     rounds in a row, or when the backup went bad and the primary is
+//     better than it.
+//
+// A tunnel never probed is never better than anything.
 func Decide(f config.Forward, active string, hs map[string]health.State) (string, string) {
 	if f.Backup == "" || (active != f.Tunnel && active != f.Backup) {
 		return f.Tunnel, ""
 	}
 	p, b := hs[f.Tunnel], hs[f.Backup]
 	if active == f.Tunnel {
-		if p.Down >= FailAfter && b.Up > 0 {
-			return f.Backup, fmt.Sprintf("%s lost %d probes in a row", f.Tunnel, p.Down)
+		if failing(p) && better(b, p) {
+			return f.Backup, fmt.Sprintf("%s lost %.0f%% of its probes for %d rounds; %s loses %.0f%%", f.Tunnel, p.Loss, p.Bad, f.Backup, b.Loss)
 		}
 		return active, ""
 	}
 	switch {
-	case p.Up >= RecoverAfter:
-		return f.Tunnel, fmt.Sprintf("%s passed %d probes in a row", f.Tunnel, p.Up)
-	case b.Down >= FailAfter && p.Up > 0:
-		return f.Tunnel, fmt.Sprintf("%s lost %d probes in a row and %s answers", f.Backup, b.Down, f.Tunnel)
+	case p.Good >= RecoverAfter:
+		return f.Tunnel, fmt.Sprintf("%s passed %d rounds in a row", f.Tunnel, p.Good)
+	case failing(b) && better(p, b):
+		return f.Tunnel, fmt.Sprintf("%s lost %.0f%% of its probes for %d rounds; %s loses %.0f%%", f.Backup, b.Loss, b.Bad, f.Tunnel, p.Loss)
 	}
 	return active, ""
+}
+
+// failing: the tunnel has lost most of its probes for FailAfter rounds.
+func failing(s health.State) bool { return s.Bad >= FailAfter }
+
+// better reports whether tunnel a is worth moving to from b.
+func better(a, b health.State) bool {
+	if a.Probes == 0 || !a.Passes {
+		return false
+	}
+	if a.Grade == health.GradeOK || a.Grade == health.GradeDegraded {
+		return true
+	}
+	return a.Loss+Margin <= b.Loss
 }
 
 // Step runs Decide for every forward with a backup, records the switches in
@@ -149,7 +174,7 @@ func Step(ps Paths, fs []config.Forward, hs map[string]health.State, now time.Ti
 			ps[k] = p
 		}
 		next, why := Decide(f, p.Active, hs)
-		if next == p.Active {
+		if next == p.Active || (p.Since != 0 && now.Sub(time.Unix(p.Since, 0)) < MinStay && why != "") {
 			continue
 		}
 		if why == "" {

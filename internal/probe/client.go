@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"neotunnel/internal/health"
 )
 
 type LatencyResult struct {
@@ -157,6 +159,9 @@ func BandwidthLive(ctx context.Context, addr string, tok Token, dir Direction, d
 	if streams < 1 {
 		streams = 1
 	}
+	// The test fills the tunnel on purpose; the loss it causes must not
+	// make the daemon restart the tunnel or move its forwards.
+	health.QuietFor(d + 30*time.Second)
 	m := &meter{dir: dir}
 	var (
 		wg    sync.WaitGroup

@@ -329,4 +329,10 @@ type HealthView struct {
 	// Probes is how many probes the figures come from; the panel trusts
 	// them from 3 on.
 	Probes int `json:"probes"`
+	// Grade is ok, degraded, bad or down (see package health).
+	Grade string `json:"grade,omitempty"`
+	// Action is the daemon's last automatic step for the tunnel, at
+	// ActionAt (unix).
+	Action   string `json:"action,omitempty"`
+	ActionAt int64  `json:"action_at,omitempty"`
 }

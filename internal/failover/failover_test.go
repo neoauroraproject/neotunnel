@@ -10,14 +10,23 @@ import (
 
 var fw = config.Forward{Node: "ir", Tunnel: "main", Backup: "spare", Proto: "tcp", Ports: "443"}
 
-// probe feeds n results for a tunnel into the tracker.
-func probe(tr *health.Tracker, tunnel string, ok bool, n int) {
+// rounds feeds n probe rounds of 5 packets, got of which come back.
+func rounds(tr *health.Tracker, tunnel string, got, n int) {
 	for range n {
-		tr.Record(tunnel, ok, time.Millisecond)
+		tr.RecordRound(tunnel, 5, got, time.Millisecond)
 	}
 }
 
-func TestFailsOverAfterLostProbesAndComesBackWithHysteresis(t *testing.T) {
+// Healthy and degraded states, as the tracker grades them.
+var (
+	good  = health.State{Probes: 40, Passes: true, Grade: health.GradeOK, Good: RecoverAfter}
+	dead  = health.State{Probes: 40, Passes: false, Grade: health.GradeDown, Loss: 100, Bad: FailAfter}
+	lossy = func(loss float64) health.State {
+		return health.State{Probes: 40, Passes: true, Grade: health.GradeBad, Loss: loss, Bad: FailAfter}
+	}
+)
+
+func TestFailsOverOnHeavyLossAndComesBackWithHysteresis(t *testing.T) {
 	tr := health.New()
 	ps := Paths{}
 	now := time.Unix(1_700_000_000, 0)
@@ -25,39 +34,43 @@ func TestFailsOverAfterLostProbesAndComesBackWithHysteresis(t *testing.T) {
 		now = now.Add(8 * time.Second)
 		return Step(ps, []config.Forward{fw}, tr.Snapshot(), now)
 	}
-	probe(tr, "main", true, 5)
-	probe(tr, "spare", true, 5)
+	rounds(tr, "main", 5, 3)
+	rounds(tr, "spare", 5, 3)
 	if m := step(); len(m) != 0 || ps.ActiveOf(fw) != "main" {
 		t.Fatalf("healthy primary: switched %v, active %s", m, ps.ActiveOf(fw))
 	}
 
-	// Fewer than FailAfter lost probes keep the forward where it is.
+	// Rounds that still get one reply in five (80% loss) are bad: the old
+	// "any reply passes" rule kept a tunnel like that as working.
 	for range FailAfter - 1 {
-		probe(tr, "main", false, 1)
-		probe(tr, "spare", true, 1)
+		rounds(tr, "main", 1, 1)
+		rounds(tr, "spare", 5, 1)
 		if m := step(); len(m) != 0 {
-			t.Fatalf("switched after %d lost probes", tr.Snapshot()["main"].Down)
+			t.Fatalf("switched after %d bad rounds", tr.Snapshot()["main"].Bad)
 		}
 	}
-	probe(tr, "main", false, 1)
-	probe(tr, "spare", true, 1)
+	rounds(tr, "main", 1, 1)
+	rounds(tr, "spare", 5, 1)
 	m := step()
 	if s, ok := m[Key(fw)]; !ok || s.From != "main" || s.To != "spare" {
-		t.Fatalf("no failover after %d lost probes: %v", FailAfter, m)
-	}
-	if ps.ActiveOf(fw) != "spare" {
-		t.Fatalf("active %s, want spare", ps.ActiveOf(fw))
+		t.Fatalf("no failover after %d bad rounds: %v", FailAfter, m)
 	}
 
 	// The primary answering again isn't enough until it has done so for a
-	// while; a single loss in between starts the count over.
-	probe(tr, "main", true, RecoverAfter-1)
-	probe(tr, "main", false, 1)
-	probe(tr, "main", true, RecoverAfter-1)
-	if m := step(); len(m) != 0 {
-		t.Fatalf("came back before %d probes in a row: %v", RecoverAfter, m)
+	// while; a bad round in between starts the count over.
+	for range RecoverAfter - 1 {
+		rounds(tr, "main", 5, 1)
+		step()
 	}
-	probe(tr, "main", true, 1)
+	rounds(tr, "main", 0, 1)
+	step()
+	for range RecoverAfter - 1 {
+		rounds(tr, "main", 5, 1)
+		if m := step(); len(m) != 0 {
+			t.Fatalf("came back before %d good rounds in a row: %v", RecoverAfter, m)
+		}
+	}
+	rounds(tr, "main", 5, 1)
 	m = step()
 	if s, ok := m[Key(fw)]; !ok || s.To != "main" {
 		t.Fatalf("did not come back: %v", m)
@@ -68,25 +81,57 @@ func TestFailsOverAfterLostProbesAndComesBackWithHysteresis(t *testing.T) {
 	}
 }
 
-func TestStaysWhenBackupIsDownToo(t *testing.T) {
-	hs := map[string]health.State{"main": {Down: 10}, "spare": {Down: 4}}
+// The case from a real server: GRE at 95% loss, its GENEVE backup at 80%.
+// Neither is usable; moving gains nothing, so the forward stays (the daemon
+// restarts them instead). A backup clearly better than the primary is
+// worth moving to even when it isn't healthy.
+func TestMovesOnlyToABetterBackup(t *testing.T) {
+	hs := map[string]health.State{"main": lossy(95), "spare": lossy(80)}
+	if next, _ := Decide(fw, "main", hs); next != "main" {
+		t.Fatalf("moved from 95%% to 80%% loss")
+	}
+	hs["spare"] = lossy(50)
+	if next, why := Decide(fw, "main", hs); next != "spare" || why == "" {
+		t.Fatalf("stayed at 95%% loss with a 50%% backup")
+	}
+	hs["spare"] = health.State{Probes: 40, Passes: true, Grade: health.GradeDegraded, Loss: 8}
+	if next, _ := Decide(fw, "main", hs); next != "spare" {
+		t.Fatalf("stayed with a merely degraded backup")
+	}
+	hs["spare"] = dead
 	if next, _ := Decide(fw, "main", hs); next != "main" {
 		t.Fatalf("moved to a dead backup")
 	}
-	// Never probed at all counts as not working.
-	if next, _ := Decide(fw, "main", map[string]health.State{"main": {Down: 10}}); next != "main" {
+	// Never probed counts as not working.
+	if next, _ := Decide(fw, "main", map[string]health.State{"main": dead}); next != "main" {
 		t.Fatalf("moved to an unprobed backup")
 	}
 }
 
-func TestBackupFailingReturnsToAnsweringPrimary(t *testing.T) {
-	hs := map[string]health.State{"main": {Up: 1}, "spare": {Down: FailAfter}}
+func TestBackupFailingReturnsToBetterPrimary(t *testing.T) {
+	hs := map[string]health.State{"main": {Probes: 40, Passes: true, Grade: health.GradeDegraded, Loss: 10}, "spare": dead}
 	if next, why := Decide(fw, "spare", hs); next != "main" || why == "" {
-		t.Fatalf("stayed on a failed backup: %s %q", next, why)
+		t.Fatalf("stayed on a dead backup: %s %q", next, why)
 	}
-	hs["main"] = health.State{Down: 2}
+	hs["main"] = dead
 	if next, _ := Decide(fw, "spare", hs); next != "spare" {
 		t.Fatalf("left the backup for a primary that doesn't answer")
+	}
+}
+
+func TestMinStayBetweenSwitches(t *testing.T) {
+	ps := Paths{}
+	now := time.Unix(1_700_000_000, 0)
+	down := map[string]health.State{"main": dead, "spare": good}
+	up := map[string]health.State{"main": good, "spare": good}
+	if m := Step(ps, []config.Forward{fw}, down, now); len(m) != 1 {
+		t.Fatalf("no first switch")
+	}
+	if m := Step(ps, []config.Forward{fw}, up, now.Add(MinStay/2)); len(m) != 0 {
+		t.Fatalf("switched back within %s", MinStay)
+	}
+	if m := Step(ps, []config.Forward{fw}, up, now.Add(MinStay)); len(m) != 1 {
+		t.Fatalf("did not switch back after %s", MinStay)
 	}
 }
 
@@ -94,7 +139,7 @@ func TestBackupRemovedOrChanged(t *testing.T) {
 	ps := Paths{Key(fw): {Active: "spare"}}
 	f := fw
 	f.Backup = "other"
-	hs := map[string]health.State{"main": {Up: 1}, "other": {Up: 1}}
+	hs := map[string]health.State{"main": good, "other": good}
 	m := Step(ps, []config.Forward{f}, hs, time.Now())
 	if s := m[Key(f)]; s.To != "main" {
 		t.Fatalf("stale active tunnel kept: %v", m)
@@ -131,14 +176,16 @@ func TestRoute(t *testing.T) {
 
 func TestHistoryIsCapped(t *testing.T) {
 	ps := Paths{}
-	up := map[string]health.State{"main": {Up: RecoverAfter}, "spare": {Up: 1}}
-	down := map[string]health.State{"main": {Down: FailAfter}, "spare": {Up: 1}}
+	up := map[string]health.State{"main": good, "spare": good}
+	down := map[string]health.State{"main": dead, "spare": good}
+	now := time.Unix(1_700_000_000, 0)
 	for i := range 3 * MaxHistory {
 		hs := down
 		if i%2 == 1 {
 			hs = up
 		}
-		Step(ps, []config.Forward{fw}, hs, time.Now())
+		now = now.Add(MinStay)
+		Step(ps, []config.Forward{fw}, hs, now)
 	}
 	if n := len(ps[Key(fw)].Switches); n != MaxHistory {
 		t.Fatalf("%d switches kept", n)
@@ -148,7 +195,7 @@ func TestHistoryIsCapped(t *testing.T) {
 func TestSaveLoad(t *testing.T) {
 	config.Dir = t.TempDir()
 	ps := Paths{}
-	Step(ps, []config.Forward{fw}, map[string]health.State{"main": {Down: 5}, "spare": {Up: 2}}, time.Unix(100, 0))
+	Step(ps, []config.Forward{fw}, map[string]health.State{"main": dead, "spare": good}, time.Unix(100, 0))
 	if err := Save(ps); err != nil {
 		t.Fatal(err)
 	}

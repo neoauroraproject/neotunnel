@@ -52,3 +52,53 @@ func TestWindowCaps(t *testing.T) {
 		t.Errorf("window should cap at %d, got %d", Window, s.Probes)
 	}
 }
+
+func TestGradesByRounds(t *testing.T) {
+	tr := New()
+	for range 4 {
+		tr.RecordRound("t", 5, 5, 10*time.Millisecond)
+	}
+	if s := tr.Snapshot()["t"]; s.Grade != GradeOK || s.Good != 4 || s.Bad != 0 {
+		t.Fatalf("clean rounds: %+v", s)
+	}
+	// One reply in five: packets "pass", which the old rule called up.
+	tr.RecordRound("t", 5, 1, 10*time.Millisecond)
+	if s := tr.Snapshot()["t"]; s.Grade != GradeDegraded || s.Bad != 1 || s.Good != 0 || s.LastLoss != 80 {
+		t.Fatalf("one bad round: %+v", s)
+	}
+	tr.RecordRound("t", 5, 1, 10*time.Millisecond)
+	if s := tr.Snapshot()["t"]; s.Grade != GradeBad || s.Bad != 2 || !s.Passes {
+		t.Fatalf("two bad rounds: %+v", s)
+	}
+	// A round in between (20% lost) is neither and starts both counts over.
+	tr.RecordRound("t", 5, 4, 10*time.Millisecond)
+	if s := tr.Snapshot()["t"]; s.Bad != 0 || s.Good != 0 {
+		t.Fatalf("middling round kept a streak: %+v", s)
+	}
+	tr.Fresh("t")
+	tr.Note("t", "restarted")
+	if s := tr.Snapshot()["t"]; s.Action != "restarted" || s.ActionAt == 0 {
+		t.Fatalf("note: %+v", s)
+	}
+	for range Window / 5 {
+		tr.RecordRound("dead", 5, 0, 0)
+	}
+	if s := tr.Snapshot()["dead"]; s.Grade != GradeDown || s.Passes || s.Loss != 100 {
+		t.Fatalf("dead tunnel: %+v", s)
+	}
+}
+
+func TestQuiet(t *testing.T) {
+	quietFile = t.TempDir() + "/quiet"
+	if Quiet() {
+		t.Fatal("quiet without a test")
+	}
+	QuietFor(time.Minute)
+	if !Quiet() {
+		t.Fatal("not quiet during a test")
+	}
+	QuietFor(time.Second) // a shorter test doesn't cut a longer one short
+	if quietUntil() < time.Now().Add(50*time.Second).Unix() {
+		t.Fatal("a shorter quiet period replaced a longer one")
+	}
+}

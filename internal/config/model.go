@@ -51,6 +51,10 @@ type Defaults struct {
 	Obfs        bool   `json:"obfs,omitempty"`         // run new tunnels over a NeoObfs layer
 	Padding     int    `json:"padding,omitempty"`      // NeoObfs random padding
 	ForwardMode string `json:"forward_mode,omitempty"` // nat, transparent, proxy, relay
+	// NoRecover turns off the daemon's automatic recovery of tunnels that
+	// lose most of their packets (restart once, then move forwards to the
+	// backup); see daemon/recover.go.
+	NoRecover bool `json:"no_recover,omitempty"`
 }
 
 // D returns the defaults, never nil.

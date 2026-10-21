@@ -378,13 +378,24 @@
     return t.up ? ["ok", "فعال"] : ["bad", "قطع"];
   };
   const stateEl = (t) => { const [c, l] = status(t); return html`<span class="state"><i class="dot ${c}"></i>${l}</span>`; };
+  // How well traffic passes, from the daemon's probe rounds: ok, degraded,
+  // bad (most packets lost, though some still come back) or down. Daemons
+  // older than the grades only say whether anything came back.
+  const grade = (h) => (!h || h.probes < 3 ? "" : h.grade || (!h.passes ? "down" : h.loss >= 40 ? "bad" : h.loss >= 5 ? "degraded" : "ok"));
   // A chip that says whether traffic really passes, from the daemon's probes.
   function healthTag(t) {
-    const h = t.health;
-    if (!h || h.probes < 3) return "";
-    if (!h.passes) return html`<span class="tag warn">${I.alert(11)} ترافیک رد نمی‌شود</span>`;
-    const cls = h.loss >= 20 ? "warn" : "";
-    return html`<span class="tag ${cls}">${ms(h.ping_ms)}${h.loss >= 1 ? ` · افت ${h.loss.toFixed(0)}٪` : ""}</span>`;
+    const h = t.health, g = grade(h);
+    if (!g) return "";
+    if (g === "down") return html`<span class="tag bad">${I.alert(11)} ترافیک رد نمی‌شود</span>`;
+    if (g === "bad") return html`<span class="tag bad">${I.alert(11)} افت شدید ${h.loss.toFixed(0)}٪</span>`;
+    return html`<span class="tag ${g === "degraded" ? "warn" : ""}">${ms(h.ping_ms)}${h.loss >= 1 ? ` · افت ${h.loss.toFixed(0)}٪` : ""}</span>`;
+  }
+  // The daemon's last automatic step for a tunnel, in the panel's words.
+  function actionText(h) {
+    if (!h || !h.action) return "";
+    const m = /lost (\d+)% of its probes for (\d+) rounds/.exec(h.action), far = /far server: (.*)\)$/.exec(h.action);
+    const what = h.action.startsWith("restarted") ? "ری‌استارت خودکار روی هر دو سرور" : h.action;
+    return `${what}${m ? ` (افت ${m[1]}٪ در ${m[2]} دور بررسی)` : ""}${far ? `؛ سرور مقابل: ${far[1]}` : ""}`;
   }
   const sumToday = () => visible().reduce((a, t) => a + t.today.rx + t.today.tx, 0);
   const sumMonth = () => visible().reduce((a, t) => a + t.month.rx + t.month.tx, 0);
@@ -652,14 +663,15 @@
     ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:14px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}`;
   }
 
-  const healthy = () => visible().filter((t) => { const h = t.health; return t.up && (!h || h.passes) && !(t.limits && t.limits.disabled); }).length;
+  const healthy = () => visible().filter((t) => { const g = grade(t.health); return t.up && g !== "bad" && g !== "down" && !(t.limits && t.limits.disabled); }).length;
 
   // The health of a tunnel, from real probes when available.
   function tunHealth(t) {
     const [c] = status(t);
     if (c !== "ok") return c;
-    if (t.health && t.health.probes >= 3 && !t.health.passes) return "bad";
-    if (t.health && t.health.loss >= 20) return "warn";
+    const g = grade(t.health);
+    if (g === "down" || g === "bad") return "bad";
+    if (g === "degraded") return "warn";
     return "ok";
   }
 
@@ -1275,6 +1287,7 @@
           <dt>حالت سرعت</dt><dd>${(PROFILES.find(([id]) => id === (t.settings.profile || "balanced")) || PROFILES[1])[1]}</dd>
           ${t.settings.lanes > 1 ? html`<dt>مسیرهای موازی</dt><dd>${t.settings.lanes} lane</dd>` : ""}
           <dt>MTU فعلی</dt><dd class="ltr">${t.mtu || "-"}${t.path_mtu ? ` (path ${t.path_mtu})` : ""}</dd>
+          ${t.health && t.health.action ? html`<dt>آخرین اقدام خودکار</dt><dd>${actionText(t.health)} · ${F.dmhm.format(new Date(t.health.action_at * 1000))}</dd>` : ""}
           ${t.wg_key ? html`<dt>کلید عمومی WireGuard</dt><dd class="ltr small">${t.wg_key} <button class="btn sm ghost icon" data-act="copy" data-text="${t.wg_key}" aria-label="کپی کلید">${I.copy(14)}</button></dd>` : ""}
         </dl>
         ${tunnelForwards(t)}
@@ -1867,6 +1880,7 @@
 
   function setDefaults() {
     const d = S.defs || (S.defs = Object.assign({ encrypt: "", mtu_probe: false, obfs: false, padding: 0, forward_mode: "nat" }, S.ov.defaults));
+    if (d.recover === undefined) d.recover = !d.no_recover;
     if (!d.forward_mode) d.forward_mode = "nat";
     return html`<div class="panel"><header><h2>پیش‌فرض تانل‌های جدید</h2></header><div class="in stack">
       <p class="help" style="margin:0">این مقادیر در ساخت تانل (پنل، منو و دستور quick) از قبل انتخاب می‌شوند و هر بار قابل تغییرند.</p>
@@ -1876,6 +1890,11 @@
       <div class="field"><label for="d-pad">Padding پیش‌فرض NeoObfs (بایت)</label><input id="d-pad" class="input ltr" type="number" min="0" max="255" data-bind="defs.padding" value="${d.padding || ""}" placeholder="0" style="max-width:160px"></div>
       <div class="field"><span class="lbl">IP کاربر در فورواردها</span><div class="seg">${Object.entries(MODES_FWD).map(([v, [l]]) => html`<button type="button" class="${d.forward_mode === v ? "on" : ""}" data-act="set" data-path="defs.forward_mode" data-value="${v}">${l}</button>`)}</div><span class="help">${MODES_FWD[d.forward_mode][1]}</span></div>
       <div class="form-foot"><button class="btn primary" data-act="save-defaults">ذخیره‌ی پیش‌فرض‌ها</button></div>
+    </div></div>
+    <div class="panel"><header><h2>بازیابی خودکار تانل‌ها</h2></header><div class="in stack">
+      <label class="switch"><input type="checkbox" data-act="def-check" data-key="recover" ${d.recover ? "checked" : ""}>وقتی تانلی بیشتر بسته‌هایش را از دست می‌دهد، خودکار درستش کن</label>
+      <p class="help" style="margin:0">هر ۸ ثانیه ۵ پینگ از داخل هر تانل فرستاده می‌شود. اگر تانلی حدود ۲۴ ثانیه بیشتر از ۴۰٪ بسته‌هایش را از دست بدهد، یک بار روی هر دو سرور ری‌استارت می‌شود (هر تانل حداکثر هر ۱۰ دقیقه یک بار). اگر بعد از آن هم خوب نشد، فورواردهای آن به تانل پشتیبان می‌روند، به شرط اینکه پشتیبان واقعاً بهتر باشد، و وقتی تانل اصلی حدود یک دقیقه سالم ماند برمی‌گردند. در طول تست سرعت کاری انجام نمی‌شود.</p>
+      <div class="form-foot"><button class="btn primary" data-act="save-defaults">ذخیره</button></div>
     </div></div>`;
   }
 
@@ -2763,7 +2782,7 @@
     "goto-sec"(el, e) { e.preventDefault(); S.sec = el.dataset.sec; location.hash = "#/settings"; },
     async "save-defaults"() {
       const d = S.defs;
-      try { await api("POST", "settings/defaults", { encrypt: d.encrypt, mtu_probe: !!d.mtu_probe, obfs: !!d.obfs, padding: +d.padding || 0, forward_mode: d.forward_mode === "nat" ? "" : d.forward_mode }); S.edit = false; S.defs = null; await refresh(); toast("پیش‌فرض‌ها ذخیره شد"); }
+      try { await api("POST", "settings/defaults", { encrypt: d.encrypt, mtu_probe: !!d.mtu_probe, obfs: !!d.obfs, padding: +d.padding || 0, forward_mode: d.forward_mode === "nat" ? "" : d.forward_mode, no_recover: !d.recover }); S.edit = false; S.defs = null; await refresh(); toast("پیش‌فرض‌ها ذخیره شد"); }
       catch (e) { toast(e.message, "bad"); }
     },
     async boost() {

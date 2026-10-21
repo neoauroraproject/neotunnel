@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"neotunnel/internal/agent"
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
@@ -231,7 +230,7 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 		ls := engine.TunnelState(t.Name)
 		v.Up, v.MTU, v.Rx, v.Tx = ls.Up, ls.MTU, ls.RxBytes, ls.TxBytes
 		if h, ok := hs[t.Name]; ok && h.Probes > 0 {
-			v.Health = &HealthView{Ping: h.AvgMs, Loss: h.Loss, Passes: h.Passes, Last: h.Last, Probes: h.Probes}
+			v.Health = &HealthView{Ping: h.AvgMs, Loss: h.Loss, Passes: h.Passes, Last: h.Last, Probes: h.Probes, Grade: h.Grade, Action: h.Action, ActionAt: h.ActionAt}
 		}
 		if s, ok := sums[t.Name]; ok {
 			v.Total, v.Today, v.Month, v.Tests = s.Total, s.Today, s.Month, s.Tests
@@ -769,29 +768,7 @@ func (l *Live) MikroTik(name string) (string, error) {
 // RestartTunnel takes a tunnel and the layers under it down and up again,
 // on this node and on the far server, without changing any setting.
 func (l *Live) RestartTunnel(ctx context.Context, name string) error {
-	st, err := manage.Node()
-	if err != nil {
-		return err
-	}
-	t, ok := st.Tunnel(name)
-	if !ok {
-		return fmt.Errorf("unknown tunnel %q", name)
-	}
-	names := manage.Stack(st, name)
-	var peerErr error
-	if p, ok := st.Peer(t.Sides[1].Node); ok && p.Paired() {
-		if c, err := agent.ToPeer(l.ID, *p); err != nil {
-			peerErr = err
-		} else if err := c.Restart(ctx, names); err != nil && !strings.Contains(err.Error(), "404") {
-			peerErr = fmt.Errorf("%s: %w", p.Name, err)
-		}
-	}
-	engine.Restart(names, func() {
-		if cur, err := config.Load(); err == nil {
-			engine.Apply(cur)
-		}
-	})
-	return peerErr
+	return manage.RestartTunnel(ctx, l.ID, name)
 }
 
 func (l *Live) RandomPort(proto string) (uint16, error) {

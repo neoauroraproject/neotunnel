@@ -87,7 +87,7 @@ func Run(ctx context.Context) error {
 	defer dp.Close()
 
 	tracker := health.New()
-	go monitorHealth(ctx, tracker, poke)
+	go monitorHealth(ctx, id, tracker, poke)
 
 	store := traffic.Open()
 	history := metrics.Open()

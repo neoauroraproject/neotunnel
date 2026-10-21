@@ -534,9 +534,11 @@ ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-e1)" >/dev/null || fail "pin
 pass "panel: traffic totals, MTU probe and live settings change"
 
 # 16b. Backup tunnel: port 8083 goes through g1 (plain GRE) with u1 (IPIP in
-#      UDP 3001) as its backup. Dropping GRE on edge cuts g1; after a few
-#      lost health probes the forward moves to u1 and keeps working, and once
-#      GRE passes again for a while it comes back to g1.
+#      UDP 3001) as its backup. Edge drops 95% of GRE: g1 is still "up" and a
+#      ping gets through now and then, which the old one-reply rule took for
+#      working. Now the probe rounds grade it bad, the hub restarts it on both
+#      servers, and when that doesn't help the forward moves to u1 and keeps
+#      working; once GRE passes again for a while it comes back to g1.
 mtu_of() { ip -n "$1" -o link show "$2" | grep -o 'mtu [0-9]*' | cut -d' ' -f2; }
 wait_for() { # seconds, command...: poll until the command succeeds
   local n=$1; shift
@@ -553,20 +555,24 @@ fwd_on g1 || { in_hub forward list; fail "forward with a backup does not start o
 [ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 through g1"
 ip netns exec $EDGE nft -f - <<'NFT'
 table inet e2ecut {
-  chain in { type filter hook input priority -300; policy accept; meta l4proto gre drop; }
+  chain in { type filter hook input priority -300; policy accept; meta l4proto gre numgen random mod 20 != 0 drop; }
 }
 NFT
-ip netns exec $HUB ping -c 2 -W 1 "$(inner $EDGE nt-g1)" >/dev/null 2>&1 && fail "GRE drop did not cut g1"
 t0=$(date +%s)
-wait_for 60 fwd_on u1 || { in_hub forward list; fail "forward did not move to the backup"; }
-echo "NOTE moved to the backup $(( $(date +%s) - t0 )) s after the cut"
+g1h="[t for t in o['tunnels'] if t['name']=='g1'][0].get('health') or {}"
+wait_for 60 ov "($g1h).get('grade') in ('bad', 'down')" || { api "$base/api/overview" | head -c 3000; fail "95% loss on g1 not graded bad"; }
+wait_for 60 grep -q "tunnel g1: lost .*restarting it on both servers" "$WORK/hub.log" || { tail -20 "$WORK/hub.log"; fail "g1 at 95% loss was not restarted"; }
+echo "NOTE restarted $(( $(date +%s) - t0 )) s after the loss began"
+wait_for 90 fwd_on u1 || { in_hub forward list; tail -20 "$WORK/hub.log"; fail "forward did not move to the backup after the restart didn't help"; }
+echo "NOTE moved to the backup $(( $(date +%s) - t0 )) s after the loss began"
+ov "'restarted' in ($g1h).get('action', '')" || fail "panel does not show the automatic restart"
 [ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 through the backup u1"
 grep -q "forward g1 8083: now through u1" "$WORK/hub.log" || fail "switch to the backup not logged"
 ov "$f8083['backup'] == 'u1' and $f8083['active'] == 'u1'" || fail "panel does not show the backup as the active path"
-pass "backup: g1 cut, port 8083 kept working through u1"
+pass "backup: g1 at 95% loss graded bad, restarted once, then port 8083 moved to u1 and kept working"
 ip netns exec $EDGE nft delete table inet e2ecut
 t0=$(date +%s)
-wait_for 100 fwd_on g1 || { in_hub forward list; fail "forward did not come back to its primary"; }
+wait_for 150 fwd_on g1 || { in_hub forward list; fail "forward did not come back to its primary"; }
 echo "NOTE back on the primary $(( $(date +%s) - t0 )) s after GRE passed again"
 [ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 back through g1"
 ov "$f8083['active'] == 'g1' and [s['to'] for s in $f8083['switches']] == ['u1', 'g1']" || fail "panel switch history"

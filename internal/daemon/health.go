@@ -14,47 +14,59 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/failover"
 	"neotunnel/internal/health"
+	"neotunnel/internal/identity"
 )
 
-const healthEvery = 8 * time.Second
+const (
+	healthEvery = 8 * time.Second
+	// roundSize is how many pings a probe round sends, 0.2 s apart: one ping
+	// a round only told "something came back", which a tunnel losing 95%
+	// of its packets still did now and then.
+	roundSize = 5
+)
 
-var pingTime = regexp.MustCompile(`time=([\d.]+)`)
+var (
+	pingCounts = regexp.MustCompile(`(\d+) packets transmitted, (\d+) (?:packets )?received`)
+	pingAvg    = regexp.MustCompile(`= [\d.]+/([\d.]+)/`)
+)
 
-// pingOnce sends a single ICMP echo to addr through the tunnel and returns
-// the round-trip time. The daemon runs as root, so system ping is fine.
-func pingOnce(ctx context.Context, addr string) (time.Duration, bool) {
-	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+// pingRound sends a round of pings to addr through the tunnel and returns
+// how many were sent and answered, and their average round-trip time. A
+// ping that couldn't run at all counts as a round lost.
+func pingRound(ctx context.Context, addr string) (sent, got int, rtt time.Duration) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	a, err := netip.ParseAddr(addr)
 	if err != nil {
-		return 0, false
+		return roundSize, 0, 0
 	}
-	bin := "ping"
-	args := []string{"-c", "1", "-W", "2", "-n", "-q"}
+	args := []string{"-c", strconv.Itoa(roundSize), "-i", "0.2", "-W", "1", "-n", "-q"}
 	if a.Is6() {
 		args = append([]string{"-6"}, args...)
 	}
-	out, err := exec.CommandContext(cctx, bin, append(args, addr)...).Output()
-	if err != nil {
-		return 0, false
+	out, _ := exec.CommandContext(cctx, "ping", append(args, addr)...).Output()
+	m := pingCounts.FindSubmatch(out)
+	if m == nil {
+		return roundSize, 0, 0
 	}
-	if m := pingTime.FindSubmatch(out); m != nil {
-		ms, _ := strconv.ParseFloat(string(m[1]), 64)
-		return time.Duration(ms * float64(time.Millisecond)), true
+	sent, _ = strconv.Atoi(string(m[1]))
+	got, _ = strconv.Atoi(string(m[2]))
+	if sent == 0 {
+		sent = roundSize
 	}
-	// -q hides per-packet lines; fall back to the summary average.
-	if m := regexp.MustCompile(`= [\d.]+/([\d.]+)/`).FindSubmatch(out); m != nil {
-		ms, _ := strconv.ParseFloat(string(m[1]), 64)
-		return time.Duration(ms * float64(time.Millisecond)), true
+	if avg := pingAvg.FindSubmatch(out); avg != nil {
+		ms, _ := strconv.ParseFloat(string(avg[1]), 64)
+		rtt = time.Duration(ms * float64(time.Millisecond))
 	}
-	return 0, false
+	return sent, got, rtt
 }
 
 // monitorHealth pings the far inner address of every tunnel and records the
 // result, so the panel knows whether traffic really passes, then moves
 // forwards with a backup tunnel to whichever of their tunnels works
 // (reconcile applies the move).
-func monitorHealth(ctx context.Context, tr *health.Tracker, reconcile func()) {
+func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracker, reconcile func()) {
+	rec := newRecovery()
 	t := time.NewTicker(healthEvery)
 	defer t.Stop()
 	for {
@@ -70,18 +82,21 @@ func monitorHealth(ctx context.Context, tr *health.Tracker, reconcile func()) {
 				}
 				keep[tn.Name] = true
 				if !engine.State(engine.Ifname(tn.Name)).Up {
-					tr.Record(tn.Name, false, 0)
+					tr.RecordRound(tn.Name, roundSize, 0, 0)
 					continue
 				}
 				wg.Add(1)
 				go func(name, addr string) {
 					defer wg.Done()
-					rtt, up := pingOnce(ctx, addr)
-					tr.Record(name, up, rtt)
+					sent, got, rtt := pingRound(ctx, addr)
+					tr.RecordRound(name, sent, got, rtt)
 				}(tn.Name, far)
 			}
 			wg.Wait()
 			tr.Forget(keep)
+			// Restart first: a tunnel it restarts starts its count over, so
+			// forwards move to a backup only if the restart didn't help.
+			rec.step(ctx, id, st, tr)
 			tr.Save()
 			if failoverStep(st, tr.Snapshot()) {
 				reconcile()
