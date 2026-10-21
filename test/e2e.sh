@@ -199,6 +199,11 @@ for i in 1 2 3 4 5 6; do echo "--- DEBUG t=$i edge wg links: $(ip -n $EDGE -br l
 ' ' ')"; sleep 1; done
 echo "--- DEBUG edge udp sockets:"; ip netns exec $EDGE ss -lunp 2>&1 | head -20
 echo "--- DEBUG edge status:"; in_edge status 2>&1 | tail -25
+apt-get install -y -qq strace wireguard-tools >/dev/null 2>&1 || true
+echo "--- DEBUG strace neotunnel:"; ip netns exec $HUB env NEOTUNNEL_DIR=$WORK/hub NO_COLOR=1 strace -f -e trace=sendto,sendmsg -s 4000 -xx "$BIN" tunnel add w4 --kind wireguard --peer edge --port 40500 2>&1 | grep -E 'nt-w4|\x6e\x74\x2d\x77\x34' | head -6 || true
+ip -n $HUB link add wgx type wireguard || true
+K=$(wg genkey); echo "$K" > /tmp/kx; P=$(wg genkey | wg pubkey)
+echo "--- DEBUG strace wg:"; ip netns exec $HUB strace -f -e trace=sendto,sendmsg -s 4000 -xx wg set wgx private-key /tmp/kx listen-port 40501 peer "$P" endpoint 192.0.2.2:40501 allowed-ips 0.0.0.0/0,::/0 persistent-keepalive 25 2>&1 | grep -E 'wgx|\x77\x67\x78' | head -6 || true
 echo "--- DEBUG hub wg:"; ip -n $HUB -d link show nt-w1 2>&1 | head -3 || true
 echo "--- DEBUG w2 on port 40418:"; in_hub tunnel add w2 --kind wireguard --peer edge --port 40418 2>&1 | head -4 || true
 echo "--- DEBUG w3 on port 51821:"; in_hub tunnel add w3 --kind wireguard --peer edge --port 51821 2>&1 | head -4 || true
