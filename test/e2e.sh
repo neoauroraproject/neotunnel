@@ -193,8 +193,11 @@ ip netns exec $HUB ip -s xfrm state | grep -qE '[1-9][0-9]*\(bytes\)' || fail "E
 pass "IPsec (AES-GCM) encrypts the GRE tunnel; MTU accounts for ESP"
 
 # 11. WireGuard with keys derived on both ends.
-in_hub tunnel add w1 --kind wireguard --peer edge >/dev/null || fail "add wireguard"
-ip -n $EDGE -d link show nt-w1 | grep -q wireguard || fail "wireguard missing on edge"
+out=$(in_hub tunnel add w1 --kind wireguard --peer edge 2>&1) || { echo "$out"; fail "add wireguard"; }
+ip -n $EDGE -d link show nt-w1 2>/dev/null | grep -q wireguard || {
+	echo "$out"; echo "--- edge status"; in_edge status 2>&1 | tail -30; echo "--- edge links"; ip -n $EDGE -br link
+	fail "wireguard missing on edge"
+}
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-w1)" >/dev/null || fail "ping through wireguard"
 pass "WireGuard tunnel up with derived keys"
 
