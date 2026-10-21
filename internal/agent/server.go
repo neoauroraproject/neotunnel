@@ -210,13 +210,24 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Tunnels = mine
 	out.Busy, out.BusyPorts = st.Busy(key)
+	out.BusyPorts = append(out.BusyPorts, agentBusy(st)...)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// agentBusy are this node's agent ports, in BusyPorts' form, so a master
+// never puts a TCP tunnel on them.
+func agentBusy(st *config.State) []string {
+	var out []string
+	for _, p := range st.AgentPorts() {
+		out = append(out, fmt.Sprintf("tcp/%d", p))
+	}
+	return out
 }
 
 // LocalStatus reports this node's tunnels and counters.
 func LocalStatus(st *config.State, started time.Time) Status {
 	aes := sysinfo.AESNI()
-	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6(), AESNI: &aes}
+	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6(), AESNI: &aes, AgentPort: st.ListenAgentPort()}
 	if st.Managed != nil {
 		out.Revision = st.Managed.Revision
 	}
@@ -266,6 +277,7 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		resp.Errors = append(resp.Errors, e.Error())
 	}
 	resp.Busy, resp.BusyPorts = st.Busy(key)
+	resp.BusyPorts = append(resp.BusyPorts, agentBusy(st)...)
 	if s.Applied != nil {
 		s.Applied()
 	}

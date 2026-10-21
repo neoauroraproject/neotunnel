@@ -60,12 +60,15 @@ type Status struct {
 	Name     string `json:"name"`
 	Address6 string `json:"address6,omitempty"`
 	// AESNI: the CPU has AES instructions (nil from peers too old to say).
-	AESNI    *bool          `json:"aes_ni,omitempty"`
-	Version  string         `json:"version"`
-	Arch     string         `json:"arch"`
-	Revision uint64         `json:"revision"`
-	Uptime   int64          `json:"uptime_s"`
-	Tunnels  []TunnelStatus `json:"tunnels"`
+	AESNI    *bool  `json:"aes_ni,omitempty"`
+	Version  string `json:"version"`
+	Arch     string `json:"arch"`
+	Revision uint64 `json:"revision"`
+	Uptime   int64  `json:"uptime_s"`
+	// AgentPort is where this node's agent listens (older nodes: 7710, and
+	// they don't say); the master dials it from then on.
+	AgentPort int            `json:"agent_port,omitempty"`
+	Tunnels   []TunnelStatus `json:"tunnels"`
 	// Busy4 and BusyPorts are the inner subnets and ports ("udp/51820")
 	// this node uses for tunnels other than the asking master's (its own,
 	// or another master's): that master gives its tunnels others.

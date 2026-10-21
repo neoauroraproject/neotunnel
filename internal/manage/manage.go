@@ -115,7 +115,7 @@ func Node() (*config.State, error) {
 	if err != nil {
 		return nil, err
 	}
-	if st.Self != "" && st.Address != "" {
+	if st.Self != "" && st.Address != "" && st.AgentPort != 0 {
 		return st, nil
 	}
 	return config.Update(func(s *config.State) error {
@@ -125,6 +125,9 @@ func Node() (*config.State, error) {
 		if s.Address == "" {
 			s.Address = fleet.DetectAddress("")
 		}
+		// Setup links name this port, so it is picked before the first one
+		// (the service listens on whatever is saved here).
+		config.EnsureAgentPort(s, config.TCPPortFree)
 		return nil
 	})
 }
@@ -263,6 +266,13 @@ type ForwardRequest struct {
 func (r *ForwardRequest) check(st *config.State) error {
 	if _, err := forward.ParsePorts(r.Ports); err != nil {
 		return err
+	}
+	for _, port := range forward.Expand(r.Ports) {
+		for _, p := range st.AgentPorts() {
+			if port == p {
+				return fmt.Errorf("port %d is reserved for neotunnel agent", p)
+			}
+		}
 	}
 	if r.Mode == "" {
 		r.Mode = st.D().ForwardMode

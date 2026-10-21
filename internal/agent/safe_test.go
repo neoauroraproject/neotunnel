@@ -18,7 +18,7 @@ func TestSafeConfirm(t *testing.T) {
 	m := &config.Managed{Master: config.MasterRef{Name: "hub", PublicKey: masterID.PublicString()}, Self: "edge", Revision: 3}
 	config.Save(&config.State{Self: "edge", Managed: m})
 	addr := serve(t, peerID)
-	c, err := newClient(masterID, addr, peerID.PublicString(), 5*time.Second)
+	c, err := newClient(masterID, []string{"https://" + addr}, peerID.PublicString(), 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

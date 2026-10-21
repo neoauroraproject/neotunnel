@@ -115,7 +115,7 @@ func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
 	ts, fs := st.ForPeer(peer)
 	key, err := setuplink.Encode(id, setuplink.Payload{
 		Issued:      time.Now().UTC(),
-		Master:      config.MasterRef{Name: st.Self, Address: net.JoinHostPort(st.Address, strconv.Itoa(agent.DefaultPort))},
+		Master:      config.MasterRef{Name: st.Self, Address: net.JoinHostPort(st.Address, strconv.Itoa(st.ListenAgentPort()))},
 		Peer:        peer,
 		EnrollToken: token,
 		Revision:    st.Revision,
@@ -136,7 +136,7 @@ func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
 		if err == nil {
 			if b, err := os.ReadFile(exe); err == nil {
 				sum := sha256.Sum256(b)
-				url := fmt.Sprintf("https://%s/dl/%s", net.JoinHostPort(st.Address, strconv.Itoa(agent.DefaultPort)), token)
+				url := fmt.Sprintf("https://%s/dl/%s", net.JoinHostPort(st.Address, strconv.Itoa(st.ListenAgentPort())), token)
 				// -k is safe here: the checksum is verified before anything runs.
 				s.Install = fmt.Sprintf("curl -fsSk %s -o /tmp/neotunnel && echo '%x  /tmp/neotunnel' | sha256sum -c --quiet && sudo install -m 755 /tmp/neotunnel /usr/local/bin/neotunnel && rm /tmp/neotunnel && sudo neotunnel apply '%s'",
 					url, sum, key)
@@ -200,15 +200,27 @@ func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer 
 	if err != nil {
 		return agent.Status{}, err
 	}
-	sctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	// Long enough for the client to fall back from a dead route (a tunnel
+	// that is up but carries nothing) to the next one.
+	sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	s, err := c.Status(sctx)
 	if err != nil {
 		return s, err
 	}
-	config.Update(func(st *config.State) error {
+	behind := false
+	cur, _ := config.Update(func(st *config.State) error {
 		if p, ok := st.Peer(peer); ok {
 			p.Version, p.Arch, p.LastSeen = s.Version, s.Arch, time.Now()
+			if s.AgentPort != 0 {
+				p.AgentPort = s.AgentPort // the peer's own port, from now on
+			}
+			// What the peer says it runs is the truth, also when a push
+			// answered too late to be recorded.
+			if s.Revision <= st.Revision {
+				p.AppliedRevision = s.Revision
+			}
+			behind = s.Revision < st.Revision
 			p.Busy, p.BusyPorts = s.Busy, s.BusyPorts
 			if s.Address6 != "" {
 				p.Address6 = s.Address6
@@ -219,6 +231,16 @@ func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer 
 		}
 		return nil
 	})
+	// A change that couldn't reach the peer when it was made (a filtered
+	// moment, the peer restarting) is sent again here, every minute, until
+	// the peer has it; nobody has to press "send again".
+	if behind && cur != nil {
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if _, err := Push(pctx, id, cur, peer); err != nil {
+			return s, fmt.Errorf("resync: %w", err)
+		}
+	}
 	return s, nil
 }
 

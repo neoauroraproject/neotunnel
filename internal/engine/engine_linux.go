@@ -167,12 +167,16 @@ func adopt(s LinkSpec) error {
 	return configure(l, s)
 }
 
-// ServicePorts are the fixed ports every node listens on.
-var ServicePorts = []string{"7710/tcp", "7711"}
+// ServicePorts are the fixed ports every node listens on; the agent's own
+// port (or ports) comes from the node's configuration.
+var ServicePorts = []string{"7711"}
 
 // firewallNeeds lists what a host firewall (ufw) must let through.
 func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firewall.Needs {
 	n := firewall.Needs{Ports: append([]string(nil), ServicePorts...)}
+	for _, p := range st.AgentPorts() {
+		n.Ports = append(n.Ports, fmt.Sprintf("%d/tcp", p))
+	}
 	if st.Panel != nil {
 		n.Ports = append(n.Ports, fmt.Sprintf("%d/tcp", st.Panel.Port))
 	}

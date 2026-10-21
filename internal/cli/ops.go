@@ -201,7 +201,12 @@ func applyKey(key string, force bool) error {
 	if err != nil {
 		return err
 	}
-	st, err := config.Update(func(s *config.State) error { return setuplink.Accept(s, p, force) })
+	st, err := config.Update(func(s *config.State) error {
+		// The port the master will dial, picked before pairing tells it
+		// (on a new node, before its service ever ran).
+		config.EnsureAgentPort(s, config.TCPPortFree)
+		return setuplink.Accept(s, p, force)
+	})
 	if err != nil {
 		return err
 	}

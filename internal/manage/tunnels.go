@@ -462,6 +462,11 @@ func portAvailable(st *config.State, port uint16, self string) error {
 	if st.Panel != nil && int(port) == st.Panel.Port {
 		return fmt.Errorf("port %d is the panel's port", port)
 	}
+	for _, p := range st.AgentPorts() {
+		if int(port) == p {
+			return fmt.Errorf("port %d is reserved for neotunnel agent", port)
+		}
+	}
 	if other := portUser(st, port); other != "" && other != self {
 		return fmt.Errorf("port %d is already used by tunnel %s", port, other)
 	}

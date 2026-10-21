@@ -23,6 +23,11 @@ type State struct {
 	Revision uint64 `json:"revision"` // bumped on every local change
 	ULA48    string `json:"ula48,omitempty"`
 	Address  string `json:"address,omitempty"` // this node's public IP, used in setup links
+	// AgentPort is where this node's agent listens, picked at random once
+	// (0 on nodes from before, which listen on 7710; see agentport.go).
+	// AgentLegacy: the node was paired on 7710 first and listens there too.
+	AgentPort   int  `json:"agent_port,omitempty"`
+	AgentLegacy bool `json:"agent_legacy,omitempty"`
 
 	Tunnels  []Tunnel  `json:"tunnels,omitempty"`
 	Forwards []Forward `json:"forwards,omitempty"`

@@ -53,13 +53,34 @@ func Run(ctx context.Context) error {
 		}
 	}()
 	srv := &agent.Server{ID: id, Probe: ps, Started: time.Now(), Applied: poke}
-	go func() {
-		addr := ":" + strconv.Itoa(agent.DefaultPort)
-		if err := srv.ListenAndServe(addr); err != nil {
-			log.Printf("agent server: %v", err)
-			os.Exit(1)
+	// The agent's own port, picked once at random (the main server learns
+	// it from the node's status), and 7710 on nodes paired there before.
+	st, err := config.Update(func(s *config.State) error {
+		if s.AgentPort != 0 && !config.TCPPortFree(s.AgentPort) {
+			// Another program took it (it was picked without a check, or
+			// while the service was down): pick another, keeping 7710 too
+			// so the main server can still reach this node and learn it.
+			log.Printf("agent port %d is in use by another program; picking a new one", s.AgentPort)
+			s.AgentPort, s.AgentLegacy = 0, true
 		}
-	}()
+		legacy := s.AgentLegacy
+		config.EnsureAgentPort(s, config.TCPPortFree)
+		s.AgentLegacy = s.AgentLegacy || legacy
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i, port := range st.AgentPorts() {
+		go func(port int, main bool) {
+			if err := srv.ListenAndServe(":" + strconv.Itoa(port)); err != nil {
+				log.Printf("agent server on port %d: %v", port, err)
+				if main {
+					os.Exit(1)
+				}
+			}
+		}(port, i == 0)
+	}
 
 	dp := newDataPlane()
 	engine.SetUserspace(dp)
@@ -200,7 +221,12 @@ func fixClashes() {
 // watchPeers keeps each peer's version and last contact current, so the
 // panel can tell which servers are reachable and which need an upgrade.
 func watchPeers(ctx context.Context, id *identity.Identity) {
-	t := time.NewTicker(time.Minute)
+	every := time.Minute
+	// Tests shorten it (NEOTUNNEL_PEER_WATCH=3s) to see a resync quickly.
+	if d, err := time.ParseDuration(os.Getenv("NEOTUNNEL_PEER_WATCH")); err == nil && d > 0 {
+		every = d
+	}
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		fleet.RefreshAll(ctx, id)
