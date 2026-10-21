@@ -193,7 +193,7 @@ ip netns exec $HUB ip -s xfrm state | grep -qE '[1-9][0-9]*\(bytes\)' || fail "E
 pass "IPsec (AES-GCM) encrypts the GRE tunnel; MTU accounts for ESP"
 
 # 11. WireGuard with keys derived on both ends.
-out=$(in_hub tunnel add w1 --kind wireguard --peer edge 2>&1) || { echo "$out"; fail "add wireguard"; }
+out=$(NEOTUNNEL_WG_BISECT=1 in_hub tunnel add w1 --kind wireguard --peer edge 2>&1) || { echo "$out"; fail "add wireguard"; }
 echo "--- DEBUG tunnel add w1:"; echo "$out"
 for i in 1 2 3 4 5 6; do echo "--- DEBUG t=$i edge wg links: $(ip -n $EDGE -br link show type wireguard 2>&1 | tr '
 ' ' ')"; sleep 1; done
