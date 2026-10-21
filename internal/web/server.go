@@ -36,9 +36,11 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]time.Time
+	handed   map[string]time.Time // sessions from before an update, by hash (update.go)
 	failures map[string]*failure
 	jobs     *jobs
 	checking sync.Mutex // one quick check at a time
+	up       updater    // this server's own updates (update.go)
 }
 
 type failure struct {
@@ -48,6 +50,7 @@ type failure struct {
 
 func (s *Server) init() {
 	s.sessions = map[string]time.Time{}
+	s.handed = takeHandoff()
 	s.failures = map[string]*failure{}
 	s.jobs = newJobs()
 }
@@ -196,6 +199,10 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 		if err == nil {
 			s.mu.Lock()
 			if exp, found := s.sessions[c.Value]; found && time.Now().Before(exp) {
+				s.sessions[c.Value] = time.Now().Add(sessionTTL)
+				ok = true
+			} else if exp, found := s.handed[sessionHash(c.Value)]; found && time.Now().Before(exp) {
+				delete(s.handed, sessionHash(c.Value))
 				s.sessions[c.Value] = time.Now().Add(sessionTTL)
 				ok = true
 			}
