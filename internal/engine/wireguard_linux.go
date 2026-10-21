@@ -47,7 +47,7 @@ func wgConfigure(s LinkSpec) error {
 		return fmt.Errorf("wireguard is not available in this kernel: %w", err)
 	}
 	req := nl.NewNetlinkRequest(int(fam.ID), unix.NLM_F_ACK)
-	req.AddData(&nl.Genlmsg{Command: wgCmdSetDevice, Version: 1})
+	req.AddData(genlHeader{cmd: wgCmdSetDevice, version: 1})
 	req.AddData(nl.NewRtAttr(wgDeviceIfname, nl.ZeroTerminated(s.Name)))
 	req.AddData(nl.NewRtAttr(wgDevicePrivateKey, priv[:]))
 	req.AddData(nl.NewRtAttr(wgDeviceListenPort, nl.Uint16Attr(s.Port)))
@@ -81,6 +81,16 @@ func wgConfigure(s LinkSpec) error {
 	}
 	return nil
 }
+
+// genlHeader is the generic netlink header: command, version and two
+// reserved bytes that must be zero. netlink's nl.Genlmsg serializes four
+// bytes from a two-byte struct, so its reserved bytes are whatever memory
+// follows; kernels that validate the header strictly (7.0's WireGuard)
+// then reject the request with EINVAL, now and then.
+type genlHeader struct{ cmd, version uint8 }
+
+func (h genlHeader) Len() int          { return nl.SizeofGenlmsg }
+func (h genlHeader) Serialize() []byte { return []byte{h.cmd, h.version, 0, 0} }
 
 // sockaddr encodes the far end as a struct sockaddr_in / sockaddr_in6.
 func sockaddr(s LinkSpec) []byte {
