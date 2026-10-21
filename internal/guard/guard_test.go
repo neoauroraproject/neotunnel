@@ -15,7 +15,7 @@ func TestClassify(t *testing.T) {
 		{Proto: "tcp", Port: 2053, Process: "x-ui"},              // 3x-ui's own panel
 		{Proto: "tcp", Port: 80, Process: "nginx"},
 		{Proto: "tcp", Port: 41485, Process: "neotunnel"}, // agent: peers only
-		{Proto: "udp", Port: 4789},                         // kernel (VXLAN)
+		{Proto: "udp", Port: 4789},                        // kernel (VXLAN)
 		{Proto: "tcp", Port: 22, Process: "sshd"},
 		{Proto: "tcp", Port: 10400, Process: "neotunnel"}, // a relay forward's listener
 	}
