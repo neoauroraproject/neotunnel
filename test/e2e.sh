@@ -306,6 +306,26 @@ ip netns exec $HUB ping -c 3 -W 2 "$g4far" >/dev/null || fail "ping after going 
 in_hub tunnel remove g4 >/dev/null
 pass "lanes: GRE on 4 parallel tunnels carries ping, a speed test and forwards; back to one lane cleans up"
 
+# 12d. The max profile spreads the card's receive work: every receive queue
+#      of the card holding hub's address hands its packets on to other cores
+#      (RPS, by the inner flow), the tunnel then leaves its own RPS off, and
+#      the doctor says so.
+if [ "$(nproc)" -gt 1 ]; then
+  in_hub tunnel add g5 --kind gre --peer edge >/dev/null || fail "add gre for the max profile"
+  in_hub tunnel set g5 --profile max >/dev/null || fail "set the max profile"
+  for q in $(ip netns exec $HUB sh -c 'ls -d /sys/class/net/veth-hub/queues/rx-*'); do
+    m=$(ip netns exec $HUB cat "$q/rps_cpus")
+    [ -n "$(echo "$m" | tr -d '0,')" ] || fail "max profile: $q of veth-hub does not spread (rps_cpus $m)"
+  done
+  m=$(ip netns exec $HUB cat /sys/class/net/nt-g5/queues/rx-0/rps_cpus)
+  [ -z "$(echo "$m" | tr -d '0,')" ] || fail "max profile: nt-g5 spreads again on top of the card (rps_cpus $m)"
+  ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-g5)" >/dev/null || fail "ping through gre with the max profile"
+  in_hub doctor 2>&1 | grep -q "RPS on veth-hub" || { in_hub doctor; fail "doctor does not report how the card spreads"; }
+  in_hub tunnel remove g5 >/dev/null
+  for q in $(ip netns exec $HUB sh -c 'ls -d /sys/class/net/veth-hub/queues/rx-*'); do ip netns exec $HUB sh -c "echo 0 > $q/rps_cpus"; done
+  pass "max profile: the card hands tunnel packets on to other cores; the tunnel does not spread twice"
+fi
+
 # 13. L2TPv3, where the kernel has it.
 if out=$(in_hub tunnel add l1 --kind l2tpv3 --peer edge 2>&1) && ip -n $HUB link show nt-l1 >/dev/null 2>&1; then
   ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-l1)" >/dev/null || fail "ping through l2tpv3"

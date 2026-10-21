@@ -60,6 +60,14 @@ func Apply(st *config.State) Result {
 		res.Errors = append(res.Errors, us.SyncLinks(user)...)
 	}
 
+	// The card first: whether it spreads decides each tunnel's own RPS.
+	for _, s := range specs {
+		if s.Profile == config.ProfileMax {
+			tuneNIC(st.Address)
+			break
+		}
+	}
+
 	want := map[string]bool{}
 	for _, s := range specs {
 		want[s.Name] = true
@@ -91,12 +99,6 @@ func Apply(st *config.State) Result {
 		}
 		if err := tune(s); err != nil {
 			res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: profile: %w", s.Tunnel, err))
-		}
-	}
-	for _, s := range specs {
-		if s.Profile == config.ProfileMax {
-			tuneNIC()
-			break
 		}
 	}
 
