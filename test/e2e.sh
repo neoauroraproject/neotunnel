@@ -194,6 +194,12 @@ pass "IPsec (AES-GCM) encrypts the GRE tunnel; MTU accounts for ESP"
 
 # 11. WireGuard with keys derived on both ends.
 out=$(in_hub tunnel add w1 --kind wireguard --peer edge 2>&1) || { echo "$out"; fail "add wireguard"; }
+echo "--- DEBUG tunnel add w1:"; echo "$out"
+for i in 1 2 3 4 5 6; do echo "--- DEBUG t=$i edge wg links: $(ip -n $EDGE -br link show type wireguard 2>&1 | tr '
+' ' ')"; sleep 1; done
+echo "--- DEBUG edge udp sockets:"; ip netns exec $EDGE ss -lunp 2>&1 | head -20
+echo "--- DEBUG edge status:"; in_edge status 2>&1 | tail -25
+echo "--- DEBUG hub wg:"; ip -n $HUB -d link show nt-w1 2>&1 | head -3
 ip -n $EDGE -d link show nt-w1 2>/dev/null | grep -q wireguard || {
 	echo "$out"; echo "--- edge status"; in_edge status 2>&1 | tail -30; echo "--- edge links"; ip -n $EDGE -br link
 	fail "wireguard missing on edge"
