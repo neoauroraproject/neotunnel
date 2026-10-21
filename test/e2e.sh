@@ -199,20 +199,20 @@ for i in 1 2 3 4 5 6; do echo "--- DEBUG t=$i edge wg links: $(ip -n $EDGE -br l
 ' ' ')"; sleep 1; done
 echo "--- DEBUG edge udp sockets:"; ip netns exec $EDGE ss -lunp 2>&1 | head -20
 echo "--- DEBUG edge status:"; in_edge status 2>&1 | tail -25
-echo "--- DEBUG hub wg:"; ip -n $HUB -d link show nt-w1 2>&1 | head -3
-echo "--- DEBUG w2 on port 40418:"; in_hub tunnel add w2 --kind wireguard --peer edge --port 40418 2>&1 | head -4
-echo "--- DEBUG w3 on port 51821:"; in_hub tunnel add w3 --kind wireguard --peer edge --port 51821 2>&1 | head -4
-apt-get install -y -qq wireguard-tools >/dev/null 2>&1; echo "--- DEBUG wg tool: $(command -v wg) kernel $(uname -r)"
-K=$(wg genkey); P=$(echo "$K" | wg pubkey); echo "$K" > /tmp/k
-ip -n $EDGE link add wgt type wireguard && echo "link ok"
-ip netns exec $EDGE wg set wgt private-key /tmp/k && echo "key ok"
-ip netns exec $EDGE wg set wgt listen-port 51820 && echo "port 51820 ok"
-ip netns exec $EDGE wg set wgt peer "$P" endpoint 192.0.2.1:51820 && echo "endpoint ok"
-ip netns exec $EDGE wg set wgt peer "$P" allowed-ips 0.0.0.0/0 && echo "allowed v4 ok"
-ip netns exec $EDGE wg set wgt peer "$P" allowed-ips 0.0.0.0/0,::/0 && echo "allowed v4+v6 ok"
-ip netns exec $EDGE wg set wgt peer "$P" persistent-keepalive 25 && echo "keepalive ok"
-P2=$(wg genkey | wg pubkey); ip netns exec $EDGE wg set wgt peer "$P2" endpoint 192.0.2.1:51820 allowed-ips 0.0.0.0/0,::/0 persistent-keepalive 25 && echo "all-in-one ok"
-ip netns exec $EDGE wg show wgt 2>&1 | head -12
+echo "--- DEBUG hub wg:"; ip -n $HUB -d link show nt-w1 2>&1 | head -3 || true
+echo "--- DEBUG w2 on port 40418:"; in_hub tunnel add w2 --kind wireguard --peer edge --port 40418 2>&1 | head -4 || true
+echo "--- DEBUG w3 on port 51821:"; in_hub tunnel add w3 --kind wireguard --peer edge --port 51821 2>&1 | head -4 || true
+apt-get install -y -qq wireguard-tools >/dev/null 2>&1; echo "--- DEBUG wg tool: $(command -v wg) kernel $(uname -r)" || true
+K=$(wg genkey); P=$(echo "$K" | wg pubkey); echo "$K" > /tmp/k || true
+ip -n $EDGE link add wgt type wireguard && echo "link ok" || true
+ip netns exec $EDGE wg set wgt private-key /tmp/k && echo "key ok" || true
+ip netns exec $EDGE wg set wgt listen-port 51820 && echo "port 51820 ok" || true
+ip netns exec $EDGE wg set wgt peer "$P" endpoint 192.0.2.1:51820 && echo "endpoint ok" || true
+ip netns exec $EDGE wg set wgt peer "$P" allowed-ips 0.0.0.0/0 && echo "allowed v4 ok" || true
+ip netns exec $EDGE wg set wgt peer "$P" allowed-ips 0.0.0.0/0,::/0 && echo "allowed v4+v6 ok" || true
+ip netns exec $EDGE wg set wgt peer "$P" persistent-keepalive 25 && echo "keepalive ok" || true
+P2=$(wg genkey | wg pubkey); ip netns exec $EDGE wg set wgt peer "$P2" endpoint 192.0.2.1:51820 allowed-ips 0.0.0.0/0,::/0 persistent-keepalive 25 && echo "all-in-one ok" || true
+ip netns exec $EDGE wg show wgt 2>&1 | head -12 || true
 ip -n $EDGE -d link show nt-w1 2>/dev/null | grep -q wireguard || {
 	echo "$out"; echo "--- edge status"; in_edge status 2>&1 | tail -30; echo "--- edge links"; ip -n $EDGE -br link
 	fail "wireguard missing on edge"
