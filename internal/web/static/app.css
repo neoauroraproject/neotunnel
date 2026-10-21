@@ -298,7 +298,7 @@ html.locked { overflow: hidden; }
 .b-node { grid-column: span 8; grid-row: span 1; padding: 0; min-height: 470px; display: flex; flex-direction: column; }
 .b-det { grid-column: span 6; }
 .b-nic { grid-column: span 5; padding: 0; }
-.b-ping { grid-column: span 5; padding: 0; }
+.b-ping { grid-column: span 5; padding: 0; display: flex; flex-direction: column; }
 .b-load { grid-column: span 8; }
 .b-hist { grid-column: 1 / -1; }
 
@@ -317,7 +317,11 @@ html.locked { overflow: hidden; }
   position: absolute; top: 0; inset-inline-start: var(--src, 24%); width: calc(100% - var(--src, 24%) - var(--list)); height: 100%;
   overflow: visible; pointer-events: none;
 }
-.ribbon { transition: opacity 300ms ease; }
+/* A new rate reshapes the ribbons (same path commands, new numbers), so the
+   shapes glide to it instead of jumping at every refresh. */
+.ribbon { transition: opacity 300ms ease, d 900ms var(--ease-out); }
+.ribbons stop { transition: stop-color 600ms ease; }
+.ribbon-sheen { transition: d 900ms var(--ease-out); }
 .ribbon-sheen { fill: none; stroke: #fff; stroke-opacity: .55; stroke-linecap: round; stroke-dasharray: 2 120; animation: sheen 2.4s linear infinite; mix-blend-mode: overlay; }
 [data-theme="light"] .ribbon-sheen { stroke-opacity: .7; }
 @keyframes sheen { to { stroke-dashoffset: -122; } }
@@ -416,10 +420,13 @@ html.locked { overflow: hidden; }
 .ping-art .die-v { font-family: var(--display); font-size: 17px; fill: var(--ink); }
 .ping-art .die-l { font-family: var(--display); font-size: 9px; fill: var(--ink-3); letter-spacing: .08em; }
 .ping-art .die-k { font-family: var(--display); font-size: 15px; fill: var(--ink); letter-spacing: .02em; }
-.ping-body { display: flex; align-items: center; gap: 10px; padding: 0 18px 18px; font-size: 12px; color: var(--ink-2); }
+.ping-body { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 18px 18px; font-size: 12px; color: var(--ink-2); }
 .ping-body b { color: var(--ink); font-weight: 600; direction: ltr; unicode-bidi: isolate; }
 .ping-body > span { white-space: nowrap; }
 .ping-body .btn { margin-inline-start: auto; }
+.ping-trend { margin-top: auto; padding: 4px 18px 18px; display: flex; flex-direction: column; gap: 6px; }
+.ping-trend .spark { width: 100%; height: 54px; }
+.ping-trend span { color: var(--ink-3); font-size: 11.5px; }
 @keyframes trace { to { stroke-dashoffset: -60; } }
 .ping-art .run { stroke-dasharray: 6 54; animation: trace 2.6s linear infinite; }
 
@@ -678,11 +685,21 @@ details.adv > .in { padding: 4px 16px 16px; display: flex; flex-direction: colum
 /* ---------- settings ---------- */
 .settings { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 22px; align-items: start; }
 .snav { position: sticky; top: 90px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: var(--r-lg); background: var(--card); border: 1px solid var(--line); }
-.snav button { text-align: start; background: none; border: 0; padding: 9px 14px; border-radius: 12px; color: var(--ink-2); cursor: pointer; font-weight: 600; font-size: 13px; }
+.snav button {
+  text-align: start; background: none; border: 0; padding: 9px 14px; border-radius: 12px; color: var(--ink-2); cursor: pointer; font-weight: 600; font-size: 13px;
+  transition: background-color 200ms ease, color 200ms ease, box-shadow 240ms var(--ease-out), transform 160ms var(--ease-out);
+}
+.snav button:active { transform: scale(.98); }
 .snav button:hover { background: var(--card-2); color: var(--ink); }
 .snav button.on { background: var(--card-3); color: var(--ink); box-shadow: inset -3px 0 0 var(--accent); }
 [dir="ltr"] .snav button.on { box-shadow: inset 3px 0 0 var(--accent); }
-.spane { max-width: 780px; }
+/* Each section is its own element (keyed), so switching sections plays this. */
+.spane { max-width: 780px; animation: pane-in 300ms var(--ease-out); }
+.spane > * { animation: pane-in 360ms var(--ease-out) backwards; }
+.spane > :nth-child(2) { animation-delay: 40ms; }
+.spane > :nth-child(3) { animation-delay: 80ms; }
+.spane > :nth-child(n + 4) { animation-delay: 120ms; }
+@keyframes pane-in { from { opacity: 0; transform: translateY(8px); } }
 .spane .panel + .panel { margin-top: 14px; }
 .form-foot { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
 
@@ -920,3 +937,15 @@ main.main { animation: page-in 220ms var(--ease-out); }
   .topbar::before, .tabs { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg); }
   .sheet { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--card); }
 }
+
+/* ---------- updates of this server ---------- */
+.upd-pill { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line-2)); gap: 6px; animation: page-in 300ms var(--ease-out); }
+.upd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13.5px; }
+.upd-row > .grow { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 200px; }
+.upd-row.new > .grow svg { color: var(--accent); }
+.upd-state { display: flex; align-items: flex-start; gap: 14px; }
+.upd-state > .spin { width: 22px; height: 22px; border-width: 2px; flex: none; margin-top: 2px; }
+.upd-state > svg { color: var(--ok, #3ccf8e); flex: none; }
+.upd-state > div { display: flex; flex-direction: column; gap: 4px; }
+.upd-state span { color: var(--ink-2); font-size: 13px; line-height: 1.7; }
+.upd-log { margin: 0; max-height: 240px; overflow: auto; padding: 12px 14px; border-radius: 12px; background: var(--card-2); border: 1px solid var(--line); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }

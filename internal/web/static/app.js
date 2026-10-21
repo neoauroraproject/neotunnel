@@ -287,11 +287,66 @@
         }
       }
       S.ov = ov; S.live = true; S.authed = true;
+      if (!S.updRun && Date.now() - (S.updAt || 0) > 3600e3) loadUpdate();
     } catch {
       S.live = false;
     }
     if ((S.modal && !S.modal.passive) || S.menuDrag) return;
     if (S.edit) patchLive(); else draw();
+  }
+
+  // ---------- updates of this server ----------
+  // The newest release, as the server last looked it up (it caches GitHub's
+  // answer); asked once an hour, or now from the settings.
+  async function loadUpdate(force) {
+    S.updAt = Date.now();
+    try { S.upd = await api("GET", "update" + (force ? "?force=1" : "")); } catch { /* keep the last answer */ }
+    if (S.modal && !S.modal.passive) drawModal(); else draw();
+  }
+  const updNew = () => (S.upd && S.upd.newer && !S.updRun ? S.upd.latest : "");
+
+  // After the installer starts: wait for the new version to answer, then
+  // load the page again (its code changed too). The service restarts in
+  // between, so failed requests are expected for a while.
+  async function pollUpdate() {
+    const run = S.updRun;
+    if (!run || run.failed || run.done) return;
+    if (Date.now() - run.since > 5 * 60e3) { run.failed = true; drawModal(); return; }
+    try {
+      const ov = await api("GET", "overview");
+      if (ov.node.version === run.to) {
+        run.done = true; drawModal();
+        setTimeout(() => location.reload(), 900);
+        return;
+      }
+      const r = await api("GET", "update");
+      if (!r.updating && r.log) { run.failed = true; run.log = r.log; drawModal(); return; }
+    } catch { /* restarting */ }
+    setTimeout(pollUpdate, 2000);
+  }
+
+  function updateView() {
+    const u = S.upd || {}, run = S.updRun;
+    if (run && run.done) {
+      return html`${modalHead("به‌روزرسانی انجام شد")}<div class="body"><div class="upd-state">${I.check(22)}<div><b>نسخه‌ی <span class="ltr">${run.to}</span> بالا آمد</b><span>صفحه دوباره بارگذاری می‌شود…</span></div></div></div>`;
+    }
+    if (run && run.failed) {
+      return html`${modalHead("به‌روزرسانی کامل نشد")}<div class="body stack">
+        <div>${run.log ? "نصاب کار را تمام نکرد. آخرین خطوط خروجی آن:" : `نسخه‌ی جدید بعد از ۵ دقیقه جواب نداد.`}</div>
+        ${run.log ? html`<pre class="upd-log ltr">${run.log}</pre>` : ""}
+        <div class="help">روی سرور در ترمینال اجرا کنید: <code class="ltr">sudo neotunnel update</code>${run.log ? "" : html` · خروجی نصاب در <code class="ltr">/var/log/neotunnel-update.log</code> است.`}</div></div>
+        <footer><span class="grow"></span><button class="btn ghost" data-act="update-done">بستن</button></footer>`;
+    }
+    if (run) {
+      return html`${modalHead("در حال به‌روزرسانی")}<div class="body stack">
+        <div class="upd-state"><i class="spin"></i><div><b>دانلود و نصب نسخه‌ی <span class="ltr">${run.to}</span></b><span>سرویس چند ثانیه دوباره راه می‌افتد و این صفحه بعد از آن خودش تازه می‌شود. تانل‌ها و تنظیمات می‌مانند.</span></div></div>
+        <div class="help">اگر این پنجره را ببندید، به‌روزرسانی روی سرور ادامه پیدا می‌کند.</div></div>`;
+    }
+    return html`${modalHead("به‌روزرسانی NeoTunnel")}<div class="body stack">
+      <dl class="kv"><dt>نسخه‌ی فعلی</dt><dd class="ltr">${u.current}</dd><dt>نسخه‌ی جدید</dt><dd class="ltr"><b>${u.latest}</b>${u.url ? html` · <a href="${u.url}" target="_blank" rel="noopener">تغییرات این نسخه</a>` : ""}</dd></dl>
+      <div>برنامه‌ی جدید از گیت‌هاب دانلود و نصب می‌شود، مثل <code class="ltr">sudo neotunnel update</code>. تانل‌ها، فورواردها و تنظیمات می‌مانند و سرویس چند ثانیه دوباره راه می‌افتد.</div>
+      ${S.ov.peers.length ? html`<div class="help">بعد از آن، سرورهای مقصد را از صفحه‌ی «سرورها» به همین نسخه ارتقا دهید.</div>` : ""}</div>
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="update-run">${I.upgrade(16)} به‌روزرسانی</button></footer>`;
   }
 
   async function refreshTraffic() {
@@ -402,6 +457,7 @@
         <a class="brand" href="#/dashboard" title="NeoTunnel ${ov.node.version}"><img src="assets/logo.png" alt=""><b>NeoTunnel</b><small class="ltr">${ov.node.version}</small></a>
         <nav class="tabs" aria-label="صفحه‌ها">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon(18)}<span>${label}</span>${counts[id] ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
         <div class="top-tools">
+          ${updNew() ? html`<button class="btn sm upd-pill" data-act="update-ask" title="نسخه‌ی جدید NeoTunnel آمده؛ برای به‌روزرسانی بزنید">${I.upgrade(14)}<span class="ltr">${updNew()}</span></button>` : ""}
           <span class="live ${liveCls}" title="${S.live ? (S.paused ? "به‌روزرسانی زنده متوقف است" : "پنل هر ۳ ثانیه تازه می‌شود") : "ارتباط با سرور قطع است"}"><i></i><span>${!S.live ? "قطع ارتباط" : S.paused ? "متوقف" : "زنده"}</span></span>
           <button class="iconbtn wide-only" data-act="theme" title="${S.theme === "dark" ? "تم روشن" : "تم تیره"}" aria-label="تغییر تم">${S.theme === "dark" ? I.sun(17) : I.moon(17)}</button>
           <button class="iconbtn hot" data-act="wizard" title="تانل جدید" aria-label="تانل جدید">${I.plus(18)}</button>
@@ -440,6 +496,7 @@
         <nav class="sheet-nav" aria-label="صفحه‌ها">${NAV.map(([id, label, icon]) => html`<a href="#/${id}" class="${S.route === id ? "on" : ""}" ${S.route === id ? raw('aria-current="page"') : ""}>${icon(20)}<span>${label}</span>${counts[id] ? html`<span class="n">${counts[id]}</span>` : ""}</a>`)}</nav>
         <div class="sheet-foot">
           <button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button>
+          ${updNew() ? html`<button class="btn" data-act="update-ask">${I.upgrade(16)} به‌روزرسانی به <span class="ltr">${updNew()}</span></button>` : ""}
           <div class="sheet-row">
             <button class="btn ghost" data-act="theme">${S.theme === "dark" ? I.sun(16) : I.moon(16)} ${S.theme === "dark" ? "تم روشن" : "تم تیره"}</button>
             <button class="btn ghost" data-act="live-toggle">${I.power(16)} ${S.paused ? "ادامه‌ی به‌روزرسانی" : "توقف به‌روزرسانی"}</button>
@@ -697,21 +754,25 @@
     </div>`;
   }
 
-  function sparkline(raw10s) {
+  // fit: scale between the lowest and highest value instead of from zero,
+  // for numbers that move a little around a large base (a ping of 90±5 ms).
+  function sparkline(raw10s, { w = 120, h = 30, fit = false, points = 30 } = {}) {
     // Thirty averages: the trend of the hour, not every 10-second wobble.
-    const per = Math.max(1, Math.ceil(raw10s.length / 30)), vals = [];
+    const per = Math.max(1, Math.ceil(raw10s.length / points)), vals = [];
     for (let i = 0; i < raw10s.length; i += per) {
       const g = raw10s.slice(i, i + per).filter((v) => v != null);
       vals.push(g.length ? g.reduce((a, b) => a + b, 0) / g.length : null);
     }
     const pts = vals.map((v, i) => [i, v]).filter(([, v]) => v != null);
     if (pts.length < 2) return "";
-    const n = vals.length - 1, max = Math.max(5, ...pts.map(([, v]) => v));
-    const x = (i) => (i / n) * 120, y = (v) => 28 - (v / max) * 26;
+    const n = vals.length - 1, ys = pts.map(([, v]) => v);
+    let lo = 0, hi = Math.max(5, ...ys);
+    if (fit) { lo = Math.min(...ys); hi = Math.max(...ys); const pad = Math.max((hi - lo) * 0.15, 1); lo -= pad; hi += pad; }
+    const x = (i) => (i / n) * w, y = (v) => h - 2 - ((v - lo) / (hi - lo)) * (h - 4);
     const d = pts.map(([i, v], k) => `${k ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("");
     const [li, lv] = pts[pts.length - 1];
-    return raw(`<svg class="spark" viewBox="0 0 120 30" aria-hidden="true"><defs><linearGradient id="spark-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".28"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
-      <path class="a" d="${d}L${x(li).toFixed(1)} 30L${x(pts[0][0]).toFixed(1)} 30Z"/><path class="l" d="${d}"/><circle cx="${x(li).toFixed(1)}" cy="${y(lv).toFixed(1)}" r="3"/></svg>`);
+    return raw(`<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><linearGradient id="spark-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".28"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
+      <path class="a" d="${d}L${x(li).toFixed(1)} ${h}L${x(pts[0][0]).toFixed(1)} ${h}Z"/><path class="l" d="${d}"/><circle cx="${x(li).toFixed(1)}" cy="${y(lv).toFixed(1)}" r="3"/></svg>`);
   }
 
   // The node: this server as an object under weather; its name, whether the
@@ -830,6 +891,11 @@
       pins.push(`<path d="M104 ${y} H${70 - k * 4} V${y + (k < 3 ? -10 : 10)} H${20 + k * 3}" class="${hot ? "run" : ""}" stroke="${hot ? "var(--accent)" : "var(--card-3)"}"/>`);
       pins.push(`<path d="M196 ${y} H${230 + k * 4} V${y + (k < 3 ? -10 : 10)} H${282 - k * 3}" class="${k === 2 ? "run" : ""}" stroke="${k === 2 ? "var(--accent)" : "var(--card-3)"}"/>`);
     }
+    // The hour's trend: the working tunnels' pings averaged per 10 seconds.
+    const m = ts.length ? metrics("1h", ts.map((t) => "p:" + t.name)) : null, se = (m && m.series) || {};
+    const lines = ts.map((t) => se["p:" + t.name] && se["p:" + t.name].a).filter(Boolean);
+    const avgs = lines.length ? lines[0].map((_, i) => { const g = lines.map((l) => l[i]).filter((v) => v != null && v > 0); return g.length ? g.reduce((a, b) => a + b, 0) / g.length : null; }) : [];
+    const trend = avgs.length ? sparkline(avgs, { w: 300, h: 54, fit: true, points: 60 }) : "";
     return html`${raw(`<svg class="ping-art" viewBox="0 0 300 196" aria-hidden="true">
         <defs><linearGradient id="die" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--card-3)"/><stop offset="1" stop-color="var(--card-2)"/></linearGradient></defs>
         <g fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${pins.join("")}</g>
@@ -841,7 +907,8 @@
         <text class="die-l" x="150" y="134" text-anchor="middle">AVG · MS</text>
       </svg>`)}
       <div class="ping-body">${lo == null ? html`<span>پینگی ثبت نشده</span>` : html`<span>کمترین <b>${ms(lo)}</b></span><span>بیشترین <b>${ms(hi)}</b></span>`}
-        <a class="btn sm" href="#/stats">${I.chart(14)} نمودار</a></div>`;
+        <a class="btn sm" href="#/stats">${I.chart(14)} نمودار</a></div>
+      ${trend ? html`<div class="ping-trend">${trend}<span>میانگین پینگ، یک ساعت گذشته</span></div>` : ""}`;
   }
 
   // Load: the processor's share in use, on a horseshoe.
@@ -1702,7 +1769,7 @@
     const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, fetch: setFetch, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
     return html`<div class="settings">
       <nav class="snav" aria-label="بخش‌های تنظیمات">${SECS.map(([k, l]) => html`<button class="${S.sec === k ? "on" : ""}" data-act="sec" data-sec="${k}">${l}</button>`)}</nav>
-      <div class="spane">${pane()}</div></div>`;
+      <div class="spane" data-key="sec-${S.sec}">${pane()}</div></div>`;
   }
 
   function setNode() {
@@ -1871,7 +1938,23 @@
     return html`<div class="panel"><header><h2>درباره</h2></header><div class="in"><dl class="kv">
       <dt>نسخه</dt><dd class="ltr">${ov.node.version} ${ov.node.arch}</dd><dt>اثر انگشت کلید سرور</dt><dd class="ltr">${ov.node.key}</dd>
       <dt>روشن بودن سرور</dt><dd>${fmtUptime(ov.node.uptime_s)}</dd><dt>کد منبع</dt><dd><a href="${ov.repo}" target="_blank" rel="noopener" class="ltr">${ov.repo.replace("https://", "")}</a></dd>
-      <dt>کانال تلگرام</dt><dd><a href="${ov.channel}" target="_blank" rel="noopener" class="ltr">${ov.channel.replace("https://", "")}</a></dd></dl></div></div>`;
+      <dt>کانال تلگرام</dt><dd><a href="${ov.channel}" target="_blank" rel="noopener" class="ltr">${ov.channel.replace("https://", "")}</a></dd></dl></div></div>
+      ${updatePanel()}`;
+  }
+
+  function updatePanel() {
+    const u = S.upd, run = S.updRun;
+    const state = run ? html`<i class="spin"></i> در حال نصب <span class="ltr">${run.to}</span>…`
+      : !u ? html`<i class="spin"></i> در حال بررسی…`
+      : u.error ? html`${I.alert(16)} بررسی نشد: ${u.error}`
+      : u.newer ? html`${I.upgrade(16)} نسخه‌ی <b class="ltr">${u.latest}</b> آمده است${u.url ? html` · <a href="${u.url}" target="_blank" rel="noopener">تغییرات</a>` : ""}`
+      : html`${I.check(16)} این سرور آخرین نسخه را دارد (<span class="ltr">${u.current}</span>)`;
+    const when = u && u.checked ? `آخرین بررسی ${F.hm.format(new Date(u.checked * 1000))}` : "";
+    return html`<div class="panel"><header><h2>به‌روزرسانی</h2>${when ? html`<span class="aside">${when}</span>` : ""}</header><div class="in">
+      <div class="upd-row ${u && u.newer && !run ? "new" : ""}"><span class="grow">${state}</span>
+        <button class="btn sm ghost" data-act="update-check" ${!u || run ? "disabled" : ""}>بررسی دوباره</button>
+        ${u && u.newer && !run ? html`<button class="btn sm primary" data-act="update-ask">${I.upgrade(14)} به‌روزرسانی</button>` : ""}</div>
+      <p class="help" style="margin:10px 0 0">پنل هر ساعت نسخه‌ی تازه را از گیت‌هاب بررسی می‌کند. به‌روزرسانی همان کار <code class="ltr">sudo neotunnel update</code> را می‌کند و تانل‌ها و تنظیمات می‌مانند.</p></div></div>`;
   }
 
   async function loadSystem() {
@@ -2424,6 +2507,18 @@
     async logout() { S.menu = false; await api("POST", "logout").catch(() => {}); S.authed = false; S.ov = null; draw(); },
     copy(el) { copy(el.dataset.text); },
     close() { closeModal(); },
+    "update-ask"() { if (S.menu) closeMenu(true); openModal(updateView); },
+    "update-check"() { S.upd = null; draw(); loadUpdate(true); },
+    async "update-run"(el) {
+      el.disabled = true;
+      try {
+        const r = await api("POST", "update");
+        S.upd = r; S.updRun = { to: r.updating || r.latest, since: Date.now() };
+        drawModal(); draw();
+        setTimeout(pollUpdate, 4000);
+      } catch (e) { el.disabled = false; toast(e.message, "bad"); }
+    },
+    "update-done"() { S.updRun = null; closeModal(); loadUpdate(true); },
     "close-overlay"(el, e) { if (e.target === el) closeModal(); },
     set(el) {
       setPath(el.dataset.path, el.dataset.value);
