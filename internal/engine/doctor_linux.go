@@ -91,7 +91,11 @@ func Doctor(st *config.State, fix bool) []Finding {
 	}
 
 	// How the card's receive work is spread over the cores.
-	out = append(out, SpreadReport(st.Address)...)
+	maxProfile := false
+	for _, s := range specs {
+		maxProfile = maxProfile || s.Profile == config.ProfileMax
+	}
+	out = append(out, SpreadReport(st.Address, maxProfile)...)
 	return out
 }
 

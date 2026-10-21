@@ -320,7 +320,8 @@ if [ "$(nproc)" -gt 1 ]; then
   m=$(ip netns exec $HUB cat /sys/class/net/nt-g5/queues/rx-0/rps_cpus)
   [ -z "$(echo "$m" | tr -d '0,')" ] || fail "max profile: nt-g5 spreads again on top of the card (rps_cpus $m)"
   ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-g5)" >/dev/null || fail "ping through gre with the max profile"
-  in_hub doctor 2>&1 | grep -q "RPS on veth-hub" || { in_hub doctor; fail "doctor does not report how the card spreads"; }
+  doc=$(in_hub doctor 2>&1 || true)
+  grep -q "✓ RPS on veth-hub: 1 of 1" <<<"$doc" || { echo "$doc"; fail "doctor does not report how the card spreads"; }
   in_hub tunnel remove g5 >/dev/null
   for q in $(ip netns exec $HUB sh -c 'ls -d /sys/class/net/veth-hub/queues/rx-*'); do ip netns exec $HUB sh -c "echo 0 > $q/rps_cpus"; done
   pass "max profile: the card hands tunnel packets on to other cores; the tunnel does not spread twice"

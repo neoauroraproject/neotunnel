@@ -283,9 +283,11 @@ func saveRPSState(m map[string]string) {
 	}
 }
 
-// SpreadReport describes how the public card's receive work is spread, for
-// the doctor.
-func SpreadReport(address string) []Finding {
+// SpreadReport describes how the card's receive work is spread, for the
+// doctor. Only a gap that matters is an issue: with a tunnel on the max
+// profile, a queue that does not hand its work on, or UDP hashing that is
+// off although the card could do it. The rest is information.
+func SpreadReport(address string, maxProfile bool) []Finding {
 	nic := spreadNIC(address)
 	if nic == "" {
 		return nil
@@ -297,18 +299,23 @@ func SpreadReport(address string) []Finding {
 	var where []string
 	spread := 0
 	for _, q := range qs {
-		c := "?"
+		c := "unknown core"
 		if len(q.CPUs) > 0 {
-			c = strings.Trim(strings.Join(strings.Fields(fmt.Sprint(q.CPUs)), ","), "[]")
+			c = "core " + strings.Trim(strings.Join(strings.Fields(fmt.Sprint(q.CPUs)), ","), "[]")
 		}
-		where = append(where, fmt.Sprintf("rx-%d→core %s", q.Index, c))
+		where = append(where, fmt.Sprintf("rx-%d on %s", q.Index, c))
 		if !maskEmpty(q.RPS) {
 			spread++
 		}
 	}
-	add(len(qs) > 1 || ncpu == 1, "%s: %d receive queue(s) on %d core(s): %s", nic, len(qs), ncpu, strings.Join(where, ", "))
+	add(true, "%s: %d receive queue(s), %d core(s): %s", nic, len(qs), ncpu, strings.Join(where, ", "))
 	if ncpu > 1 {
-		add(spread == len(qs), "RPS on %s: %d of %d queue(s) pass their work to other cores (on with the max speed profile)", nic, spread, len(qs))
+		switch {
+		case !maxProfile:
+			add(true, "RPS on %s: %d of %d queue(s) hand their work to other cores (the max speed profile turns this on)", nic, spread, len(qs))
+		default:
+			add(spread == len(qs), "RPS on %s: %d of %d queue(s) hand their work to other cores", nic, spread, len(qs))
+		}
 	}
 	spreadMu.Lock()
 	udp, known := udpHashDone[nic]
@@ -322,6 +329,6 @@ func SpreadReport(address string) []Finding {
 			udp = "off"
 		}
 	}
-	add(udp == "on" || udp == "turned on", "UDP port hashing on %s: %s (tunnels on a UDP port spread over the card's queues only with it)", nic, udp)
+	add(udp != "off" || !maxProfile, "UDP port hashing on %s: %s (tunnels on a UDP port spread over the card's queues with it)", nic, udp)
 	return out
 }
