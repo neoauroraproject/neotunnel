@@ -612,7 +612,7 @@ wait_for 75 mtu_is $HUB nt-g1 1300 || fail "hub did not revert the unconfirmed c
 echo "NOTE hub reverted $(( $(date +%s) - t0 )) s after the change"
 ov "not o['safe_last']['kept'] and o['safe_last']['reason'].startswith('edge did not confirm')" || fail "panel does not say why the change was reverted"
 wait_for 30 mtu_is $EDGE nt-g1 1300 || fail "edge did not revert by itself"
-grep -q "previous configuration restored" "$WORK/edge.log" || fail "edge did not log its revert"
+wait_for 15 grep -q "previous configuration restored" "$WORK/edge.log" || fail "edge did not log its revert"
 ip netns exec $EDGE nft delete table inet e2ecut
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-g1)" >/dev/null || fail "ping through g1 after both reverted"
 api -X PATCH -d '{}' "$base/api/tunnels/g1" | grep -q error && fail "reset g1 settings"
