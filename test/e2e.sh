@@ -566,6 +566,8 @@ echo "NOTE restarted $(( $(date +%s) - t0 )) s after the loss began"
 wait_for 90 fwd_on u1 || { in_hub forward list; tail -20 "$WORK/hub.log"; fail "forward did not move to the backup after the restart didn't help"; }
 echo "NOTE moved to the backup $(( $(date +%s) - t0 )) s after the loss began"
 ov "'restarted' in ($g1h).get('action', '')" || fail "panel does not show the automatic restart"
+g1ev=$(api "$base/api/tunnels/g1/events")
+for k in health restart failover; do grep -q "\"kind\":\"$k\"" <<<"$g1ev" || { echo "$g1ev" | head -c 2000; fail "g1 event log lacks a $k event"; }; done
 [ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 through the backup u1"
 grep -q "forward g1 8083: now through u1" "$WORK/hub.log" || fail "switch to the backup not logged"
 ov "$f8083['backup'] == 'u1' and $f8083['active'] == 'u1'" || fail "panel does not show the backup as the active path"
