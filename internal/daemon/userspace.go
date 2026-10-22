@@ -11,6 +11,7 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
 	"neotunnel/internal/eoip"
+	"neotunnel/internal/events"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/health"
 	"neotunnel/internal/metrics"
@@ -319,8 +320,10 @@ func enforceQuotas(ts []config.Tunnel, store *traffic.Store, now time.Time, chan
 			diff = true
 			if over[t.Name] {
 				log.Printf("tunnel %s: monthly quota of %g GB used; down until next month", t.Name, t.QuotaGB)
+				events.Add(events.Event{Tunnel: t.Name, Kind: events.Quota, To: "blocked", Auto: true})
 			} else if t.QuotaGB > 0 || engine.Blocked(t.Name) {
 				log.Printf("tunnel %s: back up, quota available", t.Name)
+				events.Add(events.Event{Tunnel: t.Name, Kind: events.Quota, To: "back", Auto: true})
 			}
 		}
 	}

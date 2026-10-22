@@ -198,7 +198,7 @@
     open: null, tset: {}, edit: false, fwdEdit: {},
     sec: store("nt-settings") || "node", defs: null,
     safe: store("nt-safe") === "1", safeSeen: store("nt-safe-seen") || "",
-    jobs: [], job: null, pv: {}, upgrading: {}, restarting: {}, prates: {}, dtab: {}, mtu: {},
+    jobs: [], job: null, pv: {}, upgrading: {}, restarting: {}, prates: {}, dtab: {}, mtu: {}, ev: {}, evBusy: {}, tpr: store("nt-tpr") || "24h",
     speed: Object.assign({ tunnel: "", peer: "", only: BENCH.map((b) => b[0]), secs: 10, streams: 8 }, (() => { try { return JSON.parse(store("nt-speed") || "{}"); } catch { return {}; } })()),
     // Graphs: the dashboard's range and source, the statistics page's range
     // and subject (the server or one tunnel), the drawer's range.
@@ -633,7 +633,7 @@
   function pageHead() {
     const add = html`<button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button>`;
     switch (S.route) {
-      case "tunnels": return ["تانل‌ها", "روی هر تانل بزنید تا جزئیات و تنظیمات پیشرفته باز شود", add];
+      case "tunnels": return ["تانل‌ها", "روی هر تانل بزنید تا جزئیات، رویدادها و تنظیمات پیشرفته باز شود", html`<div class="seg" role="radiogroup" aria-label="بازه‌ی نمودار پینگ">${PRANGES.map(([k, l]) => html`<button type="button" role="radio" aria-checked="${S.tpr === k}" class="${S.tpr === k ? "on" : ""}" data-act="tpr" data-range="${k}">${l}</button>`)}</div>${add}`];
       case "servers": return ["سرورها", "سرورهای مقصد که از همین پنل مدیریت می‌شوند", html`<button class="btn" data-act="sync-all">${I.sync(16)} همگام‌سازی همه</button><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button>`];
       case "ports": return ["پورت‌ها", "پورت‌های این سرور و اینکه کاربر از کدام تانل به کجا می‌رسد", html`<button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button>`];
       case "stats": return ["آمار", "ترافیک، پینگ، پردازنده و حافظه در بازه‌های مختلف. هر نقطه میانگین همان بازه است و خط نازک بالای آن، اوج آن.", ""];
@@ -1224,14 +1224,15 @@
     const ts = visible();
     if (!ts.length) return html`<div class="panel"><div class="empty">${I.tunnel(32)}<b>هیچ تانلی وجود ندارد</b>با چند کلیک یک تانل 6to4 بسازید؛ اگر مسیر پروتکل‌ها را می‌بندد، روی پورت UDP یا با NeoObfs اجرایش کنید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div></div>`;
     const open = ts.find((t) => t.name === S.open);
-    return html`<div class="tcards">${ts.map(tunnelCard)}</div>
+    const pm = metrics(S.tpr, ts.map((t) => "p:" + t.name)), ps = (pm && pm.series) || {};
+    return html`<div class="tcards">${ts.map((t) => tunnelCard(t, ps["p:" + t.name]))}</div>
       ${open ? html`<section class="panel tdetail" data-key="td-${open.name}"><header><h2>${tname(open)}</h2>${open.managed ? "" : renameBtn("tunnel", open.name)}<span class="aside">${kindTitle(open)} به ${pname(open.peer) || open.far_ip}${open.label ? html` · شناسه <span class="ltr">${open.name}</span>` : ""}</span>
         <button class="btn sm ghost icon" data-act="toggle-tunnel" data-name="${open.name}" style="margin-inline-start:auto" aria-label="بستن">${I.x(16)}</button></header>${tunnelDetail(open)}</section>` : ""}`;
   }
 
   // One tunnel at a glance: state, where it goes, live traffic, health, and
   // the actions used most; the card opens its details below the grid.
-  function tunnelCard(t) {
+  function tunnelCard(t, pings) {
     const r = rate(t.name), open = S.open === t.name, [st, label] = status(t), h = t.health;
     const off = t.limits && t.limits.disabled, busy = S.restarting[t.name];
     const ping = off ? "" : h && h.probes >= 3 ? (h.passes ? ms(h.ping_ms) + (h.loss >= 1 ? ` · افت ${h.loss.toFixed(0)}٪` : "") : "بدون پاسخ") : "";
@@ -1241,6 +1242,7 @@
         <div class="tc-name"><b>${tname(t)}</b><span>${kindTitle(t)}${t.base_port ? ` · ${t.kind === "tcp" ? "TCP" : "UDP"} ${t.base_port}` : ""}</span></div>
         <div class="tc-dest">${I.server(14)} ${pname(t.peer) || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
         <div class="tc-rates"><div><span class="faint small">دانلود</span><b class="ltr" data-live="rx:${t.name}">${unitSmall(fmtRate(r.rx))}</b></div><div><span class="faint small">آپلود</span><b class="ltr" data-live="tx:${t.name}">${unitSmall(fmtRate(r.tx))}</b></div><div><span class="faint small">امروز</span><b class="ltr" data-live="today:${t.name}">${unitSmall(fmtBytes(t.today.rx + t.today.tx))}</b></div></div>
+        ${off ? "" : pingTrend(pings)}
         <div class="tc-tags">${profileTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}</div>
       </button>
       <footer class="tc-foot">
@@ -1253,13 +1255,68 @@
     </article>`;
   }
 
+  // A tunnel's history (package events), newest first; loaded when the tab
+  // opens and again every 15 seconds while it stays open.
+  function eventsPane(t) {
+    const e = S.ev[t.name];
+    if (!e || Date.now() - e.at > 15e3) loadEvents(t.name);
+    if (!e) return html`<div class="dpane muted" data-key="ev-${t.name}">در حال خواندن…</div>`;
+    if (!e.list.length) return html`<div class="dpane muted" data-key="ev-${t.name}">هنوز رویدادی ثبت نشده. از این نسخه به بعد، تغییر وضعیت، ری‌استارت‌ها، رفتن به پشتیبان و تغییرات تنظیمات اینجا نوشته می‌شوند.</div>`;
+    return html`<div class="dpane" data-key="ev-${t.name}"><ol class="evlog">${e.list.map((x) => { const [cls, text] = eventText(t, x); return html`<li class="${cls}"><i class="dot ${cls}"></i><div><span>${text}</span><small title="${F.dmhm.format(new Date(x.at * 1000))}">${F.dmhm.format(new Date(x.at * 1000))} · ${ago(x.at)}${x.auto ? " · خودکار" : ""}</small></div></li>`; })}</ol></div>`;
+  }
+
+  async function loadEvents(name) {
+    if (S.evBusy[name]) return;
+    S.evBusy[name] = true;
+    try { S.ev[name] = { at: Date.now(), list: await api("GET", `tunnels/${encodeURIComponent(name)}/events?limit=200`) }; } catch { S.ev[name] = { at: Date.now(), list: (S.ev[name] && S.ev[name].list) || [] }; }
+    S.evBusy[name] = false;
+    if (S.open === name && !S.edit) draw();
+  }
+
+  // One event in the panel's words, with its colour.
+  function eventText(t, x) {
+    const loss = x.loss ? ` (افت ${x.loss.toFixed(0)}٪)` : "";
+    const far = x.detail ? html`؛ سرور مقابل: <span class="ltr">${x.detail}</span>` : "";
+    switch (x.kind) {
+      case "health":
+        if (x.to === "down") return ["bad", "قطع شد: ترافیک رد نمی‌شود"];
+        if (x.to === "bad") return ["bad", `افت شدید${loss}`];
+        return ["ok", x.from === "down" ? "دوباره وصل شد" : "دوباره سالم شد"];
+      case "restart": return ["warn", html`${x.auto ? `ری‌استارت خودکار روی هر دو سرور${loss}` : "ری‌استارت دستی"}${far}`];
+      case "failover": {
+        const [ports, why] = (x.detail || "").split("|");
+        return x.to === t.name ? ["warn", html`پورت <span class="ltr">${ports}</span> از ${tlabel(x.from)} به این تانل آمد`] : ["warn", html`پورت <span class="ltr">${ports}</span> به ${tlabel(x.to)} رفت${why ? html` <span class="faint small ltr">(${why})</span>` : ""}`];
+      }
+      case "up": return ["ok", "تانل بالا آمد"];
+      case "error": return ["bad", html`خطا: <span class="ltr">${x.detail}</span>`];
+      case "created": return ["", `ساخته شد${x.detail ? ` (${x.detail})` : ""}`];
+      case "changed": return ["", { settings: "تنظیمات تغییر کرد", limits: "سقف سرعت یا حجم ماهانه تغییر کرد", label: "نام نمایشی عوض شد" }[x.detail] || "تغییر کرد"];
+      case "on": return ["ok", "روشن شد"];
+      case "off": return ["bad", "خاموش شد"];
+      case "quota": return x.to === "blocked" ? ["bad", "حجم ماهانه تمام شد؛ تا ماه بعد خاموش است"] : ["ok", "حجم آزاد شد؛ دوباره روشن شد"];
+    }
+    return ["", x.kind];
+  }
+
+  // A tunnel's ping over the page's range, for its card.
+  const PRANGES = [["1h", "۱ ساعت"], ["6h", "۶ ساعت"], ["24h", "۲۴ ساعت"]];
+  function pingTrend(s) {
+    if (!s || !s.a) return "";
+    const vals = s.a.filter((v) => v != null && v > 0);
+    if (vals.length < 2) return html`<div class="tc-ping faint small">هنوز پینگی در این بازه ثبت نشده</div>`;
+    const peaks = (s.pa || []).filter((v) => v != null && v > 0);
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length, lo = Math.min(...vals), hi = Math.max(...(peaks.length ? peaks : vals));
+    const range = (PRANGES.find(([k]) => k === S.tpr) || PRANGES[0])[1];
+    return html`<div class="tc-ping">${sparkline(s.a, { w: 300, h: 38, fit: true, points: 60 })}<span>پینگ ${range}: میانگین <b class="ltr">${ms(avg)}</b> · کمترین <b class="ltr">${ms(lo)}</b> · بیشترین <b class="ltr">${ms(hi)}</b></span></div>`;
+  }
+
   function tunnelDetail(t) {
     const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { noDF: !!t.settings.no_df, mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto", rate: t.limits.rate_mbit || "", quota: t.limits.quota_gb || "" }));
     const base = (t.stack && t.stack[0]) || { kind: t.kind };
     const crypto = ["wireguard", "obfs"].includes(base.kind);
     const m = S.mtu[t.name];
-    const tab = t.managed ? "overview" : (S.dtab[t.name] || "overview");
-    const tabs = [["overview", "نمای کلی"], ["limits", "محدودیت‌ها"], ["settings", "تنظیمات"]];
+    const tab = t.managed && S.dtab[t.name] !== "events" ? "overview" : (S.dtab[t.name] || "overview");
+    const tabs = t.managed ? [["overview", "نمای کلی"], ["events", "رویدادها"]] : [["overview", "نمای کلی"], ["events", "رویدادها"], ["limits", "محدودیت‌ها"], ["settings", "تنظیمات"]];
     return html`<div class="detail">
         <div class="row dbar">
           <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
@@ -1273,7 +1330,8 @@
           ${t.managed ? "" : html`<button class="btn sm ${t.limits.disabled ? "primary" : "ghost"}" data-act="tunnel-power" data-name="${t.name}">${I.power(15)} ${t.limits.disabled ? "روشن کردن" : "خاموش کردن"}</button>`}
           ${t.managed ? "" : html`<button class="btn sm danger" data-act="del-tunnel" data-name="${t.name}">${I.trash(15)} حذف</button>`}
         </div>
-      ${t.managed ? "" : html`<div class="seg dtabs" role="tablist">${tabs.map(([id, l]) => html`<button type="button" role="tab" aria-selected="${tab === id}" class="${tab === id ? "on" : ""}" data-act="dtab" data-name="${t.name}" data-tab="${id}">${l}</button>`)}</div>`}
+      ${html`<div class="seg dtabs" role="tablist">${tabs.map(([id, l]) => html`<button type="button" role="tab" aria-selected="${tab === id}" class="${tab === id ? "on" : ""}" data-act="dtab" data-name="${t.name}" data-tab="${id}">${l}</button>`)}</div>`}
+      ${tab === "events" ? eventsPane(t) : ""}
       ${tab === "overview" ? html`<div class="dpane stack" data-key="ov-${t.name}">
         <div class="figs">
           <div><div class="k">امروز</div><div class="v ltr" data-live="today:${t.name}">${fmtBytes(t.today.rx + t.today.tx)}</div></div>
@@ -2614,7 +2672,8 @@
       const d = S.open && $(".tdetail");
       if (d) d.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
     },
-    dtab(el) { S.dtab[el.dataset.name] = el.dataset.tab; draw(); },
+    dtab(el) { S.dtab[el.dataset.name] = el.dataset.tab; if (el.dataset.tab === "events") delete S.ev[el.dataset.name]; draw(); },
+    tpr(el) { S.tpr = el.dataset.range; store("nt-tpr", S.tpr); draw(); },
     "reset-tset"(el) { delete S.tset[el.dataset.name]; S.edit = false; draw(); },
     async mtu(el) {
       const n = el.dataset.name;

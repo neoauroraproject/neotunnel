@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"neotunnel/internal/agent"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/events"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/health"
@@ -110,6 +112,7 @@ func Run(ctx context.Context) error {
 	t := time.NewTicker(reconcileEvery)
 	defer t.Stop()
 	lastErr := ""
+	tunnelErrs := map[string]string{}
 	for {
 		st, err := config.Load()
 		if err != nil {
@@ -119,6 +122,7 @@ func Run(ctx context.Context) error {
 			for _, n := range res.Created {
 				log.Printf("tunnel up: %s", n)
 			}
+			logReconcile(st, res, tunnelErrs)
 			for _, n := range res.Removed {
 				log.Printf("tunnel removed: %s", n)
 			}
@@ -268,4 +272,42 @@ func register(ctx context.Context, id *identity.Identity, m *config.Managed) {
 		return nil
 	})
 	log.Printf("paired with master %s", m.Master.Name)
+}
+
+// logReconcile records the tunnels whose interface was (re)created and each
+// tunnel's apply error when it changes ("tunnel <name>: ..." errors), and
+// keeps the event log short.
+func logReconcile(st *config.State, res engine.Result, last map[string]string) {
+	ts, _ := st.Effective()
+	byIface := map[string]string{}
+	for _, t := range ts {
+		byIface[engine.Ifname(t.Name)] = t.Name
+	}
+	for _, n := range res.Created {
+		if t, ok := byIface[n]; ok {
+			events.Add(events.Event{Tunnel: t, Kind: events.Up, Auto: true})
+		}
+	}
+	now := map[string]string{}
+	for _, e := range res.Errors {
+		msg := e.Error()
+		if !strings.HasPrefix(msg, "tunnel ") {
+			continue
+		}
+		name, rest, ok := strings.Cut(strings.TrimPrefix(msg, "tunnel "), ": ")
+		if !ok {
+			continue
+		}
+		now[name] = rest
+		if last[name] != rest {
+			events.Add(events.Event{Tunnel: name, Kind: events.Error, Detail: rest, Auto: true})
+		}
+	}
+	for k := range last {
+		delete(last, k)
+	}
+	for k, v := range now {
+		last[k] = v
+	}
+	events.Trim()
 }

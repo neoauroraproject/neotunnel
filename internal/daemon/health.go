@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/events"
 	"neotunnel/internal/failover"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
@@ -67,6 +69,7 @@ func pingRound(ctx context.Context, addr string) (sent, got int, rtt time.Durati
 // (reconcile applies the move).
 func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracker, reconcile func()) {
 	rec := newRecovery()
+	classes := map[string]string{} // last logged health class, by tunnel
 	t := time.NewTicker(healthEvery)
 	defer t.Stop()
 	for {
@@ -94,6 +97,7 @@ func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracke
 			}
 			wg.Wait()
 			tr.Forget(keep)
+			logHealth(tr.Snapshot(), classes)
 			// Restart first: a tunnel it restarts starts its count over, so
 			// forwards move to a backup only if the restart didn't help.
 			rec.step(ctx, id, st, tr)
@@ -119,6 +123,10 @@ func failoverStep(st *config.State, hs map[string]health.State) bool {
 	made := failover.Step(ps, fs, hs, time.Now())
 	for k, s := range made {
 		log.Printf("forward %s: now through %s (%s)", k, s.To, s.Reason)
+		ports := k[strings.IndexByte(k, ' ')+1:]
+		for _, t := range []string{s.From, s.To} {
+			events.Add(events.Event{Tunnel: t, Kind: events.Failover, From: s.From, To: s.To, Detail: ports + "|" + s.Reason, Auto: true})
+		}
 	}
 	if len(made) > 0 || len(ps) != before {
 		if err := failover.Save(ps); err != nil {
@@ -143,4 +151,21 @@ func farInner(st *config.State, t config.Tunnel) (string, bool) {
 		return "", false
 	}
 	return a.Addr().String(), true
+}
+
+// logHealth records a tunnel's health moving between working (ok or
+// degraded), bad and down. A tunnel's first state after the daemon starts is
+// taken as it is, once enough probes back it.
+func logHealth(hs map[string]health.State, classes map[string]string) {
+	for name, h := range hs {
+		c := events.Class(h.Grade)
+		if c == "" || h.Probes < 2*roundSize {
+			continue
+		}
+		prev, seen := classes[name]
+		classes[name] = c
+		if seen && prev != c {
+			events.Add(events.Event{Tunnel: name, Kind: events.Health, From: prev, To: c, Loss: h.Loss})
+		}
+	}
 }

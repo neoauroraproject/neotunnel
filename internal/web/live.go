@@ -14,6 +14,7 @@ import (
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/events"
 	"neotunnel/internal/failover"
 	"neotunnel/internal/firewall"
 	"neotunnel/internal/fleet"
@@ -768,7 +769,13 @@ func (l *Live) MikroTik(name string) (string, error) {
 // RestartTunnel takes a tunnel and the layers under it down and up again,
 // on this node and on the far server, without changing any setting.
 func (l *Live) RestartTunnel(ctx context.Context, name string) error {
-	return manage.RestartTunnel(ctx, l.ID, name)
+	err := manage.RestartTunnel(ctx, l.ID, name)
+	e := events.Event{Tunnel: name, Kind: events.Restart}
+	if err != nil {
+		e.Detail = err.Error()
+	}
+	events.Add(e)
+	return err
 }
 
 func (l *Live) RandomPort(proto string) (uint16, error) {

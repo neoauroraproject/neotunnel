@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/events"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/pmtu"
 )
@@ -197,6 +198,7 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 		return config.Tunnel{}, Change{}, err
 	}
 	t, _ := st.Tunnel(name)
+	events.Add(events.Event{Tunnel: t.Name, Kind: events.Created, Detail: string(t.Kind)})
 	return *t, ch, nil
 }
 
@@ -420,6 +422,9 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 		}
 		return nil
 	})
+	if err == nil {
+		events.Add(events.Event{Tunnel: name, Kind: events.Changed, Detail: "settings"})
+	}
 	return ch, err
 }
 
@@ -674,6 +679,7 @@ func AddTunnel(t config.Tunnel) (config.Tunnel, Change, error) {
 		return t, Change{}, err
 	}
 	saved, _ := st.Tunnel(t.Name)
+	events.Add(events.Event{Tunnel: t.Name, Kind: events.Created, Detail: string(t.Kind)})
 	return *saved, ch, nil
 }
 
@@ -815,6 +821,18 @@ func SetLimits(name string, l Limits) (Change, error) {
 		top.Disabled, top.RateMbit, top.QuotaGB = l.Disabled, l.RateMbit, l.QuotaGB
 		return nil
 	})
+	if err == nil {
+		if t.Disabled != l.Disabled {
+			kind := events.On
+			if l.Disabled {
+				kind = events.Off
+			}
+			events.Add(events.Event{Tunnel: name, Kind: kind})
+		}
+		if t.RateMbit != l.RateMbit || t.QuotaGB != l.QuotaGB {
+			events.Add(events.Event{Tunnel: name, Kind: events.Changed, Detail: "limits"})
+		}
+	}
 	return ch, err
 }
 

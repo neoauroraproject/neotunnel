@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/events"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/manage"
@@ -94,6 +95,11 @@ func (r *recovery) step(ctx context.Context, id *identity.Identity, st *config.S
 				log.Printf("tunnel %s: restart on the far server: %v", name, err)
 			}
 			tr.Note(name, note)
+			e := events.Event{Tunnel: name, Kind: events.Restart, Auto: true, Loss: hs[name].Loss}
+			if err != nil {
+				e.Detail = err.Error()
+			}
+			events.Add(e)
 			r.mu.Lock()
 			delete(r.running, name)
 			r.mu.Unlock()

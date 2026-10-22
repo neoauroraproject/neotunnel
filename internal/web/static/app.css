@@ -950,3 +950,16 @@ main.main { animation: page-in 220ms var(--ease-out); }
 .upd-state > div { display: flex; flex-direction: column; gap: 4px; }
 .upd-state span { color: var(--ink-2); font-size: 13px; line-height: 1.7; }
 .upd-log { margin: 0; max-height: 240px; overflow: auto; padding: 12px 14px; border-radius: 12px; background: var(--card-2); border: 1px solid var(--line); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+
+/* ---------- tunnel events and ping trend ---------- */
+.tc-ping { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 2px; }
+.tc-ping .spark { width: 100%; height: 38px; }
+.tc-ping span { color: var(--ink-3); font-size: 11.5px; }
+.tc-ping b { color: var(--ink-2); font-weight: 600; }
+.evlog { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.evlog li { display: flex; align-items: flex-start; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); }
+.evlog li:last-child { border-bottom: 0; }
+.evlog li > .dot { margin-top: 6px; flex: none; }
+.evlog li > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.evlog li span { font-size: 13.5px; overflow-wrap: anywhere; }
+.evlog li small { color: var(--ink-3); font-size: 11.5px; }

@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"neotunnel/internal/config"
+	"neotunnel/internal/events"
 )
 
 // MaxLabel is the longest display name, in characters.
@@ -54,6 +55,9 @@ func SetTunnelLabel(name, label string) (Change, error) {
 		top.Label = label
 		return nil
 	})
+	if err == nil {
+		events.Add(events.Event{Tunnel: name, Kind: events.Changed, Detail: "label"})
+	}
 	return ch, err
 }
 
