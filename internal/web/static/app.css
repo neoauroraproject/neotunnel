@@ -963,3 +963,20 @@ main.main { animation: page-in 220ms var(--ease-out); }
 .evlog li > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .evlog li span { font-size: 13.5px; overflow-wrap: anywhere; }
 .evlog li small { color: var(--ink-3); font-size: 11.5px; }
+
+/* ---------- privacy, ping window, port monitor ---------- */
+html.private .sens { filter: blur(6px); transition: filter 200ms ease; }
+html.private .sens:hover { filter: blur(6px); }
+.modal.wide { width: min(900px, 100%); }
+.tc-ping { cursor: zoom-in; border-radius: 10px; padding: 4px; margin-inline: -4px; transition: background-color var(--t-fast) ease; }
+.tc-ping:hover { background: color-mix(in srgb, var(--card-2) 70%, transparent); }
+table.t tr.click { cursor: pointer; }
+table.t tr.click:hover td { background: color-mix(in srgb, var(--card-2) 60%, transparent); }
+.pmon .dl { color: var(--rx); }
+.pmon .ul { color: var(--tx); }
+
+.pmon td.acts { text-align: end; white-space: nowrap; }
+.pmon td.acts .btn + .btn { margin-inline-start: 6px; }
+.sec-split { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 28px 2px 12px; padding-top: 18px; border-top: 1px dashed var(--line-2); }
+.sec-split span { font-weight: 700; font-size: 15px; }
+.sec-split small { color: var(--ink-3); font-size: 12px; }

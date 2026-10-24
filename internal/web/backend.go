@@ -291,6 +291,9 @@ type ForwardView struct {
 	Rx    uint64       `json:"rx"`
 	Tx    uint64       `json:"tx"`
 	Today traffic.Pair `json:"today"`
+	Month traffic.Pair `json:"month"`
+	// Counted is when this port's totals start (unix seconds).
+	Counted int64 `json:"counted_since,omitempty"`
 	// Backup is the tunnel the forward moves to when Tunnel fails, Active
 	// the one it runs on now, Since when it last moved and Switches its
 	// recent moves, oldest first.

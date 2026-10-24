@@ -298,7 +298,7 @@ func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardVi
 			v.ProxyV = 2
 		}
 		if s, ok := sums[traffic.Port+f.Proto+"/"+f.Ports]; ok {
-			v.Rx, v.Tx, v.Today = s.Total.Rx, s.Total.Tx, s.Today
+			v.Rx, v.Tx, v.Today, v.Month, v.Counted = s.Total.Rx, s.Total.Tx, s.Today, s.Month, s.Since
 		}
 		if t, ok := tunnelByName(ts, f.Tunnel); ok {
 			me := 0
