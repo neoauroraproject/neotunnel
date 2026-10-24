@@ -1934,10 +1934,10 @@
   }
 
   // ---------- settings ----------
-  const SECS = [["node", "این سرور"], ["access", "دسترسی پنل"], ["defaults", "پیش‌فرض تانل‌ها"], ["net", "شبکه و سرعت"], ["guard", "فایروال"], ["fetch", "دانلودهای سرور"], ["traffic", "ترافیک"], ["maint", "پشتیبان و نگهداری"], ["about", "درباره"]];
+  const SECS = [["node", "این سرور"], ["access", "دسترسی پنل"], ["defaults", "پیش‌فرض تانل‌ها"], ["net", "شبکه و سرعت"], ["guard", "فایروال"], ["telegram", "تلگرام"], ["fetch", "دانلودهای سرور"], ["traffic", "ترافیک"], ["maint", "پشتیبان و نگهداری"], ["about", "درباره"]];
 
   function viewSettings() {
-    const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, guard: setGuard, fetch: setFetch, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
+    const pane = { node: setNode, access: setAccess, defaults: setDefaults, net: setNet, guard: setGuard, telegram: setTelegram, fetch: setFetch, traffic: setTraffic, maint: setMaint, about: setAbout }[S.sec] || setNode;
     return html`<div class="settings">
       <nav class="snav" aria-label="بخش‌های تنظیمات">${SECS.map(([k, l]) => html`<button class="${S.sec === k ? "on" : ""}" data-act="sec" data-sec="${k}">${l}</button>`)}</nav>
       <div class="spane" data-key="sec-${S.sec}">${pane()}</div></div>`;
@@ -2075,6 +2075,67 @@
 
   async function loadGuard() {
     try { S.gv = await api("GET", "guard"); if (S.route === "settings" && S.sec === "guard") draw(); } catch (e) { toast(e.message, "bad"); }
+  }
+
+  // The Telegram bot (package telegram): alerts, reports and port lookups.
+  const TG_ALERTS = [["down", "قطعی یا افت شدید تانل"], ["recover", "سالم شدن دوباره"], ["restart", "ری‌استارت خودکار"], ["failover", "رفتن پورت‌ها به تانل پشتیبان"], ["quota", "تمام شدن حجم ماهانه"], ["guard", "خاموش شدن خودکار فایروال"]];
+  const TG_EVERY = [["hourly", "هر ساعت"], ["daily", "هر روز"], ["weekly", "هر هفته (شنبه)"]];
+  function setTelegram() {
+    const v = S.tv;
+    if (!v) { loadTelegram(); return html`<div class="panel"><div class="in muted">در حال خواندن…</div></div>`; }
+    const s = v.settings, st = v.status;
+    const known = (u) => v.proxies.some((p) => p.url === u);
+    const d = S.td || (S.td = { on: !!s.on, token: "", route: !s.proxy ? "" : known(s.proxy) ? s.proxy : "custom", proxy: s.proxy || "", admins: (s.admins || []).join("\n"), mute: (s.mute || []).slice(), users: !!s.users, user_ports: s.user_ports || "", reports: (s.reports || []).map((r) => Object.assign({}, r)) });
+    const state = st.running ? html`<span class="state"><i class="dot ok"></i>فعال · <span class="ltr">@${st.username}</span></span>`
+      : st.error ? html`<span class="state"><i class="dot bad"></i>خطا</span>`
+      : s.on ? html`<span class="state"><i class="dot warn"></i>در حال اتصال…</span>`
+      : html`<span class="state"><i class="dot"></i>خاموش</span>`;
+    const link = s.link_code && st.username ? `https://t.me/${st.username}?start=${s.link_code}` : "";
+    const reports = d.reports.map((r, i) => html`<div class="tg-rep" data-key="rep-${i}">
+        <select class="input sm" data-bind="td.reports.${i}.every" aria-label="دوره">${TG_EVERY.map(([k, l]) => html`<option value="${k}" ${r.every === k ? "selected" : ""}>${l}</option>`)}</select>
+        ${r.every === "hourly" ? html`<input class="input sm ltr" data-bind="td.reports.${i}.at" value="${r.at || ""}" placeholder="00:00" title="دقیقه‌ی هر ساعت؛ فقط دقیقه به کار می‌رود" style="width:84px">`
+          : html`<input class="input sm ltr" type="time" data-bind="td.reports.${i}.at" value="${r.at || "09:00"}" aria-label="ساعت (به وقت تهران)" style="width:132px">`}
+        <input class="input sm ltr grow" data-bind="td.reports.${i}.ports" value="${r.ports || ""}" placeholder="همه‌ی پورت‌ها" aria-label="پورت‌ها">
+        <label class="switch sm"><input type="checkbox" data-act="st-check" data-path="td.reports.${i}.system" ${r.system ? "checked" : ""}>وضعیت سیستم</label>
+        <button class="btn sm ghost" data-act="tg-del-report" data-i="${i}" title="حذف">${I.trash ? I.trash(14) : "×"}</button></div>`);
+    return html`<div class="panel"><header><h2>ربات تلگرام</h2><span class="aside">${state}</span></header><div class="in stack">
+      <p class="help" style="margin:0">ربات هشدار قطعی، ری‌استارت و جابه‌جایی تانل‌ها را برای مدیرها می‌فرستد، گزارش مصرف را در زمان‌هایی که تعیین می‌کنید ارسال می‌کند، و هر کس شماره‌ی پورتش را بفرستد آمار دقیق ترافیک آن را می‌گیرد. یک ربات تازه در <a href="https://t.me/BotFather" target="_blank" rel="noopener" class="ltr">@BotFather</a> بسازید و توکنش را اینجا بگذارید.</p>
+      ${st.error ? html`<div class="note bad">${st.error}</div>` : ""}
+      <label class="switch"><input type="checkbox" data-act="st-check" data-path="td.on" ${d.on ? "checked" : ""}>ربات روشن</label>
+      <div class="grid2"><div class="field"><label for="tg-token">توکن ربات</label><input id="tg-token" class="input ltr" data-bind="td.token" value="${d.token}" autocomplete="off" placeholder="${v.token_set ? "ذخیره شده؛ برای تغییر، توکن تازه را بگذارید" : "123456789:AA..."}"></div>
+      <div class="field"><label for="tg-route">مسیر اتصال به تلگرام</label><select id="tg-route" class="input" data-bind="td.route">
+        <option value="" ${d.route === "" ? "selected" : ""}>مستقیم از همین سرور</option>
+        ${v.proxies.map((p) => html`<option value="${p.url}" ${d.route === p.url ? "selected" : ""}>از طریق تانل ${tname(S.ov.tunnels.find((t) => t.name === p.tunnel) || { name: p.tunnel })} (پروکسی داخلی)</option>`)}
+        <option value="custom" ${d.route === "custom" ? "selected" : ""}>پروکسی دلخواه…</option></select>
+        <span class="help">${v.proxies.length ? "پروکسی داخلی ترافیک ربات را از تانل رد می‌کند و از سرور خارج به تلگرام می‌رسد؛ برای سرور ایران که تلگرام رویش باز نیست." : "برای رد کردن ترافیک ربات از تانل، اول در صفحه‌ی پورت‌ها یک «پروکسی داخلی» بسازید."}</span></div>
+      ${d.route === "custom" ? html`<div class="field full"><label for="tg-proxy">آدرس پروکسی</label><input id="tg-proxy" class="input ltr" data-bind="td.proxy" value="${d.proxy}" placeholder="socks5://user:pass@127.0.0.1:1080"></div>` : ""}</div>
+      <div class="form-foot"><button class="btn primary" data-act="save-tg">ذخیره</button><button class="btn" data-act="tg-test" ${v.token_set && (s.admins || []).length ? "" : "disabled"}>پیام آزمایشی</button></div>
+    </div></div>
+    <div class="panel"><header><h2>مدیرها</h2><span class="aside">${(s.admins || []).length} نفر</span></header><div class="in stack">
+      <p class="help" style="margin:0">مدیرها همه‌ی هشدارها و گزارش‌ها را می‌گیرند و وضعیت همه‌ی تانل‌ها و پورت‌ها را می‌بینند. برای اضافه شدن، کد اتصال بسازید و آن را برای ربات بفرستید؛ کد ۱۵ دقیقه و فقط یک بار کار می‌کند.</p>
+      ${s.link_code ? html`<div class="note"><div>برای ربات بفرستید: <code class="ltr">/start ${s.link_code}</code></div>${link ? html`<div>یا این لینک را باز کنید: <a class="ltr" href="${link}" target="_blank" rel="noopener">${link}</a></div>` : ""}<div class="faint">تا ${F.hm.format(new Date(s.link_until * 1000))} معتبر است.</div></div>` : ""}
+      <div class="field"><label for="tg-admins">شناسه‌ی عددی مدیرها</label><textarea id="tg-admins" class="input ltr" rows="3" data-bind="td.admins" placeholder="123456789">${d.admins}</textarea><span class="help">هر خط یک شناسه. هر کس دکمه‌ی «🆔 شناسه‌ی من» را در ربات بزند شناسه‌اش را می‌بیند.</span></div>
+      <div class="form-foot"><button class="btn primary" data-act="save-tg">ذخیره</button><button class="btn" data-act="tg-code" ${v.token_set ? "" : "disabled"}>ساخت کد اتصال</button></div>
+    </div></div>
+    <div class="panel"><header><h2>هشدارها</h2></header><div class="in stack">
+      <div class="grid2">${TG_ALERTS.map(([k, l]) => html`<label class="switch"><input type="checkbox" data-act="td-alert" data-key="${k}" ${d.mute.includes(k) ? "" : "checked"}>${l}</label>`)}</div>
+      <span class="help">هر هشدار برای همه‌ی مدیرها فرستاده می‌شود؛ هشدار تکراری یک تانل در کمتر از یک دقیقه فرستاده نمی‌شود.</span>
+      <div class="form-foot"><button class="btn primary" data-act="save-tg">ذخیره</button></div>
+    </div></div>
+    <div class="panel"><header><h2>گزارش‌های زمان‌بندی‌شده</h2><span class="aside">به وقت تهران</span></header><div class="in stack">
+      ${reports.length ? html`<div class="stack" style="gap:8px">${reports}</div>` : html`<div class="muted">گزارشی تعریف نشده.</div>`}
+      <span class="help">گزارش ساعتی، مصرف یک ساعت گذشته را می‌فرستد؛ روزانه ۲۴ ساعت گذشته و هفتگی ۷ روز گذشته. پورت‌ها را خالی بگذارید تا همه بیایند، یا مثلاً <span class="ltr">443,8080-8090</span>. «وضعیت سیستم» سلامت تانل‌ها، پردازنده و ترافیک کارت شبکه را هم اضافه می‌کند.</span>
+      <div class="form-foot"><button class="btn primary" data-act="save-tg">ذخیره</button><button class="btn" data-act="tg-add-report">${I.plus ? I.plus(14) : "+"} گزارش تازه</button></div>
+    </div></div>
+    <div class="panel"><header><h2>کاربران عادی</h2></header><div class="in stack">
+      <label class="switch"><input type="checkbox" data-act="st-check" data-path="td.users" ${d.users ? "checked" : ""}>هر کسی ربات را استارت کند می‌تواند مصرف پورتش را ببیند</label>
+      <div class="field"><label for="tg-uports">پورت‌های قابل مشاهده</label><input id="tg-uports" class="input ltr" data-bind="td.user_ports" value="${d.user_ports}" placeholder="همه‌ی پورت‌ها" style="max-width:320px"><span class="help">کاربر شماره‌ی پورت را می‌فرستد و مصرف الان، امروز، ۲۴ ساعت و ۷ روز گذشته، این ماه و از ابتدا را می‌بیند. وضعیت تانل‌ها و پورت‌های دیگر را نمی‌بیند.</span></div>
+      <div class="form-foot"><button class="btn primary" data-act="save-tg">ذخیره</button></div>
+    </div></div>`;
+  }
+
+  async function loadTelegram() {
+    try { S.tv = await api("GET", "telegram"); if (S.route === "settings" && S.sec === "telegram") draw(); } catch (e) { toast(e.message, "bad"); }
   }
 
   async function loadFetch() {
@@ -2644,7 +2705,7 @@
   // data-bind paths: "wiz.port", "form.ports", "tset.<name>.mtu", "fwdEdit.<k>.mode", "defs.padding".
   function setPath(path, value) {
     const parts = path.split(".");
-    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs, fwdEditor: S.fwdEditor, fe: S.fe, ce: S.ce, gd: S.gd };
+    const roots = { wiz: S.wiz, form: S.form, speed: S.speed, tset: S.tset, fwdEdit: S.fwdEdit, defs: S.defs, fwdEditor: S.fwdEditor, fe: S.fe, ce: S.ce, gd: S.gd, td: S.td };
     let obj = roots[parts[0]];
     if (!obj) return;
     if (parts[0] === "fwdEdit") { obj = obj[parts.slice(1, -1).join(".")]; if (!obj) return; obj[parts[parts.length - 1]] = value; return; }
@@ -2676,6 +2737,7 @@
     if (t.dataset.act === "def-check") { S.defs[t.dataset.key] = t.checked; S.edit = true; }
     if (t.dataset.act === "fe-check") { S.fe[t.dataset.key] = t.checked; S.edit = true; }
     if (t.dataset.act === "gd-check") { S.gd[t.dataset.key] = t.checked; S.edit = true; draw(); }
+    if (t.dataset.act === "td-alert") { const m = S.td.mute.filter((x) => x !== t.dataset.key); S.td.mute = t.checked ? m : m.concat(t.dataset.key); S.edit = true; }
     if (t.dataset.act === "gd-port") { if (t.value === "auto") delete S.gd.ports[t.dataset.key]; else S.gd.ports[t.dataset.key] = t.value; S.edit = true; }
     if (t.dataset.act === "fe-group") { const g = S.fe.groups.filter((x) => x !== t.value); S.fe.groups = t.checked ? g.concat(t.value) : g; S.edit = true; }
     if (t.dataset.act === "restore-file" && t.files && t.files[0]) inspectBackup(t.files[0]);
@@ -2959,7 +3021,7 @@
     "run-test"() { startJob("test", S.speed.tunnel); },
     "run-bench"() { startJob("bench", S.speed.peer, S.speed.only); },
     async "cancel-job"() { if (S.job) await api("POST", `jobs/${S.job.id}/cancel`).catch(() => {}); },
-    sec(el) { S.sec = el.dataset.sec; store("nt-settings", S.sec); S.edit = false; S.defs = null; S.fetch = S.fe = S.cert = S.ce = S.restore = S.gv = S.gd = null; draw(); },
+    sec(el) { S.sec = el.dataset.sec; store("nt-settings", S.sec); S.edit = false; S.defs = null; S.fetch = S.fe = S.cert = S.ce = S.restore = S.gv = S.gd = S.tv = S.td = null; draw(); },
     async "save-guard"() {
       const g = S.gd, was = S.gv && S.gv.settings.on;
       const lines = (t) => String(t || "").split(/[\s,]+/).filter(Boolean);
@@ -2977,6 +3039,20 @@
         } else toast("ذخیره شد");
       } catch (e) { toast(e.message, "bad"); }
     },
+    async "save-tg"() {
+      const d = S.td;
+      const body = { on: !!d.on, token: d.token.trim(), proxy: d.route === "custom" ? d.proxy.trim() : d.route, admins: String(d.admins || "").split(/[\s,]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n !== 0),
+        mute: d.mute, users: !!d.users, user_ports: d.user_ports.trim(), reports: d.reports.map((r) => ({ every: r.every, at: r.every === "hourly" ? (r.at || "").trim() : (r.at || "09:00"), ports: (r.ports || "").trim(), system: !!r.system })) };
+      try { S.tv = await api("POST", "telegram", body); S.td = null; S.edit = false; draw(); toast("ذخیره شد"); setTimeout(loadTelegram, 3000); } catch (e) { toast(e.message, "bad"); }
+    },
+    async "tg-test"() {
+      try { await api("POST", "telegram/test"); toast("پیام آزمایشی فرستاده شد"); } catch (e) { toast(e.message, "bad"); }
+    },
+    async "tg-code"() {
+      try { S.tv = await api("POST", "telegram/code"); draw(); } catch (e) { toast(e.message, "bad"); }
+    },
+    "tg-add-report"() { S.td.reports.push({ every: "daily", at: "09:00", ports: "", system: true }); S.edit = true; draw(); },
+    "tg-del-report"(el) { S.td.reports.splice(+el.dataset.i, 1); S.edit = true; draw(); },
     async "guard-refresh"() { S.gd = null; S.edit = false; await loadGuard(); },
     async "guard-geo"() {
       S.gGeo = true; draw();

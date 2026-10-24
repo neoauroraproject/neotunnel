@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"neotunnel/internal/config"
@@ -30,6 +31,8 @@ const (
 	On       = "on"
 	Off      = "off"
 	Quota    = "quota" // To: "blocked" or "back"
+	// Guard: the firewall turned itself off (Tunnel is empty).
+	Guard = "guard"
 )
 
 // Event is one thing that happened to a tunnel.
@@ -50,7 +53,15 @@ const (
 	keepLines = 5000
 )
 
-var mu sync.Mutex
+var (
+	mu sync.Mutex
+	// hook, when set, hears every event added in this process (the daemon
+	// sends alerts from it).
+	hook atomic.Pointer[func(Event)]
+)
+
+// OnAdd sets the function that hears every event added in this process.
+func OnAdd(f func(Event)) { hook.Store(&f) }
 
 func path() string { return filepath.Join(config.Dir, "events.log") }
 
@@ -71,6 +82,9 @@ func Add(e Event) {
 	}
 	f.Write(append(b, '\n'))
 	f.Close()
+	if h := hook.Load(); h != nil {
+		go (*h)(e)
+	}
 }
 
 // Of returns a tunnel's events, newest first, at most limit.

@@ -7,6 +7,7 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
+	"neotunnel/internal/events"
 	"neotunnel/internal/guard"
 )
 
@@ -33,6 +34,7 @@ func watchGuard(ctx context.Context) {
 					return nil
 				})
 				log.Printf("firewall turned off again: the panel did not confirm it could still reach this server")
+				events.Add(events.Event{Kind: events.Guard, Auto: true})
 			}
 			if st != nil {
 				err := engine.ApplyGuard(st)

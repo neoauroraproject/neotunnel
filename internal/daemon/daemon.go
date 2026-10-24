@@ -29,6 +29,7 @@ import (
 	"neotunnel/internal/metrics"
 	"neotunnel/internal/probe"
 	"neotunnel/internal/safe"
+	"neotunnel/internal/telegram"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/web"
 )
@@ -102,6 +103,11 @@ func Run(ctx context.Context) error {
 	startPanel(id, store, history, tracker, hooks, poke)
 	go watchPeers(ctx, id)
 	go watchGuard(ctx)
+	go telegram.Watch(ctx, telegram.Deps{
+		Summaries: func() map[string]traffic.Summary { return store.Summaries(time.Now()) },
+		Metrics:   func(rng string, keys []string) metrics.View { return history.Query(rng, keys, time.Now()) },
+		Health:    tracker.Snapshot,
+	})
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)

@@ -45,6 +45,42 @@ type State struct {
 	// Guard is the firewall for this server's public interface (nil = off;
 	// see package guard).
 	Guard *Guard `json:"guard,omitempty"`
+	// Telegram is the bot that sends alerts and reports and answers
+	// questions about traffic (nil = off; see package telegram).
+	Telegram *Telegram `json:"telegram,omitempty"`
+}
+
+// Telegram configures the bot.
+type Telegram struct {
+	On    bool   `json:"on"`
+	Token string `json:"token,omitempty"`
+	// Admins are the chat IDs that get alerts and reports and may ask
+	// about everything.
+	Admins []int64 `json:"admins,omitempty"`
+	// Proxy carries the bot's traffic: "" goes direct, a socks5:// URL
+	// through that proxy (an internal proxy of this server goes through a
+	// tunnel and leaves from the far server).
+	Proxy string `json:"proxy,omitempty"`
+	// Mute lists alerts that are not sent: down, recover, restart,
+	// failover, quota, guard.
+	Mute []string `json:"mute,omitempty"`
+	// Users lets anyone who starts the bot look up a port's traffic, of
+	// UserPorts ("" = every forward).
+	Users     bool             `json:"users,omitempty"`
+	UserPorts string           `json:"user_ports,omitempty"`
+	Reports   []TelegramReport `json:"reports,omitempty"`
+	// LinkCode, until LinkUntil (unix), makes whoever sends /start <code>
+	// an admin.
+	LinkCode  string `json:"link_code,omitempty"`
+	LinkUntil int64  `json:"link_until,omitempty"`
+}
+
+// TelegramReport is a report sent to the admins on a schedule.
+type TelegramReport struct {
+	Every  string `json:"every"`            // hourly, daily or weekly (Saturdays)
+	At     string `json:"at,omitempty"`     // HH:MM, Tehran time (hourly: the minute)
+	Ports  string `json:"ports,omitempty"`  // "443,10400"; "" = every forward
+	System bool   `json:"system,omitempty"` // include tunnels, CPU and the card
 }
 
 // Guard keeps everything on the public interface closed except what this

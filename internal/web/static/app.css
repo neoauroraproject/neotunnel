@@ -980,3 +980,10 @@ table.t tr.click:hover td { background: color-mix(in srgb, var(--card-2) 60%, tr
 .sec-split { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 28px 2px 12px; padding-top: 18px; border-top: 1px dashed var(--line-2); }
 .sec-split span { font-weight: 700; font-size: 15px; }
 .sec-split small { color: var(--ink-3); font-size: 12px; }
+
+/* Telegram: one scheduled report per row */
+.tg-rep { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px; border: 1px solid var(--line); border-radius: 10px; }
+.tg-rep .grow { flex: 1 1 140px; min-width: 120px; }
+.tg-rep > .input { width: auto; flex: 0 0 auto; }
+.tg-rep > select.input { min-width: 150px; }
+.tg-rep > .input.grow { flex: 1 1 140px; }
