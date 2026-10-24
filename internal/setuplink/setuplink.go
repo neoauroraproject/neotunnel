@@ -107,6 +107,7 @@ func Accept(st *config.State, p *Payload, force bool) error {
 		return fmt.Errorf("setup key is older (revision %d) than the applied configuration (revision %d)", p.Revision, m.Revision)
 	}
 	if m == nil {
+		freeSelf(st, p)
 		if err := namesFit(st, p); err != nil {
 			return err
 		}
@@ -131,10 +132,8 @@ func Accept(st *config.State, p *Payload, force bool) error {
 	return nil
 }
 
-// namesFit refuses a new master whose servers go by a name this server
-// already answers to: its tunnels would look like they start here.
-func namesFit(st *config.State, p *Payload) error {
-	self := st.SelfNames()
+// otherNames are the names of the master and its other servers.
+func otherNames(p *Payload) map[string]bool {
 	names := map[string]bool{p.Master.Name: true}
 	for _, t := range p.Tunnels {
 		for _, sd := range t.Sides {
@@ -143,9 +142,40 @@ func namesFit(st *config.State, p *Payload) error {
 			}
 		}
 	}
+	return names
+}
+
+// freeSelf gives way when this server's own name is also the name of the
+// master or one of its servers (both were installed on hosts called the
+// same): while this server runs no tunnels of its own, its own name is
+// used for nothing, so it takes the name the master knows it by. The old
+// name stays as its display name.
+func freeSelf(st *config.State, p *Payload) {
+	if st.Self == "" || st.Self == p.Peer || !otherNames(p)[st.Self] {
+		return
+	}
+	if len(st.Tunnels) > 0 || len(st.Forwards) > 0 || len(st.Peers) > 0 {
+		return
+	}
+	for _, m := range st.Masters() {
+		if m.Self == p.Peer {
+			return
+		}
+	}
+	if st.Label == "" {
+		st.Label = st.Self
+	}
+	st.Self = p.Peer
+}
+
+// namesFit refuses a new master whose servers go by a name this server
+// already answers to: its tunnels would look like they start here.
+func namesFit(st *config.State, p *Payload) error {
+	self := st.SelfNames()
+	names := otherNames(p)
 	for n := range names {
 		if self[n] {
-			return fmt.Errorf("%q (%s) has a server named %q, which is also a name of this server; rename one of them first",
+			return fmt.Errorf("%q (%s) has a server named %q, which is also a name of this server (its own, used by its own tunnels, or the one another main server gave it); give one of them another name and try again",
 				p.Master.Name, identity.Fingerprint(p.Master.PublicKey), n)
 		}
 	}

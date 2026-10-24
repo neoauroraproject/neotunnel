@@ -283,11 +283,20 @@
           const p = prev[t.name];
           if (p && dt > 0 && t.rx >= p.rx && t.tx >= p.tx) S.rates[t.name] = { rx: ((t.rx - p.rx) * 8) / dt, tx: ((t.tx - p.tx) * 8) / dt };
         }
-        const pf = Object.fromEntries((S.ov.forwards || []).map((f) => [fwdKey(f), f]));
-        for (const f of ov.forwards || []) {
-          const p = pf[fwdKey(f)];
-          if (p && dt > 0 && f.rx >= p.rx && f.tx >= p.tx) S.prates[fwdKey(f)] = { rx: ((f.rx - p.rx) * 8) / dt, tx: ((f.tx - p.tx) * 8) / dt };
-        }
+      }
+      // Port counters move only when the daemon samples them (every 10 s),
+      // so a rate is taken between two changes, and kept until the next
+      // one, not dropped to zero by polls that land in between.
+      const seen = S.pseen || (S.pseen = {});
+      for (const f of ov.forwards || []) {
+        const k = fwdKey(f), p = seen[k];
+        // The first change after the page opens spans an unknown time.
+        if (!p) { seen[k] = { rx: f.rx, tx: f.tx, t: ov.time, fresh: true }; continue; }
+        if (f.rx !== p.rx || f.tx !== p.tx) {
+          const dt = (ov.time - p.t) / 1000;
+          if (!p.fresh && dt > 0 && f.rx >= p.rx && f.tx >= p.tx) S.prates[k] = { rx: ((f.rx - p.rx) * 8) / dt, tx: ((f.tx - p.tx) * 8) / dt };
+          seen[k] = { rx: f.rx, tx: f.tx, t: ov.time };
+        } else if (ov.time - p.t > 25e3) S.prates[k] = { rx: 0, tx: 0 };
       }
       S.ov = ov; S.live = true; S.authed = true;
       if (!S.updRun && Date.now() - (S.updAt || 0) > 3600e3) loadUpdate();

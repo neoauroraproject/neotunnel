@@ -104,3 +104,27 @@ func TestAcceptRules(t *testing.T) {
 		t.Error("--force should leave only the new master")
 	}
 }
+
+// Both servers installed on hosts called the same: the destination, which
+// runs no tunnels of its own, takes the name the master gives it.
+func TestSameNameAsMaster(t *testing.T) {
+	id := newID(t)
+	p := payload(1)
+	p.Master.Name = "hmray"
+	k, _ := Encode(id, p)
+	pd, _ := Decode(k)
+
+	st := &config.State{Self: "hmray"}
+	if err := Accept(st, pd, false); err != nil {
+		t.Fatalf("refused: %v", err)
+	}
+	if st.Self != "edge" || st.Label != "hmray" || st.IsSelf("hmray") {
+		t.Fatalf("self %q label %q", st.Self, st.Label)
+	}
+
+	// With tunnels of its own under that name, it can't give it up.
+	st = &config.State{Self: "hmray", Tunnels: []config.Tunnel{{Name: "own", Kind: config.KindGRE}}}
+	if Accept(st, pd, false) == nil {
+		t.Fatal("a main server with its own tunnels gave up its name")
+	}
+}

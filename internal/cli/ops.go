@@ -201,7 +201,9 @@ func applyKey(key string, force bool) error {
 	if err != nil {
 		return err
 	}
+	oldSelf := ""
 	st, err := config.Update(func(s *config.State) error {
+		oldSelf = s.Self
 		// The port the master will dial, picked before pairing tells it
 		// (on a new node, before its service ever ran).
 		config.EnsureAgentPort(s, config.TCPPortFree)
@@ -211,6 +213,9 @@ func applyKey(key string, force bool) error {
 		return err
 	}
 	success("configuration from %s accepted (revision %d, %d tunnel(s))", p.Master.Name, p.Revision, len(p.Tunnels))
+	if oldSelf != "" && st.Self != oldSelf {
+		info("%s also has a server named %q, so this server's ID is now %q (its name there); %q stays its display name", p.Master.Name, oldSelf, st.Self, oldSelf)
+	}
 	if n := len(st.Masters()); n > 1 {
 		info("this server is now managed by %d main servers", n)
 	}
