@@ -499,25 +499,21 @@
   const adLink = (a, placement, cls, body) => a.link
     ? html`<a class="${cls}" href="${a.link}" target="_blank" rel="noopener sponsored" data-ad="${a.id}" data-place="${placement}">${body}</a>` : "";
 
-  function adCard(a) {
+  function adCard(a, closable) {
     const art = `<svg viewBox="0 0 80 80">${[1, 2, 3].map((i) => `<circle class="ring r${i}" cx="40" cy="40" r="${8 + i * 9}"/>`).join("")}<circle cx="40" cy="40" r="7" fill="url(#ad-orb)"/><defs><radialGradient id="ad-orb"><stop offset="0" stop-color="var(--accent-2)"/><stop offset="1" stop-color="var(--accent)"/></radialGradient></defs></svg>`;
     return html`<div class="ad-glow" aria-hidden="true"></div>
       <div class="ad-art" aria-hidden="true">${raw(art)}</div>
       <div class="ad-text"><div class="ad-top"><span class="ad-tag">تبلیغ</span>${a.badge ? html`<span class="ad-badge">${a.badge}</span>` : ""}<h2 class="ad-title" dir="auto">${a.title}</h2></div>
         ${a.body ? html`<p class="ad-body" dir="auto">${a.body}</p>` : ""}</div>
-      ${adLink(a, "home", "ad-cta", html`<span>${a.button || "مشاهده"}</span>${I.arrow(16)}`)}`;
+      ${adLink(a, closable ? "sidebar" : "home", "ad-cta", html`<span>${a.button || "مشاهده"}</span>${I.arrow(16)}`)}
+      ${closable ? html`<button class="ad-x" data-act="ad-hide" aria-label="بستن تبلیغ" title="بستن تا ${AD_HIDE_H} ساعت">${I.x(14)}</button>` : ""}`;
   }
 
   function adStrip() {
     if (S.route === "dashboard" || adHidden()) return "";
     const a = ad("sidebar");
     if (!a) return "";
-    return html`<aside class="ad-strip" aria-label="تبلیغ" data-key="ad-strip">
-      <span class="ad-tag">تبلیغ</span>
-      <span class="ad-line" dir="auto"><b>${a.title}</b>${a.body ? html`<span class="ad-sub"> · ${a.body}</span>` : ""}</span>
-      ${adLink(a, "sidebar", "ad-go", html`${a.button || "مشاهده"} ${I.arrow(13)}`)}
-      <button class="ad-x" data-act="ad-hide" aria-label="بستن تبلیغ" title="بستن تا ${AD_HIDE_H} ساعت">${I.x(13)}</button>
-    </aside>`;
+    return html`<section class="card b-ad ad-page" aria-label="تبلیغ" data-key="ad-page">${adCard(a, true)}</section>`;
   }
 
   // The frame: brand, the pages as one row of tabs, and the few global
@@ -722,11 +718,11 @@
     return html`<div class="bento">
       <section class="card b-flow" aria-label="جریان ترافیک">${flowCard()}</section>
       <section class="card b-node" aria-label="این سرور">${nodeCard()}</section>
+      ${sp ? html`<section class="card b-ad" aria-label="تبلیغ" data-key="ad-${sp.id}">${adCard(sp)}</section>` : ""}
       <section class="card b-det" aria-label="جزئیات">${detailsCard()}</section>
       <section class="card b-nic" aria-label="کارت شبکه">${nicCard()}</section>
       <section class="card b-ping" aria-label="پینگ">${pingCard()}</section>
       <section class="card b-load" aria-label="بار سرور">${loadCard()}</section>
-      ${sp ? html`<section class="card b-ad" aria-label="تبلیغ" data-key="ad-${sp.id}">${adCard(sp)}</section>` : ""}
       <section class="card b-hist" aria-label="تاریخچه‌ی ترافیک">${histCard()}</section>
     </div>
     ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:14px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}`;
@@ -1738,8 +1734,23 @@
         <td class="ltr hide-sm"><b>${fmtBytes(month)}</b><div class="faint small">کل ${fmtBytes(f.rx + f.tx)}</div></td>
         <td class="acts"><button class="btn sm ghost icon" data-act="port-chart" data-key="${portKey(f)}" aria-label="نمودار ترافیک پورت ${f.ports}" title="نمودار ترافیک">${I.chart(15)}</button><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button><button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد ${f.ports}">${I.trash(15)}</button></td></tr>`;
     });
+    const cards = fs.map((f) => {
+      const k = f.tunnel + "|" + f.ports, r = prate(f), month = f.month ? f.month.rx + f.month.tx : 0;
+      return html`<article class="pcard" data-act="port-chart" data-key="${portKey(f)}">
+        <div class="pc-h"><b class="ltr pc-port">${f.ports}</b><span class="pc-proto">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</span><span class="grow"></span>
+          <button class="btn sm ghost icon" data-act="port-chart" data-key="${portKey(f)}" aria-label="نمودار ترافیک پورت ${f.ports}">${I.chart(15)}</button><button class="btn sm ghost icon" data-act="edit-fwd" data-key="${k}" aria-label="ویرایش ${f.ports}">${I.edit(15)}</button><button class="btn sm ghost icon danger" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد ${f.ports}">${I.trash(15)}</button></div>
+        <div class="pc-route">${tlabel(f.tunnel)} <span class="faint">به</span> ${pname(f.peer)} <span class="faint">·</span> <span class="ltr faint">${f.target}:${f.to || f.ports}</span></div>
+        ${f.backup ? html`<div class="pc-path">${fwdPath(f)}</div>` : ""}
+        <div class="pc-live ltr"><span class="dl">↓ ${fmtRate(r.rx)}</span><span class="ul">↑ ${fmtRate(r.tx)}</span></div>
+        <div class="pc-stats">
+          <div><span>امروز</span><b class="ltr">${fmtBytes(f.today.rx + f.today.tx)}</b><small class="ltr">↓ ${fmtBytes(f.today.rx)} · ↑ ${fmtBytes(f.today.tx)}</small></div>
+          <div><span>این ماه</span><b class="ltr">${fmtBytes(month)}</b></div>
+          <div><span>از ابتدا</span><b class="ltr">${fmtBytes(f.rx + f.tx)}</b></div>
+        </div></article>`;
+    });
     return html`<div class="panel"><header><h2>فورواردها</h2><span class="aside">${fs.length} پورت · ترافیک خود کاربران، پیش از سربار تانل</span></header>
-      <div class="tbl-wrap"><table class="t pmon"><thead><tr><th>پورت</th><th>تانل و مقصد</th><th class="hide-sm">حالت</th><th>الان</th><th>امروز</th><th class="hide-sm">این ماه</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="pcards">${cards}</div>
+      <div class="tbl-wrap pmon-wrap"><table class="t pmon"><thead><tr><th>پورت</th><th>تانل و مقصد</th><th class="hide-sm">حالت</th><th>الان</th><th>امروز</th><th class="hide-sm">این ماه</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
       <p class="help" style="margin:12px 18px 16px">روی هر ردیف بزنید تا نمودار ترافیک آن پورت در بازه‌های مختلف باز شود.</p></div>
       ${proxies}`;
   }
