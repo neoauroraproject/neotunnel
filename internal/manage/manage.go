@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -261,6 +262,10 @@ type ForwardRequest struct {
 	// "user:password" ("" = none; required off loopback).
 	Listen string `json:"listen,omitempty"`
 	Auth   string `json:"auth,omitempty"`
+	// WasTunnel and WasPorts name the forward UpdateForward changes when
+	// its tunnel or ports change ("" = the same as Tunnel and Ports).
+	WasTunnel string `json:"was_tunnel,omitempty"`
+	WasPorts  string `json:"was_ports,omitempty"`
 }
 
 func (r *ForwardRequest) check(st *config.State) error {
@@ -402,33 +407,51 @@ func AddForward(r ForwardRequest) (Change, error) {
 	return ch, err
 }
 
-// UpdateForward changes how the forward of ports on tunnel reaches the far
-// end (mode, PROXY protocol version, target port, protocol).
+// UpdateForward changes the forward of WasPorts on WasTunnel: its ports,
+// tunnel, how it reaches the far end (mode, PROXY protocol version, target
+// port, protocol), backup and, for a proxy, its address and password.
 func UpdateForward(r ForwardRequest) (Change, error) {
 	st, err := Node()
 	if err != nil {
 		return Change{}, err
 	}
+	r.Ports = strings.TrimSpace(r.Ports)
+	if r.WasTunnel == "" {
+		r.WasTunnel = r.Tunnel
+	}
+	if r.WasPorts == "" {
+		r.WasPorts = r.Ports
+	}
 	if err := r.check(st); err != nil {
 		return Change{}, err
 	}
 	t, _ := st.Tunnel(r.Tunnel)
-	_, ch, err := Commit(st.PeersOf(*t), func(s *config.State) error {
+	peers := st.PeersOf(*t)
+	if was, ok := st.Tunnel(r.WasTunnel); ok && r.WasTunnel != r.Tunnel {
+		// The old far end drops what it kept for the forward (its return path).
+		for _, p := range st.PeersOf(*was) {
+			if !slices.Contains(peers, p) {
+				peers = append(peers, p)
+			}
+		}
+	}
+	_, ch, err := Commit(peers, func(s *config.State) error {
 		for i, f := range s.Forwards {
-			if f.Node == s.Self && f.Tunnel == r.Tunnel && f.Ports == r.Ports {
+			if f.Node == s.Self && f.Tunnel == r.WasTunnel && f.Ports == r.WasPorts {
 				if t, ok := s.Tunnel(r.Tunnel); ok {
 					relaySecret(t, r.Mode)
 				}
 				if b, ok := s.Tunnel(r.Backup); ok {
 					relaySecret(b, r.Mode)
 				}
+				f.Tunnel, f.Ports = r.Tunnel, r.Ports
 				f.Proto, f.To, f.Mode, f.ProxyVersion, f.Backup = r.Proto, r.To, r.Mode, r.ProxyVersion, r.Backup
 				f.Listen, f.Auth = r.Listen, r.Auth
 				s.Forwards[i] = f
 				return portsFreeExcept(s, i)
 			}
 		}
-		return fmt.Errorf("no forward of %s on %s", r.Ports, r.Tunnel)
+		return fmt.Errorf("no forward of %s on %s", r.WasPorts, r.WasTunnel)
 	})
 	return ch, err
 }

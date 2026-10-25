@@ -113,6 +113,7 @@ func (l *Live) Overview() (Overview, error) {
 		Modes:    manage.Modes(),
 		Ciphers:  config.Ciphers(),
 		Defaults: st.D(),
+		NextName: manage.FreeName(st),
 		Install:  "curl -fsSL " + version.InstallURL + " | sudo bash",
 		Repo:     version.RepoURL,
 		Channel:  version.Channel,

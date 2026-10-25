@@ -81,3 +81,30 @@ func itoa(v uint32) string {
 		}
 	}
 }
+
+// This node's own "t1" and its main server's "t1" both run here: the
+// managed one takes a local name, its forwards and the tunnel over it too.
+func TestOwnNameClash(t *testing.T) {
+	a := &Managed{Master: MasterRef{Name: "iran1", PublicKey: "KEYA"}, Self: "tr", Tunnels: []Tunnel{
+		{Name: "t1-6", Kind: KindSIT, Sides: [2]Side{{Node: "iran1"}, {Node: "tr"}}, Net6: "fd77::/64"},
+		{Name: "t1", Kind: KindIPIP6, Over: "t1-6", Sides: [2]Side{{Node: "iran1"}, {Node: "tr"}}, Net4: "10.77.0.0/30"},
+	}, Forwards: []Forward{{Node: "iran1", Tunnel: "t1", Ports: "443"}}}
+	st := &State{Self: "tr", Managed: a, Tunnels: []Tunnel{
+		{Name: "t1", Kind: KindGRE, Sides: [2]Side{{Node: "tr"}, {Endpoint: "198.51.100.1"}}, Net4: "10.80.0.0/30"},
+	}}
+	ts, _ := st.Effective()
+	t1a := LocalName("t1", "KEYA")
+	var names []string
+	for _, x := range ts {
+		names = append(names, x.Name+"/"+x.KeyName()+"/"+x.Over)
+	}
+	if !slices.Equal(names, []string{"t1/t1/", "t1-6/t1-6/", t1a + "/t1/t1-6"}) {
+		t.Fatalf("running %v", names)
+	}
+	if fs := st.AllForwards(); len(fs) != 1 || fs[0].Tunnel != t1a {
+		t.Errorf("forwards %+v", fs)
+	}
+	if got, ok := st.ManagedFor("KEYA", "t1"); !ok || got.Name != t1a {
+		t.Errorf("ManagedFor %+v", got)
+	}
+}

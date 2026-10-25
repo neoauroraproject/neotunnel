@@ -987,3 +987,14 @@ table.t tr.click:hover td { background: color-mix(in srgb, var(--card-2) 60%, tr
 .tg-rep > .input { width: auto; flex: 0 0 auto; }
 .tg-rep > select.input { min-width: 150px; }
 .tg-rep > .input.grow { flex: 1 1 140px; }
+
+/* "i" beside a label, and the explanation it opens */
+.lbl-i { display: flex; align-items: center; gap: 6px; }
+.info-b { width: 18px; height: 18px; flex: none; border-radius: 99px; border: 1px solid var(--line); background: var(--card-2); color: var(--ink-3); font: italic 700 11px/1 Georgia, serif; cursor: pointer; display: inline-grid; place-items: center; padding: 0; transition: background-color var(--t-fast) ease, color var(--t-fast) ease; }
+.info-b:hover, .info-b.on { color: var(--ink); background: var(--card-3); }
+.info-pop { font-size: 12px; line-height: 1.7; color: var(--ink-2); background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.info-pop dl { margin: 0; }
+.info-pop dt { font-weight: 700; color: var(--ink); }
+.info-pop dt.on::after { content: " ✓"; color: var(--ok); }
+.info-pop dd { margin: 0 0 6px; }
+.info-pop p { margin: 0; }

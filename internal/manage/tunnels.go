@@ -170,7 +170,7 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 	}
 	st, ch, err := Commit(peers, func(s *config.State) error {
 		for i := range defs {
-			if _, dup := s.Tunnel(defs[i].Name); dup {
+			if usedNames(s)[defs[i].Name] {
 				return fmt.Errorf("tunnel %q already exists", defs[i].Name)
 			}
 			if err := s.Allocate(&defs[i]); err != nil {
@@ -646,17 +646,31 @@ func FreePort(st *config.State, kind config.Kind, peer string) uint16 {
 	return start
 }
 
-// FreeName returns the first unused default tunnel name (t1, t2, ...).
+// FreeName returns the first unused default tunnel name (t1, t2, ...): one
+// that neither this node's tunnels nor those its main servers run here use,
+// with the names of its stacked layers.
 func FreeName(st *config.State) string {
+	used := usedNames(st)
 	for i := 1; ; i++ {
 		n := fmt.Sprintf("t%d", i)
-		_, a := st.Tunnel(n)
-		_, b := st.Tunnel(n + "-6")
-		_, c := st.Tunnel(n + "-o")
-		if !a && !b && !c {
+		if !used[n] && !used[n+"-6"] && !used[n+"-o"] {
 			return n
 		}
 	}
+}
+
+// usedNames are the tunnel names this node knows: its own and the managed
+// ones it runs.
+func usedNames(st *config.State) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range st.Tunnels {
+		out[t.Name] = true
+	}
+	ts, _ := st.Effective()
+	for _, t := range ts {
+		out[t.Name] = true
+	}
+	return out
 }
 
 // AddTunnel saves a single tunnel built with NewTunnel.
@@ -666,7 +680,7 @@ func AddTunnel(t config.Tunnel) (config.Tunnel, Change, error) {
 		return t, Change{}, err
 	}
 	st, ch, err := Commit(pre.PeersOf(t), func(s *config.State) error {
-		if _, dup := s.Tunnel(t.Name); dup {
+		if usedNames(s)[t.Name] {
 			return fmt.Errorf("tunnel %q already exists", t.Name)
 		}
 		if err := s.Allocate(&t); err != nil {

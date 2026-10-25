@@ -141,6 +141,7 @@ type Overview struct {
 	Modes    []manage.Mode   `json:"modes"`
 	Ciphers  []config.Cipher `json:"ciphers"`
 	Defaults config.Defaults `json:"defaults"`
+	NextName string          `json:"next_name"` // what a new tunnel without a name is called
 	Errors   []string        `json:"errors,omitempty"`
 	Panel    PanelInfo       `json:"panel"`
 	Commands []CommandGroup  `json:"commands"`

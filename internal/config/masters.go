@@ -13,8 +13,9 @@ import (
 // in State.More.
 //
 // Each master names its tunnels on its own, so two of them may both have a
-// "t1". On this node the tunnels of the first master keep their names; those
-// of the others get a local name with a tag of their master (LocalName),
+// "t1", and so may this node. On this node the tunnels of the first master
+// keep their names unless one of its own tunnels has it; those of the others
+// get a local name with a tag of their master (LocalName),
 // used for interfaces and everything else local. The name both ends agree
 // on, which keys and wire protocols use, stays in Origin (KeyName).
 
@@ -99,10 +100,11 @@ func LocalName(name, key string) string {
 }
 
 // view returns a master's tunnels and forwards as this node runs them: with
-// local names when rename is set, and their master recorded.
-func (m *Managed) view(rename bool) ([]Tunnel, []Forward) {
+// local names when rename is set or the name is one of this node's own
+// tunnels (own), and their master recorded.
+func (m *Managed) view(rename bool, own map[string]bool) ([]Tunnel, []Forward) {
 	local := func(n string) string {
-		if !rename || n == "" {
+		if n == "" || !rename && !own[n] {
 			return n
 		}
 		return LocalName(n, m.Master.PublicKey)
@@ -110,8 +112,10 @@ func (m *Managed) view(rename bool) ([]Tunnel, []Forward) {
 	ts := make([]Tunnel, 0, len(m.Tunnels))
 	for _, t := range m.Tunnels {
 		t.MasterName, t.MasterKey = m.Master.Name, m.Master.PublicKey
-		if rename {
-			t.Origin, t.Name, t.Over = t.Name, local(t.Name), local(t.Over)
+		if n := local(t.Name); n != t.Name || rename {
+			t.Origin, t.Name, t.Over = t.Name, n, local(t.Over)
+		} else {
+			t.Over = local(t.Over)
 		}
 		ts = append(ts, t)
 	}
@@ -126,8 +130,9 @@ func (m *Managed) view(rename bool) ([]Tunnel, []Forward) {
 // managed returns every master's tunnels and forwards with local names, in
 // master order, each with the master's name for this node.
 func (s *State) managed() (ts []Tunnel, fs []Forward, selfOf []string) {
+	own := s.ownNames()
 	for i, m := range s.Masters() {
-		mts, mfs := m.view(i > 0)
+		mts, mfs := m.view(i > 0, own)
 		for range mts {
 			selfOf = append(selfOf, m.Self)
 		}
@@ -144,7 +149,7 @@ func (s *State) ManagedFor(key, name string) (Tunnel, bool) {
 		if m.Master.PublicKey != key {
 			continue
 		}
-		ts, _ := m.view(i > 0)
+		ts, _ := m.view(i > 0, s.ownNames())
 		for _, t := range ts {
 			if t.KeyName() == name {
 				return t, true
@@ -152,6 +157,17 @@ func (s *State) ManagedFor(key, name string) (Tunnel, bool) {
 		}
 	}
 	return Tunnel{}, false
+}
+
+// ownNames are the names of this node's own tunnels. A master's tunnel of
+// the same name (a "t1" of its own while this node has one) runs here under
+// a local name, like those of the other masters.
+func (s *State) ownNames() map[string]bool {
+	out := map[string]bool{}
+	for _, t := range s.Tunnels {
+		out[t.Name] = true
+	}
+	return out
 }
 
 // AllForwards lists every forward this node knows: its own and its

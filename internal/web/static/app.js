@@ -182,6 +182,17 @@
   const fwdVersion = (mode, o) => mode === "proxy" ? +o.pver : mode === "relay" ? +(o.rver || 0) : 0;
   const fwdProtos = (mode) => mode === "relay" ? ["tcp"] : ["both", "tcp", "udp"];
   const fwdProto = (mode, p) => mode === "relay" ? "tcp" : p;
+  // A small "i" beside a label that opens its explanation under it.
+  const infoBtn = (id) => html`<button type="button" class="info-b ${S.tip === id ? "on" : ""}" data-act="tip" data-id="${id}" aria-expanded="${S.tip === id}" aria-label="راهنما" title="راهنما">i</button>`;
+  const infoPop = (id, body) => S.tip === id ? html`<div class="info-pop" role="note">${body}</div>` : "";
+  // The forward mode picker; to a server without NeoTunnel only the modes
+  // that need nothing there.
+  function modeField(path, cur, remote, key = "mode") {
+    const id = path + "." + key, ms = Object.entries(MODES_FWD).filter(([v]) => !remote || (v !== "transparent" && v !== "relay"));
+    return html`<div class="field full"><span class="lbl lbl-i">حالت فوروارد ${infoBtn(id)}</span>
+      ${infoPop(id, html`<dl>${ms.map(([v, [l, d]]) => html`<dt class="${cur === v ? "on" : ""}">${l}</dt><dd>${d}</dd>`)}</dl>${remote ? html`<p>IP واقعی و رله TCP فقط وقتی سرور مقصد NeoTunnel دارد.</p>` : ""}`)}
+      <div class="seg">${ms.map(([v, [l]]) => html`<button type="button" class="${cur === v ? "on" : ""}" data-act="set" data-path="${id}" data-value="${v}">${l}</button>`)}</div></div>`;
+  }
   const BENCH = [
     ["direct", "مسیر مستقیم"], ["6to4", "6to4"], ["6to4-udp", "6to4 روی UDP"], ["6to4-gre", "6to4 + GRE6"],
     ["ipip", "IPIP"], ["gre", "GRE"], ["gretap", "GRETAP"], ["vxlan", "VXLAN"], ["geneve", "GENEVE"],
@@ -1483,7 +1494,7 @@
     const fs = (S.ov.forwards || []).filter((f) => f.tunnel === t.name || f.backup === t.name);
     if (t.managed) return "";
     return html`<div class="tfwd"><div class="tfwd-h"><b>پورت‌ها</b>${fs.length ? "" : html`<span class="faint small">هنوز پورتی از این تانل فوروارد نشده</span>`}<span class="grow"></span><button class="btn sm ghost" data-act="add-forward" data-tunnel="${t.name}">${I.plus(14)} فوروارد</button></div>
-      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">${f.mode === "socks" ? proxyAt(f) : `→ ${f.target}:${f.to || f.ports}`}</span>${fwdModeLabel(f)}${f.backup === t.name ? html`<span class="tag">پشتیبانِ ${tlabel(f.tunnel)}</span>` : ""}${fwdPath(f)}<span class="grow"></span>${f.mode === "socks" ? "" : html`<button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button>`}</div>`; })}</div>`;
+      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">${f.mode === "socks" ? proxyAt(f) : `→ ${f.target}:${f.to || f.ports}`}</span>${fwdModeLabel(f)}${f.backup === t.name ? html`<span class="tag">پشتیبانِ ${tlabel(f.tunnel)}</span>` : ""}${fwdPath(f)}<span class="grow"></span><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button></div>`; })}</div>`;
   }
 
   // Speed limit and monthly quota, with how much of the quota is used.
@@ -1597,8 +1608,10 @@
   function backupField(path, obj, name) {
     const cs = backupChoices(name);
     if (!cs.length && !obj.backup) return html`<div class="field full"><span class="lbl">تانل پشتیبان</span><span class="help">برای مسیر پشتیبان، یک تانل دیگر به همین سرور بسازید؛ اگر تانل اصلی ترافیک رد نکرد، این پورت خودکار از آن می‌رود.</span></div>`;
-    return html`<div class="field full"><label for="${path}-bk">تانل پشتیبان</label><select id="${path}-bk" class="input" data-bind="${path}.backup"><option value="">بدون پشتیبان</option>${cs.map((x) => html`<option value="${x.name}" ${obj.backup === x.name ? "selected" : ""}>${tname(x)} (${kindTitle(x)})</option>`)}</select>
-      <span class="help">اگر تانل اصلی ۳ پینگ پشت‌سرهم (حدود ۲۵ ثانیه) جواب ندهد، پورت به تانل پشتیبان می‌رود و وقتی اصلی حدود یک دقیقه سالم ماند برمی‌گردد. اتصال‌های باز روی همان مسیر قبلی می‌مانند.</span></div>`;
+    const id = path + ".backup";
+    return html`<div class="field full"><span class="lbl lbl-i"><label for="${path}-bk">تانل پشتیبان</label> ${infoBtn(id)}</span>
+      ${infoPop(id, html`<p>اگر تانل اصلی ۳ پینگ پشت‌سرهم (حدود ۲۵ ثانیه) جواب ندهد، پورت به تانل پشتیبان می‌رود و وقتی اصلی حدود یک دقیقه سالم ماند برمی‌گردد. اتصال‌های باز روی همان مسیر قبلی می‌مانند.</p>`)}
+      <select id="${path}-bk" class="input" data-bind="${path}.backup"><option value="">بدون پشتیبان</option>${cs.map((x) => html`<option value="${x.name}" ${obj.backup === x.name ? "selected" : ""}>${tname(x)} (${kindTitle(x)})</option>`)}</select></div>`;
   }
   // Which of its tunnels a forward with a backup runs on now.
   const fwdPath = (f) => !f.backup ? "" : f.active === f.backup
@@ -1611,26 +1624,37 @@
     return html`<div class="field full"><span class="lbl">تاریخچه‌ی جابه‌جایی مسیر</span>${ss.length ? html`<ul class="fhist">${ss.map((s) => html`<li><b>${s.from} ← ${s.to}</b><span class="faint small">${new Date(s.at * 1000).toLocaleString("fa-IR")} · ${ago(s.at)}</span><span class="faint small ltr">${s.reason}</span></li>`)}</ul>` : html`<span class="help">هنوز جابه‌جایی نداشته؛ همیشه از مسیر اصلی رفته.</span>`}</div>`;
   }
 
+  // Everything of a forward or a proxy can change: its tunnel, ports and how
+  // it reaches the far end.
   function fwdEditView() {
     const e = S.fwdEditor, f = S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === e.key);
-    if (!f) return html`${modalHead("ویرایش فوروارد")}<div class="body"><div class="note">این فوروارد دیگر وجود ندارد.</div></div>`;
-    const pv = e.mode === "proxy" ? [2, 1] : e.mode === "relay" ? [0, 2, 1] : [];
-    return html`${modalHead(html`ویرایش فوروارد <span class="ltr">${f.ports}</span>`)}
-      <div class="body">
-        <div class="field"><span class="lbl">حالت</span><div class="choices">${Object.entries(MODES_FWD).filter(([v]) => f.peer || (v !== "transparent" && v !== "relay")).map(([v, [l, d]]) => html`<button type="button" class="choice ${e.mode === v ? "on" : ""}" data-act="fwd-mode" data-value="${v}"><b>${l}</b><span>${d}</span></button>`)}</div></div>
-        ${pv.length ? html`<div class="field"><span class="lbl">هدر PROXY protocol</span><div class="seg">${pv.map((v) => html`<button type="button" class="${+e.pv === v ? "on" : ""}" data-act="set" data-path="fwdEditor.pv" data-value="${v}">${v ? "v" + v : "بدون هدر"}</button>`)}</div>
-          <span class="help">سرویس مقصد (nginx، HAProxy، Xray…) باید proxy_protocol را بپذیرد، وگرنه اتصال‌ها خراب می‌شوند.</span></div>` : ""}
-        <div class="grid2">
-          <div class="field"><label for="fe-to">پورت مقصد</label><input id="fe-to" class="input ltr" type="number" min="1" max="65535" data-bind="fwdEditor.to" value="${e.to}" placeholder="همان ${f.ports}"></div>
-          <div class="field"><span class="lbl">پروتکل</span><div class="seg">${fwdProtos(e.mode).map((v) => html`<button type="button" class="${fwdProto(e.mode, e.proto) === v ? "on" : ""}" data-act="set" data-path="fwdEditor.proto" data-value="${v}">${v === "both" ? "TCP + UDP" : v.toUpperCase()}</button>`)}</div></div>
-          ${backupField("fwdEditor", e, f.tunnel)}
-          ${f.backup ? html`<div class="field full"><span class="lbl">مسیر فعلی</span><div>${fwdPath(f)}</div></div>` : ""}
-          ${switchHistory(f)}
-        </div>
+    if (!f) return html`${modalHead("ویرایش پورت")}<div class="body"><div class="note">این فوروارد دیگر وجود ندارد.</div></div>`;
+    const socks = f.mode === "socks", ts = visible().filter((x) => !x.managed && (!socks || x.peer)), t = tunnel(e.tunnel), remote = t && !t.peer;
+    if (remote && (e.mode === "transparent" || e.mode === "relay")) e.mode = "nat";
+    if (e.backup && !backupChoices(e.tunnel).some((x) => x.name === e.backup)) e.backup = "";
+    const open = e.access === "all";
+    const tunnelSel = html`<div class="field full"><label for="fe-t">از طریق تانل</label><select id="fe-t" class="input" data-bind="fwdEditor.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${e.tunnel === x.name ? "selected" : ""}>${tname(x)} به ${pname(x.peer) || x.far_ip} (${kindTitle(x)})</option>`)}</select></div>`;
+    const body = socks ? html`<div class="grid2">${tunnelSel}
+        <div class="field"><label for="fe-p">پورت</label><div class="pf"><input id="fe-p" class="input ltr" type="number" min="1" max="65535" data-bind="fwdEditor.ports" value="${e.ports}"><button type="button" class="btn sm" data-act="random-port" data-path="fwdEditor.ports" data-proto="tcp" title="یک پورت آزاد تصادفی">${I.dice(14)} تصادفی</button></div></div>
+        <div class="field"><span class="lbl lbl-i">چه کسی وصل شود ${infoBtn("fe.access")}</span>${infoPop("fe.access", html`<p>فقط همین سرور: فقط برنامه‌های همین سرور (127.0.0.1). همه، با رمز: روی همه‌ی IPها گوش می‌دهد و پورتش در فایروال باز می‌شود.</p>`)}
+          <div class="seg"><button type="button" class="${open ? "" : "on"}" data-act="set" data-path="fwdEditor.access" data-value="local">فقط همین سرور</button><button type="button" class="${open ? "on" : ""}" data-act="set" data-path="fwdEditor.access" data-value="all">همه، با رمز</button></div></div>
+        ${open ? html`<div class="field"><label for="fe-u">نام کاربری</label><input id="fe-u" class="input ltr" data-bind="fwdEditor.user" value="${e.user}" autocomplete="off"></div>
+        <div class="field"><label for="fe-pw">رمز</label><input id="fe-pw" class="input ltr" data-bind="fwdEditor.pass" value="${e.pass}" autocomplete="off"></div>` : ""}
+        ${backupField("fwdEditor", e, e.tunnel)}</div>`
+      : html`<div class="grid2">${tunnelSel}
+        <div class="field"><label for="fe-p">پورت(های) این سرور</label><input id="fe-p" class="input ltr" data-bind="fwdEditor.ports" value="${e.ports}" placeholder="443, 2053-2096"></div>
+        <div class="field"><label for="fe-to">پورت مقصد</label><input id="fe-to" class="input ltr" type="number" min="1" max="65535" data-bind="fwdEditor.to" value="${e.to}" placeholder="همان پورت"></div>
+        <div class="field"><span class="lbl">پروتکل</span><div class="seg">${fwdProtos(e.mode).map((v) => html`<button type="button" class="${fwdProto(e.mode, e.proto) === v ? "on" : ""}" data-act="set" data-path="fwdEditor.proto" data-value="${v}">${v === "both" ? "TCP + UDP" : v.toUpperCase()}</button>`)}</div></div>
+        ${modeField("fwdEditor", e.mode, remote)}
+        ${pverField("fwdEditor", e, e.mode)}
+        ${backupField("fwdEditor", e, e.tunnel)}</div>`;
+    return html`${modalHead(html`ویرایش ${socks ? "پروکسی" : "پورت"} <span class="ltr">${f.ports}</span>`)}
+      <div class="body">${body}
+        ${f.backup ? html`<div class="field" style="margin-top:12px"><span class="lbl">مسیر فعلی</span><div>${fwdPath(f)}</div></div>` : ""}
+        ${switchHistory(f)}
         <div style="margin-top:12px">${safeField()}</div>
-        <div class="help">تغییر روی هر دو سرور اعمال می‌شود؛ اگر سرور مقصد در دسترس نبود، لینک تغییرات برای اجرای دستی نشان داده می‌شود.</div>
       </div>
-      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="save-fwd" ${S.fwdEditor.busy ? "disabled" : ""}>${I.check(16)} ذخیره</button></footer>`;
+      <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="save-fwd" ${e.busy ? "disabled" : ""}>${I.check(16)} ذخیره</button></footer>`;
   }
 
   // ---------- ports ----------
@@ -1650,15 +1674,13 @@
     return html`<div class="panel">${head}<div class="in proxies">${ps.map((f) => html`<div class="proxy">
         <div class="proxy-h"><b class="ltr">${proxyAt(f)}</b><span class="faint">از تانل</span> ${tlabel(f.tunnel)} <span class="faint">به</span> ${pname(f.peer)}
           ${f.auth ? html`<span class="tag">با رمز</span>` : html`<span class="tag">فقط همین سرور</span>`}${fwdPath(f)}<span class="grow"></span>
-          <button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف پروکسی">${I.trash(15)}</button></div>
+          <button class="btn sm" data-act="edit-fwd" data-key="${f.tunnel + "|" + f.ports}">${I.edit(14)} ویرایش</button><button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف پروکسی">${I.trash(15)}</button></div>
         ${["socks5", "http"].map((sc) => html`<div class="code small">${proxyURL(f, sc)}<button class="btn sm ghost icon" data-act="copy" data-text="${proxyURL(f, sc)}" aria-label="کپی">${I.copy(14)}</button></div>`)}
       </div>`)}<p class="help" style="margin:4px 0 0">نام دامنه‌ها روی سرور مقصد پیدا می‌شود. فقط TCP؛ برای SOCKS5 در برنامه‌ها گزینه‌ی «remote DNS» یا socks5h را بزنید.</p></div></div>`;
   }
 
   function viewPorts() {
     const all = S.ov.forwards, ps = all.filter((f) => f.mode === "socks"), fs = all.filter((f) => f.mode !== "socks");
-    const modes = html`<div class="panel" style="margin-top:16px"><header><h2>حالت‌های فوروارد</h2></header><div class="in"><dl class="kv" style="grid-template-columns:auto 1fr">
-      ${Object.values(MODES_FWD).map(([l, d]) => html`<dt><b style="color:var(--ink)">${l}</b></dt><dd style="text-align:start">${d}</dd>`)}</dl></div></div>`;
     const proxies = html`<div class="sec-split"><span>پروکسی‌های داخلی</span><small>جدا از پورت‌ها: برای برنامه‌های خود این سرور، نه برای کاربران</small></div>${proxiesPanel(ps)}`;
     if (!fs.length) return html`<div class="panel"><div class="empty">${I.ports(32)}<b>فورواردی تعریف نشده</b>ترافیک ورودی پورت‌های این سرور را از داخل تانل به سرور مقصد بفرستید.<br><button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button></div></div>${proxies}`;
     const rows = fs.map((f) => {
@@ -1675,7 +1697,7 @@
     return html`<div class="panel"><header><h2>فورواردها</h2><span class="aside">${fs.length} پورت · ترافیک خود کاربران، پیش از سربار تانل</span></header>
       <div class="tbl-wrap"><table class="t pmon"><thead><tr><th>پورت</th><th>تانل و مقصد</th><th class="hide-sm">حالت</th><th>الان</th><th>امروز</th><th class="hide-sm">این ماه</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
       <p class="help" style="margin:12px 18px 16px">روی هر ردیف بزنید تا نمودار ترافیک آن پورت در بازه‌های مختلف باز شود.</p></div>
-      ${modes}${proxies}`;
+      ${proxies}`;
   }
 
   // ---------- speed ----------
@@ -2161,7 +2183,7 @@
       <label class="switch"><input type="checkbox" data-act="def-check" data-key="mtu_probe" ${d.mtu_probe ? "checked" : ""}>اندازه‌گیری خودکار MTU مسیر</label>
       <label class="switch"><input type="checkbox" data-act="def-check" data-key="obfs" ${d.obfs ? "checked" : ""}>اجرای تانل‌ها روی لایه‌ی NeoObfs</label>
       <div class="field"><label for="d-pad">Padding پیش‌فرض NeoObfs (بایت)</label><input id="d-pad" class="input ltr" type="number" min="0" max="255" data-bind="defs.padding" value="${d.padding || ""}" placeholder="0" style="max-width:160px"></div>
-      <div class="field"><span class="lbl">IP کاربر در فورواردها</span><div class="seg">${Object.entries(MODES_FWD).map(([v, [l]]) => html`<button type="button" class="${d.forward_mode === v ? "on" : ""}" data-act="set" data-path="defs.forward_mode" data-value="${v}">${l}</button>`)}</div><span class="help">${MODES_FWD[d.forward_mode][1]}</span></div>
+      ${modeField("defs", d.forward_mode, false, "forward_mode")}
       <div class="form-foot"><button class="btn primary" data-act="save-defaults">ذخیره‌ی پیش‌فرض‌ها</button></div>
     </div></div>
     <div class="panel"><header><h2>بازیابی خودکار تانل‌ها</h2></header><div class="in stack">
@@ -2393,7 +2415,7 @@
         <div><span class="k">رمزنگاری</span>${sel.crypt}</div><div><span class="k">میکروتیک</span>${sel.mt}</div></div>
         <p class="help" style="margin:0">${sel.d}</p>` : ""}
       ${sel && sel.tcp ? html`<div class="note warn"><b>TCP آخرین راه است.</b> ترافیک کاربران (که خودش بیشتر TCP است) داخل یک اتصال TCP دیگر می‌رود؛ با هر بسته‌ی گم‌شده کل تانل منتظر ارسال دوباره می‌ماند و سرعت در مسیرِ با افت بسته خیلی پایین می‌آید. اول 6to4، GRE یا یک پروتکل روی UDP را امتحان کنید؛ اگر هیچ‌کدام رد نشد، TCP را انتخاب کنید.</div>` : ""}
-      <div class="field"><label for="w-name">نام تانل (اختیاری)</label><input id="w-name" class="input ltr" data-bind="wiz.name" value="${w.name}" placeholder="t1" maxlength="8" style="max-width:220px"><span class="help">خالی بگذارید تا خودکار انتخاب شود.</span></div>`;
+      <div class="field"><label for="w-name">نام تانل (اختیاری)</label><input id="w-name" class="input ltr" data-bind="wiz.name" value="${w.name}" placeholder="${S.ov.next_name || "t1"}" maxlength="8" style="max-width:220px"><span class="help">خالی بگذارید تا <b class="ltr">${S.ov.next_name || "t1"}</b> انتخاب شود.</span></div>`;
   }
 
   function wizProtect(w) {
@@ -2483,8 +2505,7 @@
         <div class="field"><label for="w-fwd">فوروارد پورت‌های این سرور (اختیاری)</label><input id="w-fwd" class="input ltr" data-bind="wiz.fwd" value="${w.fwd}" placeholder="443, 8443, 2053-2096"><span class="help">ترافیک این پورت‌ها از داخل تانل به مقصد می‌رود.</span></div>
         <div class="field"><label for="w-to">پورت مقصد (اختیاری)</label><input id="w-to" class="input ltr" type="number" data-bind="wiz.fwdTo" value="${w.fwdTo}" placeholder="همان پورت"><span class="help">مثلاً 2053 اینجا به 443 آن طرف.</span></div>
         <div class="field"><span class="lbl">پروتکل فوروارد</span><div class="seg">${fwdProtos(w.fmode).map((p) => html`<button type="button" class="${fwdProto(w.fmode, w.proto) === p ? "on" : ""}" data-act="set" data-path="wiz.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
-        <div class="field"><span class="lbl">حالت فوروارد</span><div class="seg">${Object.entries(MODES_FWD).filter(([v]) => w.dest !== "remote" || (v !== "transparent" && v !== "relay")).map(([v, [l]]) => html`<button type="button" class="${w.fmode === v ? "on" : ""}" data-act="set" data-path="wiz.fmode" data-value="${v}">${l}</button>`)}</div></div>
-        <div class="full help">${MODES_FWD[w.fmode][1]}</div>
+        ${modeField("wiz", w.fmode, w.dest === "remote", "fmode")}
         ${pverField("wiz", w, w.fmode)}
       </div>
       <details class="adv" ${w.adv ? "open" : ""} data-act="adv-toggle" data-name="">
@@ -2666,8 +2687,7 @@
           <div class="field"><label for="f-p">پورت(های) این سرور</label><input id="f-p" class="input ltr" data-bind="form.ports" value="${f.ports || ""}" placeholder="443, 2053-2096"></div>
           <div class="field"><label for="f-to">پورت مقصد (اختیاری)</label><input id="f-to" class="input ltr" type="number" data-bind="form.to" value="${f.to || ""}" placeholder="همان پورت"></div>
           <div class="field"><span class="lbl">پروتکل</span><div class="seg">${fwdProtos(f.mode).map((p) => html`<button type="button" class="${fwdProto(f.mode, f.proto || "both") === p ? "on" : ""}" data-act="set" data-path="form.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
-          <div class="field"><span class="lbl">حالت فوروارد</span><div class="seg">${Object.entries(MODES_FWD).filter(([v]) => !remote || (v !== "transparent" && v !== "relay")).map(([v, [l]]) => html`<button type="button" class="${f.mode === v ? "on" : ""}" data-act="set" data-path="form.mode" data-value="${v}">${l}</button>`)}</div></div>
-          <div class="full help">${MODES_FWD[f.mode][1]}</div>
+          ${modeField("form", f.mode, remote)}
           ${pverField("form", f, f.mode)}
           ${backupField("form", f, f.tunnel)}
         </div>` : html`<div class="muted">اول یک تانل بسازید.</div>`}</div>
@@ -2909,27 +2929,29 @@
     "edit-fwd"(el) {
       const f = S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === el.dataset.key);
       if (!f) return;
-      S.fwdEditor = { key: el.dataset.key, mode: f.mode, pv: f.proxy_version || (f.mode === "proxy" ? 2 : 0), to: f.to || "", proto: f.proto, backup: f.backup || "", safe: false, busy: false };
+      const pv = f.proxy_version || 0, cut = f.auth ? f.auth.indexOf(":") : -1;
+      S.tip = null;
+      S.fwdEditor = { key: el.dataset.key, tunnel: f.tunnel, ports: f.ports, to: f.to || "", proto: f.proto, mode: f.mode,
+        pver: f.mode === "proxy" ? pv || 2 : 2, rver: f.mode === "relay" ? pv : 0, backup: f.backup || "",
+        access: f.listen && f.listen !== "127.0.0.1" ? "all" : "local", user: cut < 0 ? "" : f.auth.slice(0, cut), pass: cut < 0 ? "" : f.auth.slice(cut + 1), busy: false };
       openModal(fwdEditView);
-    },
-    "fwd-mode"(el) {
-      const e = S.fwdEditor; e.mode = el.dataset.value;
-      if (e.mode === "proxy" && !+e.pv) e.pv = 2;
-      if (e.mode !== "proxy" && e.mode !== "relay") e.pv = 0;
-      drawModal();
     },
     "cancel-fwd"(el) { delete S.fwdEdit[el.dataset.key]; S.edit = false; draw(); },
     async "save-fwd"() {
       const e = S.fwdEditor, f = e && S.ov.forwards.find((x) => x.tunnel + "|" + x.ports === e.key);
       if (!f) return;
+      const socks = f.mode === "socks", open = e.access === "all";
+      const req = socks
+        ? { proto: "tcp", mode: "socks", listen: open ? (f.listen && f.listen !== "127.0.0.1" ? f.listen : "0.0.0.0") : "", auth: open || e.user ? `${(e.user || "").trim()}:${e.pass || ""}` : "" }
+        : { proto: fwdProto(e.mode, e.proto), to: +e.to || 0, mode: e.mode, proxy_version: fwdVersion(e.mode, e) };
       e.busy = true; drawModal();
       try {
-        const ch = await api("POST", "forwards/update" + safeQ(), { tunnel: f.tunnel, ports: f.ports, proto: fwdProto(e.mode, e.proto), to: +e.to || 0, mode: e.mode,
-          proxy_version: e.mode === "proxy" ? +e.pv || 2 : e.mode === "relay" ? +e.pv || 0 : 0, backup: e.backup || "" });
+        const ch = await api("POST", "forwards/update" + safeQ(), Object.assign(req, { was_tunnel: f.tunnel, was_ports: f.ports, tunnel: e.tunnel, ports: String(e.ports || "").trim(), backup: e.backup || "" }));
         S.modal = null; S.fwdEditor = null; drawModal();
-        await refresh(); reportChange(ch, "فوروارد ذخیره شد"); safeStarted(ch); draw();
-      } catch (err) { e.busy = false; drawModal(); toast(err.message, "bad"); }
+        await refresh(); reportChange(ch, socks ? "پروکسی ذخیره شد" : "پورت ذخیره شد"); safeStarted(ch); draw();
+      } catch (err) { e.busy = false; drawModal(); toast(errText(err.message), "bad"); }
     },
+    tip(el) { S.tip = S.tip === el.dataset.id ? null : el.dataset.id; if (el.closest(".modal")) drawModal(); else draw(); },
     async "safe-keep"(el) {
       try { const r = await api("POST", `safe/${el.dataset.id}/keep`); await refresh(); if (r.outcome && r.outcome.kept) toast("تغییر نگه داشته شد"); else if (r.pending) toast("پنل تأیید کرد؛ منتظر تأیید سرور مقابل…"); }
       catch (e) { toast(e.message, "bad"); await refresh(); }
