@@ -58,6 +58,7 @@ func (s *Server) routes(m *http.ServeMux) {
 	s.updateRoutes(m)
 	s.guardRoutes(m)
 	s.telegramRoutes(m)
+	s.adRoutes(m)
 	s.eventRoutes(m)
 	m.HandleFunc("GET /api/overview", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		ov, err := b.Overview()

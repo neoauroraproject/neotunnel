@@ -93,6 +93,7 @@
     out: (s) => svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M9 8l-4 4 4 4M5 12h11"/>', s),
     check: (s) => svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>', s),
     x: (s) => svg('<path d="M6 6l12 12M18 6 6 18"/>', s),
+    arrow: (s) => svg('<path d="M19 12H5"/><path d="m11 6-6 6 6 6"/>', s),
     dice: (s) => svg('<rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/>', s),
     edit: (s) => svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>', s),
     alert: (s) => svg('<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/>', s),
@@ -478,6 +479,47 @@
     </div></div>`;
   }
 
+  // ---------- sponsored ----------
+  // One message from the NeoAurora ads service, through this server (see
+  // web/ads.go): a card on the dashboard, a slim line on the other pages
+  // that can be closed for a few hours.
+  const AD_HIDE_H = 6;
+  function ad(placement) {
+    const a = S.ads || (S.ads = {});
+    const c = a[placement];
+    if (!c || (!c.busy && Date.now() - c.at > 15 * 60e3)) {
+      a[placement] = Object.assign({}, c, { busy: true, at: Date.now() });
+      api("GET", "ad?placement=" + placement)
+        .then((r) => { a[placement] = { ad: r.ad || null, at: Date.now() }; if (!S.edit && !(S.modal && !S.modal.passive)) draw(); })
+        .catch(() => { a[placement] = Object.assign({}, a[placement], { busy: false }); });
+    }
+    return a[placement] && a[placement].ad;
+  }
+  const adHidden = () => +(store("nt-ad-hide") || 0) > Date.now();
+  const adLink = (a, placement, cls, body) => a.link
+    ? html`<a class="${cls}" href="${a.link}" target="_blank" rel="noopener sponsored" data-ad="${a.id}" data-place="${placement}">${body}</a>` : "";
+
+  function adCard(a) {
+    const art = `<svg viewBox="0 0 80 80">${[1, 2, 3].map((i) => `<circle class="ring r${i}" cx="40" cy="40" r="${8 + i * 9}"/>`).join("")}<circle cx="40" cy="40" r="7" fill="url(#ad-orb)"/><defs><radialGradient id="ad-orb"><stop offset="0" stop-color="var(--accent-2)"/><stop offset="1" stop-color="var(--accent)"/></radialGradient></defs></svg>`;
+    return html`<div class="ad-glow" aria-hidden="true"></div>
+      <div class="ad-art" aria-hidden="true">${raw(art)}</div>
+      <div class="ad-text"><div class="ad-top"><span class="ad-tag">تبلیغ</span>${a.badge ? html`<span class="ad-badge">${a.badge}</span>` : ""}<h2 class="ad-title" dir="auto">${a.title}</h2></div>
+        ${a.body ? html`<p class="ad-body" dir="auto">${a.body}</p>` : ""}</div>
+      ${adLink(a, "home", "ad-cta", html`<span>${a.button || "مشاهده"}</span>${I.arrow(16)}`)}`;
+  }
+
+  function adStrip() {
+    if (S.route === "dashboard" || adHidden()) return "";
+    const a = ad("sidebar");
+    if (!a) return "";
+    return html`<aside class="ad-strip" aria-label="تبلیغ" data-key="ad-strip">
+      <span class="ad-tag">تبلیغ</span>
+      <span class="ad-line" dir="auto"><b>${a.title}</b>${a.body ? html`<span class="ad-sub"> · ${a.body}</span>` : ""}</span>
+      ${adLink(a, "sidebar", "ad-go", html`${a.button || "مشاهده"} ${I.arrow(13)}`)}
+      <button class="ad-x" data-act="ad-hide" aria-label="بستن تبلیغ" title="بستن تا ${AD_HIDE_H} ساعت">${I.x(13)}</button>
+    </aside>`;
+  }
+
   // The frame: brand, the pages as one row of tabs, and the few global
   // controls (connection state, theme, a new tunnel, sign out).
   function viewShell() {
@@ -505,6 +547,7 @@
           <div class="tools">${tools}</div></div>`}
         ${behindNote()}
         ${safeBanner()}
+        ${adStrip()}
         ${ov.errors && ov.errors.length ? html`<div class="note bad" style="margin-bottom:14px"><b>${I.alert(16)} مشکل در اعمال تنظیمات</b>${ov.errors.map((e) => { const t = errText(e); return t !== e ? html`<div>${t}<div class="mono faint small">${e}</div></div>` : html`<div class="mono">${e}</div>`; })}</div>` : ""}
         ${page()}
       </main>
@@ -675,7 +718,7 @@
   // it works (load), how the path behaves (ping), what the network card
   // carries, and how all of it moved over time (history).
   function viewDashboard() {
-    const ov = S.ov;
+    const ov = S.ov, sp = ad("home");
     return html`<div class="bento">
       <section class="card b-flow" aria-label="جریان ترافیک">${flowCard()}</section>
       <section class="card b-node" aria-label="این سرور">${nodeCard()}</section>
@@ -683,6 +726,7 @@
       <section class="card b-nic" aria-label="کارت شبکه">${nicCard()}</section>
       <section class="card b-ping" aria-label="پینگ">${pingCard()}</section>
       <section class="card b-load" aria-label="بار سرور">${loadCard()}</section>
+      ${sp ? html`<section class="card b-ad" aria-label="تبلیغ" data-key="ad-${sp.id}">${adCard(sp)}</section>` : ""}
       <section class="card b-hist" aria-label="تاریخچه‌ی ترافیک">${histCard()}</section>
     </div>
     ${!ov.node.bbr ? html`<div class="note warn" style="margin-top:14px">BBR روی این سرور فعال نیست. از <a href="#/settings" data-act="goto-sec" data-sec="net">تنظیمات شبکه</a> یکجا فعالش کنید.</div>` : ""}`;
@@ -3084,6 +3128,7 @@
     },
     "tg-add-report"() { S.td.reports.push({ every: "daily", at: "09:00", ports: "", system: true }); S.edit = true; draw(); },
     "tg-del-report"(el) { S.td.reports.splice(+el.dataset.i, 1); S.edit = true; draw(); },
+    "ad-hide"() { store("nt-ad-hide", String(Date.now() + AD_HIDE_H * 3600e3)); draw(); },
     async "guard-refresh"() { S.gd = null; S.edit = false; await loadGuard(); },
     async "guard-geo"() {
       S.gGeo = true; draw();
@@ -3154,6 +3199,8 @@
   };
 
   document.addEventListener("click", (e) => {
+    const sp = e.target.closest("a[data-ad]");
+    if (sp) api("POST", "ad/click", { id: sp.dataset.ad, placement: sp.dataset.place }).catch(() => {});
     const el = e.target.closest("[data-act]");
     if (!el || el.type === "checkbox" || el.tagName === "DETAILS") return;
     const fn = actions[el.dataset.act];

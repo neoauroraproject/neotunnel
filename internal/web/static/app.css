@@ -998,3 +998,42 @@ table.t tr.click:hover td { background: color-mix(in srgb, var(--card-2) 60%, tr
 .info-pop dt.on::after { content: " ✓"; color: var(--ok); }
 .info-pop dd { margin: 0 0 6px; }
 .info-pop p { margin: 0; }
+
+/* ---------- sponsored ---------- */
+.ad-tag { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 99px; border: 1px solid var(--line-2); color: var(--ink-3); font-size: 10.5px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+
+/* Dashboard: a low banner across the grid, above the traffic history. */
+.b-ad { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 14px 18px 14px 14px; padding-inline-start: 14px; isolation: isolate; animation: ad-in 420ms var(--ease-out) both; }
+.ad-glow { position: absolute; z-index: -1; inset: 0; pointer-events: none;
+  background: radial-gradient(360px 140px at 100% 50%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 70%),
+    radial-gradient(300px 120px at 0% 50%, color-mix(in srgb, var(--accent-2) 10%, transparent), transparent 70%); }
+.ad-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ad-badge { display: inline-flex; align-items: center; height: 20px; padding: 0 9px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); font-size: 10.5px; font-weight: 700; flex: none; }
+.ad-text { flex: 1; min-width: 0; }
+.ad-title { margin: 0; font-family: var(--display); font-weight: 400; font-size: 16px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-body { margin: 3px 0 0; color: var(--ink-2); font-size: 12.5px; line-height: 1.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-art { flex: none; width: 52px; height: 52px; }
+.ad-art svg { width: 100%; height: 100%; overflow: visible; }
+.ad-art .ring { fill: none; stroke: var(--accent); stroke-width: 1.4; opacity: calc(.6 - var(--i, 0) * .17); transform-origin: 40px 40px; animation: ad-ring 4.8s var(--ease-out) infinite; }
+.ad-art .r1 { --i: 0; } .ad-art .r2 { --i: 1; animation-delay: .5s; } .ad-art .r3 { --i: 2; animation-delay: 1s; stroke-dasharray: 2 5; }
+.ad-cta { flex: none; display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 99px; background: var(--ink); color: var(--card); font-weight: 700; font-size: 12.5px; text-decoration: none; transition: transform 160ms var(--ease-out), box-shadow 200ms ease; }
+.ad-cta svg { transition: transform 200ms var(--ease-out); }
+.ad-cta:hover { box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 35%, transparent); }
+.ad-cta:hover svg { transform: translateX(-3px); }
+.ad-cta:active { transform: scale(.97); }
+@keyframes ad-ring { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+
+/* Other pages: one slim line that can be closed. */
+.ad-strip { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 6px 6px 6px 12px; padding-inline-start: 12px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 14px;
+  background: linear-gradient(90deg, var(--card), color-mix(in srgb, var(--accent) 7%, var(--card))); font-size: 13px; animation: ad-in 360ms var(--ease-out) both; }
+.ad-line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-line b { font-weight: 700; }
+.ad-sub { color: var(--ink-2); }
+.ad-go { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 30px; padding: 0 12px; border-radius: 99px; color: var(--accent); font-weight: 700; font-size: 12.5px; text-decoration: none; white-space: nowrap; transition: background 160ms ease; }
+.ad-go:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ad-x { flex: none; width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 50%; background: none; color: var(--ink-3); cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+.ad-x:hover { background: var(--line); color: var(--ink); }
+
+@keyframes ad-in { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .b-ad, .ad-strip, .ad-art .ring { animation: none; } }
+@media (max-width: 760px) { .ad-sub, .b-ad .ad-art { display: none; } .ad-body { white-space: normal; } .b-ad { flex-wrap: wrap; } .ad-cta { margin-inline-start: auto; } }
