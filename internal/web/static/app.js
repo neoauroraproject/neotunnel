@@ -489,7 +489,7 @@
     const c = a[placement];
     if (!c || (!c.busy && Date.now() - c.at > 15 * 60e3)) {
       a[placement] = Object.assign({}, c, { busy: true, at: Date.now() });
-      api("GET", "ad?placement=" + placement)
+      api("GET", "spot?p=" + placement)
         .then((r) => { a[placement] = { ad: r.ad || null, at: Date.now() }; if (!S.edit && !(S.modal && !S.modal.passive)) draw(); })
         .catch(() => { a[placement] = Object.assign({}, a[placement], { busy: false }); });
     }
@@ -497,23 +497,23 @@
   }
   const adHidden = () => +(store("nt-ad-hide") || 0) > Date.now();
   const adLink = (a, placement, cls, body) => a.link
-    ? html`<a class="${cls}" href="${a.link}" target="_blank" rel="noopener sponsored" data-ad="${a.id}" data-place="${placement}">${body}</a>` : "";
+    ? html`<a class="${cls}" href="${a.link}" target="_blank" rel="noopener sponsored" data-hl="${a.id}" data-place="${placement}">${body}</a>` : "";
 
   function adCard(a, closable) {
-    const art = `<svg viewBox="0 0 80 80">${[1, 2, 3].map((i) => `<circle class="ring r${i}" cx="40" cy="40" r="${8 + i * 9}"/>`).join("")}<circle cx="40" cy="40" r="7" fill="url(#ad-orb)"/><defs><radialGradient id="ad-orb"><stop offset="0" stop-color="var(--accent-2)"/><stop offset="1" stop-color="var(--accent)"/></radialGradient></defs></svg>`;
-    return html`<div class="ad-glow" aria-hidden="true"></div>
-      <div class="ad-art" aria-hidden="true">${raw(art)}</div>
-      <div class="ad-text"><div class="ad-top"><span class="ad-tag">تبلیغ</span>${a.badge ? html`<span class="ad-badge">${a.badge}</span>` : ""}<h2 class="ad-title" dir="auto">${a.title}</h2></div>
-        ${a.body ? html`<p class="ad-body" dir="auto">${a.body}</p>` : ""}</div>
-      ${adLink(a, closable ? "sidebar" : "home", "ad-cta", html`<span>${a.button || "مشاهده"}</span>${I.arrow(16)}`)}
-      ${closable ? html`<button class="ad-x" data-act="ad-hide" aria-label="بستن تبلیغ" title="بستن تا ${AD_HIDE_H} ساعت">${I.x(14)}</button>` : ""}`;
+    const art = `<svg viewBox="0 0 80 80">${[1, 2, 3].map((i) => `<circle class="ring r${i}" cx="40" cy="40" r="${8 + i * 9}"/>`).join("")}<circle cx="40" cy="40" r="7" fill="url(#hl-orb)"/><defs><radialGradient id="hl-orb"><stop offset="0" stop-color="var(--accent-2)"/><stop offset="1" stop-color="var(--accent)"/></radialGradient></defs></svg>`;
+    return html`<div class="hl-glow" aria-hidden="true"></div>
+      <div class="hl-art" aria-hidden="true">${raw(art)}</div>
+      <div class="hl-text"><div class="hl-top"><span class="hl-tag">تبلیغ</span>${a.badge ? html`<span class="hl-badge">${a.badge}</span>` : ""}<h2 class="hl-title" dir="auto">${a.title}</h2></div>
+        ${a.body ? html`<p class="hl-body" dir="auto">${a.body}</p>` : ""}</div>
+      ${adLink(a, closable ? "sidebar" : "home", "hl-cta", html`<span>${a.button || "مشاهده"}</span>${I.arrow(16)}`)}
+      ${closable ? html`<button class="hl-x" data-act="spot-hide" aria-label="بستن تبلیغ" title="بستن تا ${AD_HIDE_H} ساعت">${I.x(14)}</button>` : ""}`;
   }
 
   function adStrip() {
     if (S.route === "dashboard" || adHidden()) return "";
     const a = ad("sidebar");
     if (!a) return "";
-    return html`<section class="card b-ad ad-page" aria-label="تبلیغ" data-key="ad-page">${adCard(a, true)}</section>`;
+    return html`<section class="card b-hl hl-page" aria-label="تبلیغ" data-key="hl-page">${adCard(a, true)}</section>`;
   }
 
   // The frame: brand, the pages as one row of tabs, and the few global
@@ -718,7 +718,7 @@
     return html`<div class="bento">
       <section class="card b-flow" aria-label="جریان ترافیک">${flowCard()}</section>
       <section class="card b-node" aria-label="این سرور">${nodeCard()}</section>
-      ${sp ? html`<section class="card b-ad" aria-label="تبلیغ" data-key="ad-${sp.id}">${adCard(sp)}</section>` : ""}
+      ${sp ? html`<section class="card b-hl" aria-label="تبلیغ" data-key="hl-${sp.id}">${adCard(sp)}</section>` : ""}
       <section class="card b-det" aria-label="جزئیات">${detailsCard()}</section>
       <section class="card b-nic" aria-label="کارت شبکه">${nicCard()}</section>
       <section class="card b-ping" aria-label="پینگ">${pingCard()}</section>
@@ -3138,7 +3138,7 @@
     },
     "tg-add-report"() { S.td.reports.push({ every: "daily", at: "09:00", ports: "", system: true }); S.edit = true; draw(); },
     "tg-del-report"(el) { S.td.reports.splice(+el.dataset.i, 1); S.edit = true; draw(); },
-    "ad-hide"() { store("nt-ad-hide", String(Date.now() + AD_HIDE_H * 3600e3)); draw(); },
+    "spot-hide"() { store("nt-ad-hide", String(Date.now() + AD_HIDE_H * 3600e3)); draw(); },
     async "guard-refresh"() { S.gd = null; S.edit = false; await loadGuard(); },
     async "guard-geo"() {
       S.gGeo = true; draw();
@@ -3209,8 +3209,8 @@
   };
 
   document.addEventListener("click", (e) => {
-    const sp = e.target.closest("a[data-ad]");
-    if (sp) api("POST", "ad/click", { id: sp.dataset.ad, placement: sp.dataset.place }).catch(() => {});
+    const sp = e.target.closest("a[data-hl]");
+    if (sp) api("POST", "spot/open", { id: sp.dataset.hl, placement: sp.dataset.place }).catch(() => {});
     const el = e.target.closest("[data-act]");
     if (!el || el.type === "checkbox" || el.tagName === "DETAILS") return;
     const fn = actions[el.dataset.act];

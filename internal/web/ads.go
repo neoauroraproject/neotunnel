@@ -102,8 +102,8 @@ func (c *adsCache) get(ctx context.Context, placement string) *Ad {
 }
 
 func (s *Server) adRoutes(m *http.ServeMux) {
-	m.HandleFunc("GET /api/ad", s.authed(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Query().Get("placement")
+	m.HandleFunc("GET /api/spot", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Query().Get("p")
 		if !adPlacements[p] {
 			fail(w, http.StatusBadRequest, "unknown placement")
 			return
@@ -116,7 +116,7 @@ func (s *Server) adRoutes(m *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ad": a})
 	}))
-	m.HandleFunc("POST /api/ad/click", s.authed(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("POST /api/spot/open", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			ID        string `json:"id"`
 			Placement string `json:"placement"`
