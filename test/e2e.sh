@@ -65,15 +65,9 @@ out=$(in_hub quick edge --address $EDGE_IP --forward 8080 --proto tcp)
 echo "$out"
 key=$(grep -o "NT1\.[^']*" <<<"$out" | head -1)
 [ -n "$key" ] || fail "no setup key printed"
-grep -Eq "curl -fsSk https://$HUB_IP:[0-9]+/dl/" <<<"$out" || fail "no install one-liner"
-grep -q "https://$HUB_IP:7710/dl/" <<<"$out" && fail "the install one-liner still uses the fixed port 7710"
-pass "main server printed the setup key and install one-liner"
-
-url=$(grep -Eo "https://$HUB_IP:[0-9]+/dl/[0-9a-f]*" <<<"$out" | head -1)
-sum=$(grep -o "echo '[0-9a-f]*" <<<"$out" | head -1 | cut -c7-)
-ip netns exec $EDGE curl -fsSk "$url" -o "$WORK/dl" || fail "binary download"
-echo "$sum  $WORK/dl" | sha256sum -c --quiet || fail "checksum of served binary"
-pass "binary served by master with matching checksum"
+grep -q "raw.githubusercontent.com/.*install.sh" <<<"$out" || fail "no GitHub install command"
+grep -q "/dl/" <<<"$out" && fail "the install-from-this-server command is still printed"
+pass "main server printed the setup key and the GitHub install command"
 
 # 2. The peer applies the setup key: tunnels come up and it pairs.
 in_edge apply "$key"
