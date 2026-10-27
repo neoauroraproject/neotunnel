@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"neotunnel"
+
 	"neotunnel/internal/agent"
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
@@ -109,6 +111,40 @@ func updateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&ver, "version", "", "install this release instead of the latest, e.g. v0.2.0")
 	return cmd
+}
+
+// setupCmd installs this very file the way install.sh does from GitHub:
+// the release file downloaded elsewhere and copied to the server is all
+// an offline install needs. Flags go to the installer (--no-panel, --port).
+func setupCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "setup [--no-panel] [--port N] [--no-boost] [--no-menu]",
+		Short:              "Install or upgrade NeoTunnel from this file, without internet (panel, service, everything)",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			for _, a := range args {
+				if a == "-h" || a == "--help" {
+					return cmd.Help()
+				}
+			}
+			if err := requireRoot(); err != nil {
+				return err
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			if exe, err = filepath.EvalSymlinks(exe); err != nil {
+				return err
+			}
+			c := exec.Command("bash", append([]string{"-s", "--", "--binary", exe}, args...)...)
+			c.Stdin, c.Stdout, c.Stderr = strings.NewReader(neotunnel.InstallScript), os.Stdout, os.Stderr
+			if err := c.Run(); err != nil {
+				return fmt.Errorf("setup failed: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // selfUpdate runs the official installer, which replaces the program,

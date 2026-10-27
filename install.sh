@@ -7,7 +7,8 @@
 #   --no-panel        install without the web panel (destination servers)
 #   --port N          panel port (default: a random free port)
 #   --version vX.Y.Z  install a specific release (default: latest)
-#   --binary PATH     offline install from a downloaded binary
+#   --binary PATH     offline install from a downloaded binary (the binary
+#                     does this itself: ./neotunnel-linux-amd64 setup)
 #   --no-boost        skip the network boost (BBR, fq, buffers)
 #   --no-menu         don't open the menu when done
 #
@@ -25,7 +26,7 @@ while [ $# -gt 0 ]; do
     --binary) BINARY="$2"; shift ;;
     --no-boost) BOOST=0 ;;
     --no-menu) MENU=0 ;;
-    -h|--help) sed -n '2,16p' "$0" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -78,7 +79,7 @@ else
   step "downloading $NAME ($VERSION)"
   fetch "$BASE/$NAME" "$TMP/$NAME" progress || die "download failed: $BASE/$NAME
   No access to GitHub from this server? Download the file elsewhere, copy it here and run:
-  sudo bash install.sh --binary ./$NAME"
+  chmod +x ./$NAME && sudo ./$NAME setup"
   fetch "$BASE/SHA256SUMS" "$TMP/SHA256SUMS.all" || die "could not download the checksums"
   grep " $NAME\$" "$TMP/SHA256SUMS.all" > "$TMP/SHA256SUMS" || die "no checksum for $NAME in the release"
 fi
@@ -98,7 +99,7 @@ for m in $MODULES; do modprobe "$m" 2>/dev/null || true; done
 printf '%s\n' $MODULES > /etc/modules-load.d/neotunnel.conf
 if ! command -v nft >/dev/null; then
   step "installing nftables"
-  (apt-get update -qq && apt-get install -y -qq nftables >/dev/null) || warn "could not install nftables; port forwarding needs it"
+  (apt-get update -qq && apt-get install -y -qq nftables) >/dev/null 2>&1 || warn "could not install nftables (no package mirror?); port forwarding needs it: apt install nftables"
 fi
 
 UPGRADE=0
