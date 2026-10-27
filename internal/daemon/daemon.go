@@ -36,6 +36,13 @@ import (
 
 const reconcileEvery = 15 * time.Second
 
+// After the service starts, a reconcile that fails is retried this often,
+// for this long (the network comes up after us on some boots).
+const (
+	bootRetryEvery = 2 * time.Second
+	bootRetryFor   = 3 * time.Minute
+)
+
 func Run(ctx context.Context) error {
 	id, err := identity.LoadOrCreate()
 	if err != nil {
@@ -103,6 +110,7 @@ func Run(ctx context.Context) error {
 	startPanel(id, store, history, tracker, hooks, poke)
 	go watchPeers(ctx, id)
 	go watchGuard(ctx)
+	go watchNet(ctx, poke)
 	go telegram.Watch(ctx, telegram.Deps{
 		Summaries: func() map[string]traffic.Summary { return store.Summaries(time.Now()) },
 		Metrics:   func(rng string, keys []string) metrics.View { return history.Query(rng, keys, time.Now()) },
@@ -117,6 +125,7 @@ func Run(ctx context.Context) error {
 
 	t := time.NewTicker(reconcileEvery)
 	defer t.Stop()
+	started := time.Now()
 	lastErr := ""
 	tunnelErrs := map[string]string{}
 	for {
@@ -141,6 +150,11 @@ func Run(ctx context.Context) error {
 				lastErr = ""
 			}
 			tryRegister(ctx, id, st)
+			// Just after a boot the network may still be coming up: while
+			// something fails, try again every few seconds, not every tick.
+			if res.Err() != nil && time.Since(started) < bootRetryFor {
+				time.AfterFunc(bootRetryEvery, poke)
+			}
 		}
 		select {
 		case <-ctx.Done():

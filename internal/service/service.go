@@ -18,6 +18,7 @@ const unit = `[Unit]
 Description=NeoTunnel tunnel manager
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

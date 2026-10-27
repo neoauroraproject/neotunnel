@@ -2359,9 +2359,8 @@
       <div class="body">
         ${intro || (s.paired ? html`<div class="note ok">این سرور متصل است و تغییرات خودکار روی آن اعمال می‌شود. اگر روزی در دسترس نبود، دستور زیر را روی <b>${where}</b> اجرا کنید تا همه‌چیز یکجا اعمال شود.</div>`
           : html`<div class="note warn">این سرور هنوز وصل نشده. یکی از دستورهای زیر را روی <b>${where}</b> با دسترسی root اجرا کنید؛ بعد از آن هر تغییری خودکار روی آن هم اعمال می‌شود.</div>`)}
-        ${s.install ? codeBlock("۱. نصب از همین سرور و اعمال تنظیمات (پیشنهادی)", s.install, s.peer) : ""}
-        ${s.github ? codeBlock("۲. یا نصب از گیت‌هاب و اعمال تنظیمات", s.github, s.peer) : ""}
-        ${codeBlock(s.install ? "۳. اگر NeoTunnel از قبل نصب است" : "اعمال همه‌ی تنظیمات (همگام‌سازی دستی)", s.apply, s.peer)}
+        ${s.github ? codeBlock("۱. نصب از گیت‌هاب و اعمال تنظیمات", s.github, s.peer) : ""}
+        ${codeBlock(s.github ? "۲. اگر NeoTunnel از قبل نصب است" : "اعمال همه‌ی تنظیمات (همگام‌سازی دستی)", s.apply, s.peer)}
         <div class="help">کلید اتصال (NT1.…) با کلید این سرور امضا شده و رمزهای تانل‌ها را هم دارد؛ آن را فقط روی همان سرور اجرا کنید.</div>
       </div>
       <footer><span class="grow"></span><button class="btn primary" data-act="close">بستن</button></footer>`;

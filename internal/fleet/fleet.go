@@ -5,12 +5,10 @@ package fleet
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -74,10 +72,8 @@ type Setup struct {
 	Paired  bool   `json:"paired"`
 	Key     string `json:"key"`   // signed setup key (NT1....)
 	Apply   string `json:"apply"` // sudo neotunnel apply '<key>'
-	// Install downloads the binary from this master, verifies it and applies
-	// (only while the peer isn't paired).
-	Install string `json:"install,omitempty"`
-	// GitHub installs from the public release instead, then applies.
+	// GitHub installs the public release, then applies (only while the
+	// peer isn't paired).
 	GitHub string `json:"github,omitempty"`
 }
 
@@ -88,8 +84,8 @@ func randToken() string {
 }
 
 // MakeSetup builds a signed setup key for peer carrying its full configuration.
-// Unpaired peers also get a fresh enrollment token (valid EnrollTTL) and an
-// install one-liner that downloads this binary from the master and checks it.
+// Unpaired peers also get a fresh enrollment token (valid EnrollTTL) and a
+// one-liner that installs from GitHub and applies.
 func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
 	var token string
 	st, err := config.Update(func(s *config.State) error {
@@ -132,16 +128,6 @@ func MakeSetup(id *identity.Identity, peer string) (Setup, error) {
 	}
 	if token != "" {
 		s.GitHub = fmt.Sprintf("curl -fsSL %s | sudo bash -s -- --no-panel --no-menu && %s", version.InstallURL, s.Apply)
-		exe, err := os.Executable()
-		if err == nil {
-			if b, err := os.ReadFile(exe); err == nil {
-				sum := sha256.Sum256(b)
-				url := fmt.Sprintf("https://%s/dl/%s", net.JoinHostPort(st.Address, strconv.Itoa(st.ListenAgentPort())), token)
-				// -k is safe here: the checksum is verified before anything runs.
-				s.Install = fmt.Sprintf("curl -fsSk %s -o /tmp/neotunnel && echo '%x  /tmp/neotunnel' | sha256sum -c --quiet && sudo install -m 755 /tmp/neotunnel /usr/local/bin/neotunnel && rm /tmp/neotunnel && sudo neotunnel apply '%s'",
-					url, sum, key)
-			}
-		}
 	}
 	return s, nil
 }

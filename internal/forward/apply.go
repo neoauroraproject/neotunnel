@@ -19,6 +19,9 @@ var (
 	mu       sync.Mutex
 	lastSet  string
 	lastLoad time.Time
+	// lastFlows is where the loaded rules send each port (nil before the
+	// first load of this process: at start nothing is forgotten).
+	lastFlows map[string]string
 )
 
 func nft(script string) error {
@@ -66,6 +69,11 @@ func Apply(rs Ruleset) error {
 		return fmt.Errorf("downloads through the tunnel: %w", err)
 	}
 	lastSet, lastLoad = main+protect+fetch, time.Now()
+	flows := flowTargets(rs)
+	if lastFlows != nil {
+		forgetFlows(changedFlows(lastFlows, flows))
+	}
+	lastFlows = flows
 	return lerr
 }
 

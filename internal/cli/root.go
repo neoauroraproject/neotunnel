@@ -78,18 +78,14 @@ func printChange(ch manage.Change) {
 // printSetup shows the commands that bring a peer to the current state.
 func printSetup(peer string, s fleet.Setup) {
 	where := bold(peer) + " (" + s.Address + ")"
-	if s.Install != "" {
+	if s.GitHub != "" {
 		fmt.Println("  Run " + bold("one") + " of these on " + where + " as root:")
 		fmt.Println()
-		fmt.Println(accent("  1) ") + "install from this server and connect " + dim("(works without GitHub access)"))
-		fmt.Println()
-		fmt.Println(s.Install)
-		fmt.Println()
-		fmt.Println(accent("  2) ") + "or install from GitHub and connect")
+		fmt.Println(accent("  1) ") + "install from GitHub and connect")
 		fmt.Println()
 		fmt.Println(s.GitHub)
 		fmt.Println()
-		fmt.Println(dim("  NeoTunnel already installed there? Only the last part is needed:"))
+		fmt.Println(accent("  2) ") + "NeoTunnel already installed there? Only connect:")
 	} else {
 		fmt.Println("  " + where + " is connected; changes reach it automatically.")
 		fmt.Println("  If it was offline, run this on it to apply everything at once:")
