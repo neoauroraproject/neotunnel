@@ -65,7 +65,9 @@ printf '\n%s◆ NeoTunnel%s %sinstaller%s\n\n' "$c_acc" "$c_0" "$c_dim" "$c_0"
 if [ -n "$BINARY" ]; then
   step "using local binary $BINARY"
   cp "$BINARY" "$TMP/$NAME"
-  [ -f "$(dirname "$BINARY")/SHA256SUMS" ] && grep " $NAME\$" "$(dirname "$BINARY")/SHA256SUMS" > "$TMP/SHA256SUMS" || true
+  # The checksums may have been saved on Windows (CRLF) or written by
+  # "sha256sum -b" ("*name"): read them either way.
+  [ -f "$(dirname "$BINARY")/SHA256SUMS" ] && tr -d '\r' < "$(dirname "$BINARY")/SHA256SUMS" | sed 's/ \*/  /' | grep " $NAME\$" > "$TMP/SHA256SUMS" || true
 else
   if [ "$VERSION" = "latest" ]; then
     BASE="https://github.com/$REPO/releases/latest/download"
