@@ -7,6 +7,7 @@
 <a href="https://github.com/neoauroraproject/neotunnel/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/neoauroraproject/neotunnel/ci.yml?branch=main&style=flat-square&label=tests&labelColor=111111" alt="tests"></a>
 <img src="https://img.shields.io/badge/Ubuntu-20.04%2B-ececec?style=flat-square&labelColor=111111" alt="ubuntu">
 <a href="LICENSE"><img src="https://img.shields.io/github/license/neoauroraproject/neotunnel?style=flat-square&color=ececec&labelColor=111111" alt="license"></a>
+<a href="https://github.com/neoauroraproject/neotunnel/releases"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fneoauroraproject%2Fneotunnel%2Fbadges%2Finstalls.json&style=flat-square" alt="installs"></a>
 <a href="https://hits.sh/github.com/neoauroraproject/neotunnel/"><img src="https://hits.sh/github.com/neoauroraproject/neotunnel.svg?style=flat-square&label=views&color=f5a524&labelColor=111111" alt="views"></a>
 <a href="https://t.me/neoaurora"><img src="https://img.shields.io/badge/Telegram-NeoAurora-26a5e4?style=flat-square&logo=telegram&labelColor=111111" alt="telegram"></a>
 </p>
