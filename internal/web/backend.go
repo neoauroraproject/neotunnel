@@ -141,6 +141,7 @@ type Overview struct {
 	Modes    []manage.Mode   `json:"modes"`
 	Ciphers  []config.Cipher `json:"ciphers"`
 	Defaults config.Defaults `json:"defaults"`
+	Pools    []PoolView      `json:"pools"`
 	NextName string          `json:"next_name"` // what a new tunnel without a name is called
 	Errors   []string        `json:"errors,omitempty"`
 	Panel    PanelInfo       `json:"panel"`
@@ -173,6 +174,13 @@ type NodeInfo struct {
 	NIC      string       `json:"nic,omitempty"`
 	NICToday traffic.Pair `json:"nic_today"`
 	NICMonth traffic.Pair `json:"nic_month"`
+}
+
+// PoolView is an address pool in the panel.
+type PoolView struct {
+	config.AddressPool
+	Builtin bool `json:"builtin,omitempty"` // ready-made: can't be changed or removed
+	Tunnels int  `json:"tunnels"`           // tunnels that took their addresses from it
 }
 
 type MasterInfo struct {
@@ -210,15 +218,17 @@ type TunnelView struct {
 	Settings manage.Settings `json:"settings"`
 	BasePort uint16          `json:"base_port,omitempty"` // UDP port of the bottom layer
 	Obfs     bool            `json:"obfs,omitempty"`
-	Encrypt  string          `json:"encrypt,omitempty"`  // IPsec or the kind's own encryption
-	PathMTU  int             `json:"path_mtu,omitempty"` // measured, when probing
-	WGKey    string          `json:"wg_key,omitempty"`   // our WireGuard public key
-	VNI      uint32          `json:"vni,omitempty"`
-	Total    traffic.Pair    `json:"total"`
-	Today    traffic.Pair    `json:"today"`
-	Month    traffic.Pair    `json:"month"`
-	Tests    traffic.Pair    `json:"tests"`      // speed tests, not in the totals
-	Wire     uint64          `json:"wire_today"` // today's bytes on the network, overhead included
+	Encrypt  string          `json:"encrypt,omitempty"` // IPsec or the kind's own encryption
+	// AutoEncrypt: the daemon picks Encrypt by what passes (see Settings.Encrypt).
+	AutoEncrypt bool         `json:"auto_encrypt,omitempty"`
+	PathMTU     int          `json:"path_mtu,omitempty"` // measured, when probing
+	WGKey       string       `json:"wg_key,omitempty"`   // our WireGuard public key
+	VNI         uint32       `json:"vni,omitempty"`
+	Total       traffic.Pair `json:"total"`
+	Today       traffic.Pair `json:"today"`
+	Month       traffic.Pair `json:"month"`
+	Tests       traffic.Pair `json:"tests"`      // speed tests, not in the totals
+	Wire        uint64       `json:"wire_today"` // today's bytes on the network, overhead included
 	// Limits are the on/off switch, speed limit and monthly quota; Blocked
 	// means the quota ran out and the tunnel is down until next month.
 	Limits   manage.Limits `json:"limits"`
@@ -295,10 +305,12 @@ type ForwardView struct {
 	Month traffic.Pair `json:"month"`
 	// Counted is when this port's totals start (unix seconds).
 	Counted int64 `json:"counted_since,omitempty"`
-	// Backup is the tunnel the forward moves to when Tunnel fails, Active
-	// the one it runs on now, Since when it last moved and Switches its
-	// recent moves, oldest first.
+	// Backups are the tunnels the forward moves to when Tunnel fails, first
+	// choice first (Backup is the first of them, as older panels read it),
+	// Active the one it runs on now, Since when it last moved and Switches
+	// its recent moves, oldest first.
 	Backup   string            `json:"backup,omitempty"`
+	Backups  []string          `json:"backups,omitempty"`
 	Active   string            `json:"active"`
 	Since    int64             `json:"since,omitempty"`
 	Switches []failover.Switch `json:"switches,omitempty"`

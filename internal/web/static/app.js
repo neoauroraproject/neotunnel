@@ -84,6 +84,9 @@
     term: (s) => svg('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9 3 3-3 3M12.5 15H17"/>', s),
     gear: (s) => svg('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>', s),
     plus: (s) => svg('<path d="M12 5v14M5 12h14"/>', s),
+    up: (s) => svg('<path d="m6 15 6-6 6 6"/>', s),
+    down: (s) => svg('<path d="m6 9 6 6 6-6"/>', s),
+    grip: (s) => svg('<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>', s),
     trash: (s) => svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>', s),
     copy: (s) => svg('<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>', s),
     play: (s) => svg('<path d="M7 5v14l11-7z"/>', s),
@@ -210,7 +213,7 @@
     theme: store("nt-theme") || "dark",
     modal: null, wiz: null, form: {}, drawer: null,
     open: null, tset: {}, edit: false, fwdEdit: {},
-    sec: store("nt-settings") || "node", defs: null,
+    sec: store("nt-settings") || "node", defs: null, pe: null, portSort: store("nt-port-sort") || "manual",
     safe: store("nt-safe") === "1", safeSeen: store("nt-safe-seen") || "",
     jobs: [], job: null, pv: {}, upgrading: {}, restarting: {}, prates: {}, dtab: {}, mtu: {}, ev: {}, evBusy: {}, tpr: store("nt-tpr") || "24h", priv: store("nt-priv") === "1", pm: null, fm: null,
     speed: Object.assign({ tunnel: "", peer: "", only: BENCH.map((b) => b[0]), secs: 10, streams: 8 }, (() => { try { return JSON.parse(store("nt-speed") || "{}"); } catch { return {}; } })()),
@@ -418,6 +421,9 @@
   function actionText(h) {
     if (!h || !h.action) return "";
     const m = /lost (\d+)% of its probes for (\d+) rounds/.exec(h.action), far = /far server: (.*)\)$/.exec(h.action);
+    const moved = /^automatic encryption moved to (.*)$/.exec(h.action), stayed = /^automatic encryption stays on (.*?): /.exec(h.action);
+    if (moved) return `رمزنگاری خودکار رفت روی ${rungTitle(moved[1] === "no encryption" ? "" : moved[1])}`;
+    if (stayed) return `رمزنگاری خودکار روی ${rungTitle(stayed[1] === "no encryption" ? "" : stayed[1])} ماند: ${h.action.slice(stayed[0].length)}`;
     const what = h.action.startsWith("restarted") ? "ری‌استارت خودکار روی هر دو سرور" : h.action;
     return `${what}${m ? ` (افت ${m[1]}٪ در ${m[2]} دور بررسی)` : ""}${far ? `؛ سرور مقابل: ${far[1]}` : ""}`;
   }
@@ -1070,7 +1076,7 @@
       body = html`<header><div><h3>${tname(t)}</h3><div class="sub">${kindTitle(t)} به ${pname(t.peer) || "دستگاه دیگر"} <span class="ltr">${t.far_ip}</span></div></div>
           <button class="btn sm ghost icon" data-act="drawer-close" aria-label="بستن">${I.x(16)}</button></header>
         <div class="body">
-          <div class="row">${stateEl(t)}${healthTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : ""}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.managed ? html`<span class="tag warn">از سرور اصلی</span>` : ""}</div>
+          <div class="row">${stateEl(t)}${healthTag(t)}${t.auto_encrypt ? encryptTag(t) : t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : ""}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.managed ? html`<span class="tag warn">از سرور اصلی</span>` : ""}</div>
           <div class="figs">
             <div><div class="k">دانلود</div><div class="v ltr" data-live="rx:${t.name}">${fmtRate(r.rx)}</div></div>
             <div><div class="k">آپلود</div><div class="v ltr" data-live="tx:${t.name}">${fmtRate(r.tx)}</div></div>
@@ -1294,6 +1300,14 @@
   }
 
   // ---------- tunnels ----------
+  // A step of automatic encryption, and a tunnel's encryption as a tag.
+  const rungTitle = (r) => !r ? "بدون رمزنگاری" : r === "obfs" ? "NeoObfs" : cipherTitle(r);
+  function encryptTag(t) {
+    const now = t.encrypt ? cipherTitle(t.encrypt) : "";
+    if (t.auto_encrypt) return html`<span class="tag lock" title="رمزنگاری خودکار؛ اگر ترافیک رد نشود، مرحله‌ی بعد امتحان می‌شود">${I.lock(12)} خودکار${now ? " · " + now : " · بدون رمز"}</span>`;
+    return now ? html`<span class="tag lock">${I.lock(12)} ${now}</span>` : html`<span class="tag">بدون رمز</span>`;
+  }
+
   function viewTunnels() {
     const ts = visible();
     if (!ts.length) return html`<div class="panel"><div class="empty">${I.tunnel(32)}<b>هیچ تانلی وجود ندارد</b>با چند کلیک یک تانل 6to4 بسازید؛ اگر مسیر پروتکل‌ها را می‌بندد، روی پورت UDP یا با NeoObfs اجرایش کنید.<br><button class="btn primary" data-act="wizard">${I.plus(16)} تانل جدید</button></div></div>`;
@@ -1317,7 +1331,7 @@
         <div class="tc-dest">${I.server(14)} ${pname(t.peer) || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
         <div class="tc-rates"><div><span class="faint small">دانلود</span><b class="ltr" data-live="rx:${t.name}">${unitSmall(fmtRate(r.rx))}</b></div><div><span class="faint small">آپلود</span><b class="ltr" data-live="tx:${t.name}">${unitSmall(fmtRate(r.tx))}</b></div><div><span class="faint small">امروز</span><b class="ltr" data-live="today:${t.name}">${unitSmall(fmtBytes(t.today.rx + t.today.tx))}</b></div></div>
         ${off ? "" : pingTrend(pings && Object.assign({ name: t.name }, pings))}
-        <div class="tc-tags">${profileTag(t)}${t.encrypt ? html`<span class="tag lock">${I.lock(12)} ${cipherTitle(t.encrypt)}</span>` : html`<span class="tag">بدون رمز</span>`}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}</div>
+        <div class="tc-tags">${profileTag(t)}${encryptTag(t)}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}</div>
       </button>
       <footer class="tc-foot">
         <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(14)} تست</button>
@@ -1357,6 +1371,9 @@
         if (x.to === "bad") return ["bad", `افت شدید${loss}`];
         return ["ok", x.from === "down" ? "دوباره وصل شد" : "دوباره سالم شد"];
       case "restart": return ["warn", html`${x.auto ? `ری‌استارت خودکار روی هر دو سرور${loss}` : "ری‌استارت دستی"}${far}`];
+      case "cipher":
+        if (x.detail) return ["bad", html`رمزنگاری خودکار عوض نشد و روی ${rungTitle(x.from)} ماند: <span class="ltr">${x.detail}</span>`];
+        return ["warn", html`ترافیک رد نمی‌شد${loss}؛ رمزنگاری خودکار از ${rungTitle(x.from)} به ${rungTitle(x.to)} رفت و تانل ری‌استارت شد`];
       case "failover": {
         const [ports, why] = (x.detail || "").split("|");
         return x.to === t.name ? ["warn", html`پورت <span class="ltr">${ports}</span> از ${tlabel(x.from)} به این تانل آمد`] : ["warn", html`پورت <span class="ltr">${ports}</span> به ${tlabel(x.to)} رفت${why ? html` <span class="faint small ltr">(${why})</span>` : ""}`];
@@ -1466,9 +1483,11 @@
   }
 
   function tunnelDetail(t) {
-    const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { noDF: !!t.settings.no_df, mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto", rate: t.limits.rate_mbit || "", quota: t.limits.quota_gb || "" }));
+    const st = S.tset[t.name] || (S.tset[t.name] = Object.assign({ port: t.base_port || "" }, t.settings, { pmtud: t.settings.ignore_df ? "ignore" : t.settings.no_df ? "off" : "on", mtuMode: t.settings.mtu ? "manual" : t.settings.mtu_probe ? "probe" : "auto", rate: t.limits.rate_mbit || "", quota: t.limits.quota_gb || "" }));
     const base = (t.stack && t.stack[0]) || { kind: t.kind };
-    const crypto = ["wireguard", "obfs"].includes(base.kind);
+    const crypto = ["wireguard", "obfs"].includes(base.kind) && !t.auto_encrypt;
+    const autoOpt = html`<option value="auto" ${st.encrypt === "auto" ? "selected" : ""}>خودکار (هرچه رد شود)</option>`;
+    const autoHelp = st.encrypt === "auto" ? html`<span class="help">از ساده به پیشرفته: بدون رمز، بعد هر رمز IPsec${base.kind === "tcp" ? "" : "، بعد NeoObfs"}. تا وقتی ترافیک رد می‌شود دست نمی‌خورد؛ اگر رد نشد مرحله‌ی بعد را می‌زند، تانل را روی هر دو سرور ری‌استارت می‌کند و ${autoWaitMin()} دقیقه صبر می‌کند. اگر پورت‌های این تانل پشتیبانِ سالم داشته باشند به آن می‌روند و این تانل فقط بررسی می‌شود تا سالم شود و پورت‌ها برگردند.${t.auto_encrypt ? html` الان: <b>${rungTitle(t.encrypt)}</b>.` : ""}</span>` : "";
     const m = S.mtu[t.name];
     const tab = t.managed && S.dtab[t.name] !== "events" ? "overview" : (S.dtab[t.name] || "overview");
     const tabs = t.managed ? [["overview", "نمای کلی"], ["events", "رویدادها"]] : [["overview", "نمای کلی"], ["events", "رویدادها"], ["limits", "محدودیت‌ها"], ["settings", "تنظیمات"]];
@@ -1515,12 +1534,12 @@
         ${LANE_KINDS.includes(t.kind) ? lanesField(`tset.${t.name}`, st.lanes) : ""}
         <div class="field"><span class="lbl">رمزنگاری</span>
           ${crypto ? html`<div class="help">${PROTO[base.kind === "obfs" ? "obfs" : "wireguard"].t} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.</div>`
-            : base.kind === "tcp" ? html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>
+            : base.kind === "tcp" ? html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}${t.peer ? autoOpt : ""}</select>${autoHelp}
             <span class="help">هر قاب روی جریان TCP با کلیدهای تازه‌ی همان اتصال مهر می‌شود؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ۱۶ بایت در هر بسته.</span>`
-            : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}${c.name === lightCipher(t.peer).name ? " · سبک‌ترین برای این سرورها" : ""}</option>`)}</select>
+            : html`<select class="input" data-bind="tset.${t.name}.encrypt"><option value="">بدون رمزنگاری (سریع‌ترین)</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${st.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}${c.name === lightCipher(t.peer).name ? " · سبک‌ترین برای این سرورها" : ""}</option>`)}${t.peer ? autoOpt : ""}</select>${autoHelp}
             <span class="help">IPsec در کرنل روی بسته‌های بیرونی همین تانل؛ کلیدها از رمز مشترک تانل ساخته می‌شوند. هزینه: ${38} بایت از MTU. ${lightCipher(t.peer).why}</span>`}</div>
         <details class="adv" ${S.tset[t.name].adv ? "open" : ""} data-act="adv-toggle" data-name="${t.name}">
-          <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard", "tcp", "eoip"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
+          <summary>تنظیمات پیشرفته <span class="faint">MTU، PMTUD، TTL، پورت${base.kind === "obfs" ? "، padding" : ""}${["obfs", "wireguard", "tcp", "eoip"].includes(base.kind) ? "، keepalive" : ""}</span>${I.chev(16)}</summary>
           <div class="in">${advancedFields(`tset.${t.name}`, st, base.kind, true, false, t.kind)}</div>
         </details>
         <div class="form-foot"><button class="btn primary" type="submit">ذخیره‌ی تنظیمات</button><button class="btn ghost" type="button" data-act="reset-tset" data-name="${t.name}">بازگردانی</button><span class="grow"></span>${safeField()}</div>
@@ -1531,10 +1550,10 @@
 
   // The forwards that go through a tunnel, each editable in place.
   function tunnelForwards(t) {
-    const fs = (S.ov.forwards || []).filter((f) => f.tunnel === t.name || f.backup === t.name);
+    const fs = (S.ov.forwards || []).filter((f) => f.tunnel === t.name || (f.backups || []).includes(t.name));
     if (t.managed) return "";
     return html`<div class="tfwd"><div class="tfwd-h"><b>پورت‌ها</b>${fs.length ? "" : html`<span class="faint small">هنوز پورتی از این تانل فوروارد نشده</span>`}<span class="grow"></span><button class="btn sm ghost" data-act="add-forward" data-tunnel="${t.name}">${I.plus(14)} فوروارد</button></div>
-      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">${f.mode === "socks" ? proxyAt(f) : `→ ${f.target}:${f.to || f.ports}`}</span>${fwdModeLabel(f)}${f.backup === t.name ? html`<span class="tag">پشتیبانِ ${tlabel(f.tunnel)}</span>` : ""}${fwdPath(f)}<span class="grow"></span><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button></div>`; })}</div>`;
+      ${fs.map((f) => { const k = f.tunnel + "|" + f.ports; return html`<div class="tfwd-r"><b class="ltr">${f.ports}</b><span class="faint small ltr">${f.mode === "socks" ? proxyAt(f) : `→ ${f.target}:${f.to || f.ports}`}</span>${fwdModeLabel(f)}${(f.backups || []).includes(t.name) ? html`<span class="tag">پشتیبانِ ${tlabel(f.tunnel)}</span>` : ""}${fwdPath(f)}<span class="grow"></span><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button></div>`; })}</div>`;
   }
 
   // Speed limit and monthly quota, with how much of the quota is used.
@@ -1552,10 +1571,18 @@
     </div>`;
   }
 
+  // Which kinds have a DF bit to set on their outer packets. The wizard gives
+  // a mode, whose bottom layer is what counts; IPv6 has no such bit.
+  const PMTU_KINDS = ["sit", "ipip", "gre", "gretap", "eoip"], IGNORE_DF_KINDS = ["gre", "gretap"];
+  const pmtuKind = (kind, st) => st.underlay === "ipv6" ? "" : { "6to4": "sit", "6to4-gre": "sit" }[kind] || kind;
+
   // The advanced options, shared by the wizard and the tunnel editor.
   // kind is the bottom layer's (it owns the outer packets), top the tunnel's own.
   function advancedFields(path, st, kind, editing, noPort, top) {
     const mm = st.mtuMode || "auto";
+    const pk = pmtuKind(kind, st), canIgnore = IGNORE_DF_KINDS.includes(pk);
+    if (st.pmtud === "ignore" && !canIgnore) st.pmtud = "off";
+    const pm = st.pmtud || "on";
     return html`<div class="field"><span class="lbl">MTU</span>
         <div class="seg" role="radiogroup">${[["auto", "خودکار"], ["probe", "اندازه‌گیری مسیر"], ["manual", "دستی"]].map(([v, l]) => html`<button type="button" role="radio" aria-checked="${mm === v}" class="${mm === v ? "on" : ""}" data-act="set" data-path="${path}.mtuMode" data-value="${v}">${l}</button>`)}</div>
         ${mm === "manual" ? html`<input class="input ltr" type="number" min="576" max="9000" data-bind="${path}.mtu" value="${st.mtu || ""}" placeholder="1400" aria-label="MTU">` : ""}
@@ -1570,12 +1597,14 @@
         ${kind === "wireguard" ? html`<div class="field full"><label>کلید عمومی طرف مقابل</label><input class="input ltr" data-bind="${path}.peer_key" value="${st.peer_key || ""}" placeholder="فقط وقتی آن طرف NeoTunnel ندارد"><span class="help">برای میکروتیک یا هر WireGuard دیگر؛ بین دو سرور NeoTunnel کلیدها خودکار ساخته می‌شوند.</span></div>` : ""}
         ${top === "eoip" ? html`<div class="field"><label>شناسه‌ی تانل (Tunnel ID)</label><input class="input ltr" type="number" min="0" max="65535" data-bind="${path}.tunnel_id" value="${st.tunnel_id ?? ""}" placeholder="خودکار"><span class="help">همان tunnel-id میکروتیک؛ دو سر باید یکی باشند. ۰ تا ۶۵۵۳۵، و روی EoIPv6 بدون پورت ۰ تا ۴۰۹۵. خالی = از نام تانل ساخته می‌شود.</span></div>` : ""}
         <div class="field"><label>DSCP بسته‌های بیرونی</label><input class="input ltr" type="number" min="0" max="63" data-bind="${path}.dscp" value="${st.dscp || ""}" placeholder="ارث‌بری"><span class="help">کلاس کیفیت سرویس؛ خالی = همان کلاس بسته‌ی داخلی. فقط تانل‌های کرنلی.</span></div>
-        <div class="field full"><label class="switch"><input type="checkbox" data-act="st-check" data-path="${path}.noDF" ${st.noDF ? "checked" : ""}>اجازه‌ی تکه‌تکه شدن بسته‌ها در مسیر</label><span class="help">پیش‌فرض خاموش است (بیت Don't-Fragment روشن): سریع‌تر، ولی به MTU درست نیاز دارد. روشنش کنید اگر مسیر MTU کوچکی دارد و تانل بسته‌های بزرگ را می‌اندازد.</span></div>
+        ${PMTU_KINDS.includes(pk) ? html`<div class="field full"><span class="lbl">PMTUD (Path MTU Discovery)</span>
+          <div class="seg" role="radiogroup">${[["on", "روشن"], ["off", "خاموش"]].concat(canIgnore ? [["ignore", "خاموش + نادیده گرفتن DF"]] : []).map(([v, l]) => html`<button type="button" role="radio" aria-checked="${pm === v}" class="${pm === v ? "on" : ""}" data-act="set" data-path="${path}.pmtud" data-value="${v}">${l}</button>`)}</div>
+          <span class="help">${pm === "on" ? "پیش‌فرض و سریع‌ترین: بیت DF روی بسته‌های بیرونی روشن است و مسیر، اندازه‌ی مجاز را با ICMP خبر می‌دهد. وقتی MTU درست است یا ICMP در مسیر باز است همین خوب است." : pm === "off" ? "مثل nopmtudisc: تانل خودش DF نمی‌زند و مسیر می‌تواند بسته‌ی بزرگ را تکه کند. ولی اگر بسته‌ی داخلی خودش DF داشته باشد (بیشتر TCPها) DF به بسته‌ی بیرونی هم می‌رود." : "مثل nopmtudisc به‌همراه ignore-df: بسته‌ی بزرگ همیشه تکه می‌شود، حتی اگر بسته‌ی داخلی DF داشته باشد. برای مسیری که ICMP را می‌بندد و اتصال‌ها سر بسته‌های بزرگ گیر می‌کنند. تکه شدن کمی سرعت و CPU می‌گیرد."}</span></div>` : ""}
       </div>`;
   }
 
   function settingsBody(st) {
-    const out = { profile: st.profile && st.profile !== "balanced" ? st.profile : "", encrypt: st.encrypt || "", ttl: +st.ttl || 0, dscp: +st.dscp || 0, no_df: !!st.noDF, padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), lanes: +st.lanes > 1 ? +st.lanes : 0, mtu: 0, mtu_probe: false };
+    const out = { profile: st.profile && st.profile !== "balanced" ? st.profile : "", encrypt: st.encrypt || "", ttl: +st.ttl || 0, dscp: +st.dscp || 0, no_df: st.pmtud === "off" || st.pmtud === "ignore", ignore_df: st.pmtud === "ignore", padding: +st.padding || 0, keepalive: +st.keepalive || 0, peer_key: (st.peer_key || "").trim(), lanes: +st.lanes > 1 ? +st.lanes : 0, mtu: 0, mtu_probe: false };
     if (st.mtuMode === "manual") out.mtu = +st.mtu || 0;
     if (st.mtuMode === "probe") out.mtu_probe = true;
     const id = st.tunnel_id ?? "";
@@ -1645,18 +1674,25 @@
     const t = tunnel(name), far = t && (t.peer || t.far_ip);
     return far ? visible().filter((x) => !x.managed && x.name !== name && (x.peer || x.far_ip) === far) : [];
   };
+  // The forward's backups in order of preference: path is a top-level state
+  // object (form, fwdEditor) holding them in .backups.
   function backupField(path, obj, name) {
-    const cs = backupChoices(name);
-    if (!cs.length && !obj.backup) return html`<div class="field full"><span class="lbl">تانل پشتیبان</span><span class="help">برای مسیر پشتیبان، یک تانل دیگر به همین سرور بسازید؛ اگر تانل اصلی ترافیک رد نکرد، این پورت خودکار از آن می‌رود.</span></div>`;
-    const id = path + ".backup";
-    return html`<div class="field full"><span class="lbl lbl-i"><label for="${path}-bk">تانل پشتیبان</label> ${infoBtn(id)}</span>
-      ${infoPop(id, html`<p>اگر تانل اصلی ۳ پینگ پشت‌سرهم (حدود ۲۵ ثانیه) جواب ندهد، پورت به تانل پشتیبان می‌رود و وقتی اصلی حدود یک دقیقه سالم ماند برمی‌گردد. اتصال‌های باز روی همان مسیر قبلی می‌مانند.</p>`)}
-      <select id="${path}-bk" class="input" data-bind="${path}.backup"><option value="">بدون پشتیبان</option>${cs.map((x) => html`<option value="${x.name}" ${obj.backup === x.name ? "selected" : ""}>${tname(x)} (${kindTitle(x)})</option>`)}</select></div>`;
+    const cs = backupChoices(name), list = obj.backups || (obj.backups = []);
+    if (!cs.length && !list.length) return html`<div class="field full"><span class="lbl">تانل‌های پشتیبان</span><span class="help">برای مسیر پشتیبان، یک تانل دیگر به همین سرور بسازید؛ اگر تانل اصلی ترافیک رد نکرد، این پورت خودکار از آن می‌رود.</span></div>`;
+    const id = path + ".backup", free = cs.filter((x) => !list.includes(x.name));
+    const label = (n) => { const x = tunnel(n); return x ? html`${tname(x)} <span class="faint small">(${kindTitle(x)})</span>` : n; };
+    return html`<div class="field full"><span class="lbl lbl-i"><label for="${path}-bk">تانل‌های پشتیبان</label> ${infoBtn(id)}</span>
+      ${infoPop(id, html`<p>اگر تانلی که پورت روی آن است حدود ۲۰ ثانیه ترافیک رد نکند، پورت به اولین پشتیبانی می‌رود که کار می‌کند؛ به ترتیب همین فهرست. وقتی تانلی بالاتر از آن حدود یک دقیقه سالم ماند، پورت برمی‌گردد. اتصال‌های باز روی همان مسیر قبلی می‌مانند.</p>`)}
+      ${list.length ? html`<ol class="bklist">${list.map((n, i) => html`<li><b class="ltr">${i + 1}</b><span>${label(n)}</span><span class="grow"></span>
+        <button type="button" class="btn sm ghost icon" data-act="bk-move" data-path="${path}" data-i="${i}" data-dir="-1" ${i ? "" : "disabled"} aria-label="بالاتر" title="بالاتر">${I.up(14)}</button>
+        <button type="button" class="btn sm ghost icon" data-act="bk-move" data-path="${path}" data-i="${i}" data-dir="1" ${i < list.length - 1 ? "" : "disabled"} aria-label="پایین‌تر" title="پایین‌تر">${I.down(14)}</button>
+        <button type="button" class="btn sm ghost icon danger" data-act="bk-del" data-path="${path}" data-i="${i}" aria-label="برداشتن" title="برداشتن">${I.x(14)}</button></li>`)}</ol>` : ""}
+      ${free.length ? html`<select id="${path}-bk" class="input" data-act="bk-add" data-path="${path}"><option value="">${list.length ? "افزودن پشتیبان بعدی…" : "بدون پشتیبان؛ افزودن…"}</option>${free.map((x) => html`<option value="${x.name}">${tname(x)} (${kindTitle(x)})</option>`)}</select>` : ""}</div>`;
   }
   // Which of its tunnels a forward with a backup runs on now.
-  const fwdPath = (f) => !f.backup ? "" : f.active === f.backup
-    ? html`<span class="tag warn" title="تانل اصلی ${tlabel(f.tunnel)} ترافیک رد نمی‌کند">${I.alert ? I.alert(12) : ""} روی پشتیبان ${tlabel(f.backup)}${f.since ? " · " + ago(f.since) : ""}</span>`
-    : html`<span class="tag" title="پشتیبان: ${tlabel(f.backup)}"><i class="dot ok"></i> مسیر اصلی · پشتیبان ${tlabel(f.backup)}</span>`;
+  const fwdPath = (f) => !f.backup ? "" : f.active !== f.tunnel
+    ? html`<span class="tag warn" title="تانل اصلی ${tlabel(f.tunnel)} ترافیک رد نمی‌کند">${I.alert ? I.alert(12) : ""} روی پشتیبان ${tlabel(f.active)}${f.since ? " · " + ago(f.since) : ""}</span>`
+    : html`<span class="tag" title="پشتیبان‌ها به ترتیب: ${(f.backups || []).map(tlabel).join("، ")}"><i class="dot ok"></i> مسیر اصلی · پشتیبان ${(f.backups || []).map(tlabel).join("، ")}</span>`;
   // A forward's recent moves between its tunnels, newest first.
   function switchHistory(f) {
     const ss = (f.switches || []).slice().reverse();
@@ -1671,7 +1707,7 @@
     if (!f) return html`${modalHead("ویرایش پورت")}<div class="body"><div class="note">این فوروارد دیگر وجود ندارد.</div></div>`;
     const socks = f.mode === "socks", ts = visible().filter((x) => !x.managed && (!socks || x.peer)), t = tunnel(e.tunnel), remote = t && !t.peer;
     if (remote && (e.mode === "transparent" || e.mode === "relay")) e.mode = "nat";
-    if (e.backup && !backupChoices(e.tunnel).some((x) => x.name === e.backup)) e.backup = "";
+    e.backups = (e.backups || []).filter((n) => backupChoices(e.tunnel).some((x) => x.name === n));
     const open = e.access === "all";
     const tunnelSel = html`<div class="field full"><label for="fe-t">از طریق تانل</label><select id="fe-t" class="input" data-bind="fwdEditor.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${e.tunnel === x.name ? "selected" : ""}>${tname(x)} به ${pname(x.peer) || x.far_ip} (${kindTitle(x)})</option>`)}</select></div>`;
     const body = socks ? html`<div class="grid2">${tunnelSel}
@@ -1719,13 +1755,34 @@
       </div>`)}<p class="help" style="margin:4px 0 0">نام دامنه‌ها روی سرور مقصد پیدا می‌شود. فقط TCP؛ برای SOCKS5 در برنامه‌ها گزینه‌ی «remote DNS» یا socks5h را بزنید.</p></div></div>`;
   }
 
+  // How the ports are listed: in the order the user arranged, or by a column.
+  const PORT_SORTS = [["manual", "ترتیب من"], ["port", "شماره پورت"], ["tunnel", "تانل"], ["today", "مصرف امروز"], ["month", "مصرف ماه"]];
+  const firstPort = (f) => parseInt(f.ports, 10) || 0;
+  function sortedPorts(fs) {
+    const by = { port: (a, b) => firstPort(a) - firstPort(b) || a.proto.localeCompare(b.proto),
+      tunnel: (a, b) => tlabel(a.tunnel).localeCompare(tlabel(b.tunnel), "fa") || firstPort(a) - firstPort(b),
+      today: (a, b) => (b.today.rx + b.today.tx) - (a.today.rx + a.today.tx),
+      month: (a, b) => (b.month.rx + b.month.tx) - (a.month.rx + a.month.tx) }[S.portSort];
+    return by ? fs.slice().sort(by) : fs;
+  }
+  // Saves the user's order; proxies keep their own place after the ports.
+  async function savePortOrder(list) {
+    const rest = S.ov.forwards.filter((f) => !list.includes(f));
+    S.ov.forwards = list.concat(rest);
+    draw();
+    try { await api("POST", "forwards/order", { keys: S.ov.forwards.map((f) => f.proto + "/" + f.ports) }); }
+    catch (e) { toast(e.message, "bad"); await refresh(); }
+  }
+  const moveBtns = (f, i, n) => html`<button type="button" class="btn sm ghost icon" data-act="port-move" data-key="${portKey(f)}" data-dir="-1" ${i ? "" : "disabled"} aria-label="بردن پورت ${f.ports} به بالا" title="بالاتر">${I.up(15)}</button><button type="button" class="btn sm ghost icon" data-act="port-move" data-key="${portKey(f)}" data-dir="1" ${i < n - 1 ? "" : "disabled"} aria-label="بردن پورت ${f.ports} به پایین" title="پایین‌تر">${I.down(15)}</button>`;
+
   function viewPorts() {
-    const all = S.ov.forwards, ps = all.filter((f) => f.mode === "socks"), fs = all.filter((f) => f.mode !== "socks");
+    const all = S.ov.forwards, ps = all.filter((f) => f.mode === "socks"), fs = sortedPorts(all.filter((f) => f.mode !== "socks")), manual = !S.portSort || S.portSort === "manual";
     const proxies = html`<div class="sec-split"><span>پروکسی‌های داخلی</span><small>جدا از پورت‌ها: برای برنامه‌های خود این سرور، نه برای کاربران</small></div>${proxiesPanel(ps)}`;
     if (!fs.length) return html`<div class="panel"><div class="empty">${I.ports(32)}<b>فورواردی تعریف نشده</b>ترافیک ورودی پورت‌های این سرور را از داخل تانل به سرور مقصد بفرستید.<br><button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button></div></div>${proxies}`;
-    const rows = fs.map((f) => {
+    const rows = fs.map((f, i) => {
       const k = f.tunnel + "|" + f.ports, r = prate(f), month = f.month ? f.month.rx + f.month.tx : 0;
-      return html`<tr class="click" data-act="port-chart" data-key="${portKey(f)}">
+      return html`<tr class="click" data-act="port-chart" data-key="${portKey(f)}" ${manual ? raw(`draggable="true" data-port-drag="${esc(portKey(f))}"`) : ""}>
+        ${manual ? html`<td class="pmove"><span class="pgrip" title="برای جابه‌جایی بکشید">${I.grip(15)}</span>${moveBtns(f, i, fs.length)}</td>` : ""}
         <td><b class="ltr">${f.ports}</b><div class="faint small"><span class="ltr">${f.public}</span> · ${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</div></td>
         <td>${tlabel(f.tunnel)} <span class="faint">به</span> ${pname(f.peer)}<div class="faint small"><span class="ltr">${f.target}:${f.to || f.ports}</span></div>${f.backup ? html`<div style="margin-top:4px">${fwdPath(f)}</div>` : ""}</td>
         <td class="hide-sm">${fwdModeLabel(f)}</td>
@@ -1734,11 +1791,10 @@
         <td class="ltr hide-sm"><b>${fmtBytes(month)}</b><div class="faint small">کل ${fmtBytes(f.rx + f.tx)}</div></td>
         <td class="acts"><button class="btn sm ghost icon" data-act="port-chart" data-key="${portKey(f)}" aria-label="نمودار ترافیک پورت ${f.ports}" title="نمودار ترافیک">${I.chart(15)}</button><button class="btn sm" data-act="edit-fwd" data-key="${k}">${I.edit(14)} ویرایش</button><button class="btn sm danger icon" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد ${f.ports}">${I.trash(15)}</button></td></tr>`;
     });
-    const cards = fs.map((f) => {
+    const cards = fs.map((f, i) => {
       const k = f.tunnel + "|" + f.ports, r = prate(f), month = f.month ? f.month.rx + f.month.tx : 0;
       return html`<article class="pcard" data-act="port-chart" data-key="${portKey(f)}">
-        <div class="pc-h"><b class="ltr pc-port">${f.ports}</b><span class="pc-proto">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</span><span class="grow"></span>
-          <button class="btn sm ghost icon" data-act="port-chart" data-key="${portKey(f)}" aria-label="نمودار ترافیک پورت ${f.ports}">${I.chart(15)}</button><button class="btn sm ghost icon" data-act="edit-fwd" data-key="${k}" aria-label="ویرایش ${f.ports}">${I.edit(15)}</button><button class="btn sm ghost icon danger" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد ${f.ports}">${I.trash(15)}</button></div>
+        <div class="pc-h"><b class="ltr pc-port">${f.ports}</b><span class="pc-proto">${f.proto === "both" ? "TCP + UDP" : f.proto.toUpperCase()}</span><span class="grow"></span>${fwdModeLabel(f)}</div>
         <div class="pc-route">${tlabel(f.tunnel)} <span class="faint">به</span> ${pname(f.peer)} <span class="faint">·</span> <span class="ltr faint">${f.target}:${f.to || f.ports}</span></div>
         ${f.backup ? html`<div class="pc-path">${fwdPath(f)}</div>` : ""}
         <div class="pc-live ltr"><span class="dl">↓ ${fmtRate(r.rx)}</span><span class="ul">↑ ${fmtRate(r.tx)}</span></div>
@@ -1746,12 +1802,14 @@
           <div><span>امروز</span><b class="ltr">${fmtBytes(f.today.rx + f.today.tx)}</b><small class="ltr">↓ ${fmtBytes(f.today.rx)} · ↑ ${fmtBytes(f.today.tx)}</small></div>
           <div><span>این ماه</span><b class="ltr">${fmtBytes(month)}</b></div>
           <div><span>از ابتدا</span><b class="ltr">${fmtBytes(f.rx + f.tx)}</b></div>
-        </div></article>`;
+        </div>
+        <div class="pc-acts">${manual ? html`<span class="pc-move">${moveBtns(f, i, fs.length)}</span>` : ""}<span class="grow"></span><button class="btn sm ghost icon" data-act="port-chart" data-key="${portKey(f)}" aria-label="نمودار ترافیک پورت ${f.ports}">${I.chart(16)}</button><button class="btn sm ghost icon" data-act="edit-fwd" data-key="${k}" aria-label="ویرایش ${f.ports}">${I.edit(16)}</button><button class="btn sm ghost icon danger" data-act="del-forward" data-tunnel="${f.tunnel}" data-ports="${f.ports}" aria-label="حذف فوروارد ${f.ports}">${I.trash(16)}</button></div></article>`;
     });
-    return html`<div class="panel"><header><h2>فورواردها</h2><span class="aside">${fs.length} پورت · ترافیک خود کاربران، پیش از سربار تانل</span></header>
+    return html`<div class="panel pports"><header><h2>فورواردها</h2><span class="aside">${fs.length} پورت · ترافیک خود کاربران، پیش از سربار تانل</span></header>
+      <div class="psort"><span class="faint small">مرتب‌سازی</span><div class="seg sm" role="radiogroup" aria-label="مرتب‌سازی پورت‌ها">${PORT_SORTS.map(([v, l]) => html`<button type="button" role="radio" aria-checked="${(S.portSort || "manual") === v}" class="${(S.portSort || "manual") === v ? "on" : ""}" data-act="port-sort" data-value="${v}">${l}</button>`)}</div>${manual ? html`<span class="faint small psort-hint">ردیف‌ها را بکشید یا با پیکان‌ها جابه‌جا کنید؛ این ترتیب ذخیره می‌شود.</span>` : ""}</div>
       <div class="pcards">${cards}</div>
-      <div class="tbl-wrap pmon-wrap"><table class="t pmon"><thead><tr><th>پورت</th><th>تانل و مقصد</th><th class="hide-sm">حالت</th><th>الان</th><th>امروز</th><th class="hide-sm">این ماه</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-      <p class="help" style="margin:12px 18px 16px">روی هر ردیف بزنید تا نمودار ترافیک آن پورت در بازه‌های مختلف باز شود.</p></div>
+      <div class="tbl-wrap pmon-wrap"><table class="t pmon"><thead><tr>${manual ? html`<th class="pmove" aria-label="ترتیب"></th>` : ""}<th>پورت</th><th>تانل و مقصد</th><th class="hide-sm">حالت</th><th>الان</th><th>امروز</th><th class="hide-sm">این ماه</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="help pports-note">روی هر ردیف بزنید تا نمودار ترافیک آن پورت در بازه‌های مختلف باز شود.</p></div>
       ${proxies}`;
   }
 
@@ -2164,7 +2222,7 @@
   }
 
   // The Telegram bot (package telegram): alerts, reports and port lookups.
-  const TG_ALERTS = [["down", "قطعی یا افت شدید تانل"], ["recover", "سالم شدن دوباره"], ["restart", "ری‌استارت خودکار"], ["failover", "رفتن پورت‌ها به تانل پشتیبان"], ["quota", "تمام شدن حجم ماهانه"], ["guard", "خاموش شدن خودکار فایروال"]];
+  const TG_ALERTS = [["down", "قطعی یا افت شدید تانل"], ["recover", "سالم شدن دوباره"], ["restart", "ری‌استارت خودکار"], ["failover", "رفتن پورت‌ها به تانل پشتیبان"], ["cipher", "عوض شدن خودکار رمزنگاری"], ["quota", "تمام شدن حجم ماهانه"], ["guard", "خاموش شدن خودکار فایروال"]];
   const TG_EVERY = [["hourly", "هر ساعت"], ["daily", "هر روز"], ["weekly", "هر هفته (شنبه)"]];
   function setTelegram() {
     const v = S.tv;
@@ -2228,22 +2286,46 @@
     try { S.fetch = await api("GET", "settings/fetch"); if (S.route === "settings" && S.sec === "fetch") draw(); } catch (e) { toast(e.message, "bad"); }
   }
 
+  // How long each step of automatic encryption gets, in minutes.
+  const autoWaitMin = () => (S.ov.defaults && S.ov.defaults.auto_wait) || 5;
+  const poolRange = (p) => html`<span class="ltr">${p.net4 || "10.77.0.0/16"}</span>${p.net6 ? html` · <span class="ltr small">${p.net6}</span>` : ""}`;
+  const poolTitle = (p) => p.name === "default" ? "پیش‌فرض (10.77.0.0/16)" : p.builtin ? p.net4 : p.name;
+
+  // The address pools: ready-made ones and the user's, which can be edited.
+  function setPools(d) {
+    const e = S.pe || (S.pe = { name: "", net4: "", net6: "", was: "" });
+    return html`<div class="panel"><header><h2>پریست‌های Address pool</h2><span class="aside">محدوده‌ای که آدرس داخلی تانل‌های جدید از آن برداشته می‌شود</span></header><div class="in stack">
+      <div class="field"><label for="d-pool">پریست پیش‌فرض تانل‌های جدید</label><select id="d-pool" class="input" data-bind="defs.pool" style="max-width:320px">${S.ov.pools.map((p) => html`<option value="${p.name === "default" ? "" : p.name}" ${(d.pool || "") === (p.name === "default" ? "" : p.name) ? "selected" : ""}>${poolTitle(p)}</option>`)}</select><span class="help">برای اعمالش «ذخیره‌ی پیش‌فرض‌ها» را بزنید. در ساخت هر تانل هم می‌توانید پریست دیگری انتخاب کنید یا محدوده را دستی بدهید.</span></div>
+      <div class="tbl-wrap"><table class="t"><thead><tr><th>نام</th><th>محدوده</th><th>تانل‌ها</th><th></th></tr></thead><tbody>${S.ov.pools.map((p) => html`<tr><td><b dir="auto">${poolTitle(p)}</b>${p.builtin ? html` <span class="tag">آماده</span>` : ""}</td><td>${poolRange(p)}</td><td class="ltr">${p.tunnels}</td><td class="acts">${p.builtin ? "" : html`<button class="btn sm" data-act="pool-edit" data-name="${p.name}">${I.edit(14)} ویرایش</button> <button class="btn sm danger icon" data-act="pool-del" data-name="${p.name}" aria-label="حذف پریست ${p.name}">${I.trash(15)}</button>`}</td></tr>`)}</tbody></table></div>
+      <p class="help" style="margin:0">هر تانل یک /30 از IPv4 و یک /64 از IPv6 می‌گیرد؛ تانل‌های دولایه (مثل 6to4) یک بلوک هم برای لایه‌ی زیرین می‌گیرند. عوض کردن یا حذف پریست روی تانل‌های ساخته‌شده اثری ندارد. اگر IPv6 ندهید، از محدوده‌ی ULA همین سرور برداشته می‌شود.</p>
+      <div class="grid2">
+        <div class="field"><label for="pe-n">${e.was ? "ویرایش پریست" : "نام پریست جدید"}</label><input id="pe-n" class="input" dir="auto" maxlength="32" data-bind="pe.name" value="${e.name}" placeholder="مثلاً دفتر مرکزی"></div>
+        <div class="field"><label for="pe-4">محدوده‌ی IPv4</label><input id="pe-4" class="input ltr" data-bind="pe.net4" value="${e.net4}" placeholder="10.50.0.0/16"></div>
+        <div class="field"><label for="pe-6">محدوده‌ی IPv6 (اختیاری)</label><input id="pe-6" class="input ltr" data-bind="pe.net6" value="${e.net6}" placeholder="fd50::/48"></div>
+      </div>
+      <div class="form-foot"><button class="btn primary" data-act="pool-save">${e.was ? I.check(16) : I.plus(16)} ${e.was ? "ذخیره‌ی پریست" : "افزودن پریست"}</button>${e.was ? html`<button class="btn ghost" data-act="pool-cancel">انصراف</button>` : ""}</div>
+    </div></div>`;
+  }
+
   function setDefaults() {
-    const d = S.defs || (S.defs = Object.assign({ encrypt: "", mtu_probe: false, obfs: false, padding: 0, forward_mode: "nat" }, S.ov.defaults));
+    const d = S.defs || (S.defs = Object.assign({ encrypt: "", mtu_probe: false, obfs: false, padding: 0, forward_mode: "nat", pool: "", auto_wait: 0 }, S.ov.defaults));
     if (d.recover === undefined) d.recover = !d.no_recover;
     if (!d.forward_mode) d.forward_mode = "nat";
     return html`<div class="panel"><header><h2>پیش‌فرض تانل‌های جدید</h2></header><div class="in stack">
       <p class="help" style="margin:0">این مقادیر در ساخت تانل (پنل، منو و دستور quick) از قبل انتخاب می‌شوند و هر بار قابل تغییرند.</p>
-      <div class="field"><label for="d-enc">رمزنگاری</label><select id="d-enc" class="input" data-bind="defs.encrypt" style="max-width:320px"><option value="">بدون رمزنگاری</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${d.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}</select></div>
+      <div class="field"><label for="d-enc">رمزنگاری</label><select id="d-enc" class="input" data-bind="defs.encrypt" style="max-width:320px"><option value="">بدون رمزنگاری</option>${S.ov.ciphers.map((c) => html`<option value="${c.name}" ${d.encrypt === c.name ? "selected" : ""}>IPsec ${c.title}</option>`)}<option value="auto" ${d.encrypt === "auto" ? "selected" : ""}>خودکار (هرچه رد شود)</option></select></div>
       <label class="switch"><input type="checkbox" data-act="def-check" data-key="mtu_probe" ${d.mtu_probe ? "checked" : ""}>اندازه‌گیری خودکار MTU مسیر</label>
       <label class="switch"><input type="checkbox" data-act="def-check" data-key="obfs" ${d.obfs ? "checked" : ""}>اجرای تانل‌ها روی لایه‌ی NeoObfs</label>
       <div class="field"><label for="d-pad">Padding پیش‌فرض NeoObfs (بایت)</label><input id="d-pad" class="input ltr" type="number" min="0" max="255" data-bind="defs.padding" value="${d.padding || ""}" placeholder="0" style="max-width:160px"></div>
       ${modeField("defs", d.forward_mode, false, "forward_mode")}
       <div class="form-foot"><button class="btn primary" data-act="save-defaults">ذخیره‌ی پیش‌فرض‌ها</button></div>
     </div></div>
+    ${setPools(d)}
     <div class="panel"><header><h2>بازیابی خودکار تانل‌ها</h2></header><div class="in stack">
       <label class="switch"><input type="checkbox" data-act="def-check" data-key="recover" ${d.recover ? "checked" : ""}>وقتی تانلی بیشتر بسته‌هایش را از دست می‌دهد، خودکار درستش کن</label>
-      <p class="help" style="margin:0">هر ۸ ثانیه ۵ پینگ از داخل هر تانل فرستاده می‌شود. اگر تانلی حدود ۲۴ ثانیه بیشتر از ۴۰٪ بسته‌هایش را از دست بدهد، یک بار روی هر دو سرور ری‌استارت می‌شود (هر تانل حداکثر هر ۱۰ دقیقه یک بار). اگر بعد از آن هم خوب نشد، فورواردهای آن به تانل پشتیبان می‌روند، به شرط اینکه پشتیبان واقعاً بهتر باشد، و وقتی تانل اصلی حدود یک دقیقه سالم ماند برمی‌گردند. در طول تست سرعت کاری انجام نمی‌شود.</p>
+      <p class="help" style="margin:0">هر ۸ ثانیه ۵ پینگ از داخل هر تانل فرستاده می‌شود. اگر تانلی حدود ۲۰ ثانیه بیشتر از ۴۰٪ بسته‌هایش را از دست بدهد، اول فورواردهایش به اولین تانل پشتیبانی می‌روند که واقعاً بهتر باشد، تا قطعی پیش نیاید. حدود ۲۴ ثانیه که شد، خود تانل هم یک بار روی هر دو سرور ری‌استارت می‌شود (هر تانل حداکثر هر ۱۰ دقیقه یک بار). وقتی تانل اصلی حدود یک دقیقه سالم ماند، فورواردها برمی‌گردند. در طول تست سرعت کاری انجام نمی‌شود.</p>
+      <div class="field"><label for="d-wait">رمزنگاری خودکار: مدت صبر روی هر مرحله (دقیقه)</label><input id="d-wait" class="input ltr" type="number" min="1" max="1440" data-bind="defs.auto_wait" value="${d.auto_wait || ""}" placeholder="5" style="max-width:160px">
+        <span class="help">برای تانل‌هایی که رمزنگاری‌شان روی «خودکار» است. ترتیب مراحل: بدون رمز، AES-128، AES-256، ChaCha20، NeoObfs. تانلی که پشتیبانِ سالم دارد مرحله عوض نمی‌کند؛ فقط بررسی می‌شود تا سالم شود. اگر همه‌ی مراحل پشت‌سرهم جواب ندادند، ۳۰ دقیقه استراحت می‌کند و از نو شروع می‌کند.</span></div>
       <div class="form-foot"><button class="btn primary" data-act="save-defaults">ذخیره</button></div>
     </div></div>`;
   }
@@ -2517,6 +2599,7 @@
       <div class="field"><span class="lbl">محافظت</span><div class="choices">
           <button type="button" class="choice ${p === "none" ? "on" : ""}" data-act="wiz-protect" data-value="none"><b>بدون رمزنگاری</b><span>سریع‌ترین. اتصال با رمز مشترک تانل احراز هویت می‌شود، ولی بسته‌ها خوانا می‌روند؛ برای ترافیکی که خودش رمز شده (TLS، Xray) کافی است.</span></button>
           <button type="button" class="choice ${p === "ipsec" ? "on" : ""}" data-act="wiz-protect" data-value="ipsec"><b>${I.lock(15)} رمزنگاری جریان</b><span>هر قاب با کلید تازه‌ی همان اتصال مهر می‌شود؛ ۱۶ بایت سربار.</span></button>
+          ${w.dest !== "remote" ? html`<button type="button" class="choice ${p === "auto" ? "on" : ""}" data-act="wiz-protect" data-value="auto"><b>${I.sync(15)} خودکار</b><span>بدون رمز شروع می‌شود؛ اگر ترافیک رد نشد، رمزها را یکی‌یکی امتحان می‌کند.</span></button>` : ""}
         </div>
         ${p === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px;margin-top:10px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}</option>`)}</select>` : ""}</div>
       <div class="field"><label for="w-port">پورت TCP</label>
@@ -2528,7 +2611,9 @@
           <button type="button" class="choice ${w.protect === "none" ? "on" : ""}" data-act="wiz-protect" data-value="none"><b>بدون رمزنگاری</b><span>سریع‌ترین. برای ترافیکی که خودش رمز شده (TLS، Xray) کافی است.</span></button>
           <button type="button" class="choice ${w.protect === "ipsec" ? "on" : ""}" data-act="wiz-protect" data-value="ipsec"><b>${I.lock(15)} IPsec در کرنل</b><span>AES-GCM با سرعت کرنل؛ ۳۸ بایت سربار. ترافیک بین دو سرور خوانا نیست.</span></button>
           <button type="button" class="choice ${w.protect === "obfs" ? "on" : ""}" data-act="wiz-protect" data-value="obfs"><b>${I.mask(15)} NeoObfs</b><span>رمز با XChaCha20 داخل UDP؛ کندتر از کرنل چون در فضای کاربر اجرا می‌شود.</span></button>
+          <button type="button" class="choice ${w.protect === "auto" ? "on" : ""}" data-act="wiz-protect" data-value="auto"><b>${I.sync(15)} خودکار</b><span>بدون رمز شروع می‌شود؛ اگر ترافیک رد نشد، از ساده به پیشرفته یکی‌یکی امتحان می‌کند و هر کدام ${autoWaitMin()} دقیقه فرصت دارد.</span></button>
         </div>
+        ${w.protect === "auto" ? html`<span class="help">ترتیب: بدون رمز، AES-128، AES-256، ChaCha20، NeoObfs. هر بار تانل روی هر دو سرور ری‌استارت می‌شود. اگر پورت‌ها پشتیبانِ سالم داشته باشند، فوری به آن می‌روند و این تانل فقط بررسی می‌شود تا سالم شود.</span>` : ""}
         ${w.protect === "ipsec" ? html`<select class="input" data-bind="wiz.encrypt" style="max-width:300px;margin-top:10px" aria-label="الگوریتم">${ov.ciphers.map((c) => html`<option value="${c.name}" ${w.encrypt === c.name ? "selected" : ""}>${c.title}${c.name === lightCipher(w.peer).name ? " · سبک‌ترین برای این سرورها" : ""}</option>`)}</select>
           <span class="help">${lightCipher(w.peer).why}</span>` : ""}</div>`
         : html`<div class="note">${mode.crypt ? `${pi.t || w.mode} خودش رمزنگاری می‌کند؛ لایه‌ی دیگری لازم نیست.` : "برای دستگاه دیگر، رمزنگاری را با WireGuard انجام دهید."}</div>`}
@@ -2546,7 +2631,7 @@
   function wizFinish(w) {
     const ov = S.ov, pi = PROTO[w.mode] || {};
     const mode = ov.modes.find((m) => m.name === w.mode) || {};
-    const prot = { none: "بدون رمزنگاری", ipsec: mode.tcp ? cipherTitle(w.encrypt) : `IPsec ${cipherTitle(w.encrypt)}`, obfs: "NeoObfs" }[wizProt(w, mode)];
+    const prot = { none: "بدون رمزنگاری", ipsec: mode.tcp ? cipherTitle(w.encrypt) : `IPsec ${cipherTitle(w.encrypt)}`, obfs: "NeoObfs", auto: "خودکار" }[wizProt(w, mode)];
     return html`${checkBanner(w)}
       <dl class="summary">
         <div><dt>مقصد</dt><dd>${w.dest === "peer" ? w.peer : w.dest === "new" ? w.newName : html`<span class="ltr">${w.remote}</span>`}</dd></div>
@@ -2561,11 +2646,26 @@
         <div class="field"><span class="lbl">پروتکل فوروارد</span><div class="seg">${fwdProtos(w.fmode).map((p) => html`<button type="button" class="${fwdProto(w.fmode, w.proto) === p ? "on" : ""}" data-act="set" data-path="wiz.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
         ${modeField("wiz", w.fmode, w.dest === "remote", "fmode")}
         ${pverField("wiz", w, w.fmode)}
+        ${wizPoolField(w)}
       </div>
       <details class="adv" ${w.adv ? "open" : ""} data-act="adv-toggle" data-name="">
-        <summary>تنظیمات پیشرفته <span class="faint">MTU، TTL، DSCP${wizProt(w, mode) === "obfs" || w.mode === "obfs" ? "، padding" : ""}</span>${I.chev(16)}</summary>
+        <summary>تنظیمات پیشرفته <span class="faint">MTU، PMTUD، TTL، DSCP${wizProt(w, mode) === "obfs" || w.mode === "obfs" ? "، padding" : ""}</span>${I.chev(16)}</summary>
         <div class="in">${advancedFields("wiz", w, wizProt(w, mode) === "obfs" ? "obfs" : w.mode, false, true, w.mode)}</div>
       </details>`;
+  }
+
+  // Where the tunnel's inner addresses come from: a preset, or ranges given
+  // here, which can also be saved as a new preset.
+  function wizPoolField(w) {
+    const manual = w.pool === "manual";
+    return html`<div class="field full"><label for="w-pool">Address pool (آدرس داخلی تانل)</label>
+      <select id="w-pool" class="input" data-bind="wiz.pool">${S.ov.pools.map((p) => html`<option value="${p.name}" ${w.pool === p.name ? "selected" : ""}>${poolTitle(p)}${p.builtin ? "" : ` (${p.net4 || p.net6})`}</option>`)}<option value="manual" ${manual ? "selected" : ""}>دستی یا پریست جدید…</option></select>
+      ${manual ? html`<div class="grid2" style="margin-top:10px">
+        <div class="field"><label for="w-p4">محدوده‌ی IPv4</label><input id="w-p4" class="input ltr" data-bind="wiz.pool4" value="${w.pool4}" placeholder="10.50.0.0/24"></div>
+        <div class="field"><label for="w-p6">محدوده‌ی IPv6 (اختیاری)</label><input id="w-p6" class="input ltr" data-bind="wiz.pool6" value="${w.pool6}" placeholder="fd50::/48"></div>
+        <div class="field full"><label for="w-pn">ذخیره به‌عنوان پریست (اختیاری)</label><div class="pf"><input id="w-pn" class="input" dir="auto" maxlength="32" data-bind="wiz.poolName" value="${w.poolName}" placeholder="نام پریست"><button type="button" class="btn sm" data-act="wiz-pool-save">${I.plus(14)} ذخیره</button></div></div>
+      </div>` : ""}
+      <span class="help">${manual ? "این تانل یک /30 از IPv4 و یک /64 از IPv6 این محدوده را می‌گیرد؛ 6to4 و تانل‌های روی NeoObfs یک بلوک هم برای لایه‌ی زیرین لازم دارند." : "اگر آدرس‌ها با شبکه‌ی سرور یا تانل دیگری تداخل دارند، پریست دیگری بردارید. پریست‌ها در تنظیمات مدیریت می‌شوند."}</span></div>`;
   }
 
   // The live check of the current choices.
@@ -2599,8 +2699,11 @@
     const req = Object.assign(set, {
       mode: w.mode, name: w.name.trim(), port: +w.port || 0, forward: w.fwd.trim(), forward_to: +w.fwdTo || 0, proto: fwdProto(w.fmode, w.proto),
       forward_mode: w.fmode, proxy_version: fwdVersion(w.fmode, w),
-      obfs: prot === "obfs", encrypt: prot === "ipsec" ? w.encrypt : "",
+      obfs: prot === "obfs", encrypt: prot === "ipsec" ? w.encrypt : prot === "auto" ? "auto" : "",
     });
+    if (w.pool === "manual") Object.assign(req, { pool4: (w.pool4 || "").trim(), pool6: (w.pool6 || "").trim() });
+    else req.pool = w.pool || "";
+    if (w.dest === "remote" && req.encrypt === "auto") req.encrypt = ""; // a router's end can't follow
     if (w.underlay === "ipv6") Object.assign(req, { underlay: "ipv6", local6: w.local6.trim(), remote6: w.remote6.trim() });
     if (w.dest === "remote") req.remote = w.remote.trim(); else req.peer = peerName;
     return req;
@@ -2691,8 +2794,9 @@
       step: 1, dest: ov.peers.length ? "peer" : "new", peer: ov.peers.length ? ov.peers[0].name : "", newName: "", newIP: "", remote: "",
       mode: "6to4", name: "", port: "", fwd: "", fwdTo: "", proto: "both", busy: false, anim: "",
       underlay: "ipv4", local6: ov.node.address6 || "", remote6: "", checks: {}, speeds: {}, checkingAll: false,
-      protect: d.obfs ? "obfs" : d.encrypt ? "ipsec" : "none", encrypt: d.encrypt || "aes-gcm-128",
-      fmode: d.forward_mode || "nat", pver: 2, profile: "balanced", lanes: 1, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", dscp: "", noDF: false, padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
+      protect: d.obfs ? "obfs" : d.encrypt === "auto" ? "auto" : d.encrypt ? "ipsec" : "none", encrypt: d.encrypt && d.encrypt !== "auto" ? d.encrypt : "aes-gcm-128",
+      pool: d.pool || "default", pool4: "", pool6: "", poolName: "",
+      fmode: d.forward_mode || "nat", pver: 2, profile: "balanced", lanes: 1, mtuMode: d.mtu_probe ? "probe" : "auto", mtu: "", ttl: "", dscp: "", pmtud: "on", padding: d.padding || "", keepalive: "", peer_key: "", adv: false,
     }, preset);
     if (preset.peer) { S.wiz.dest = "peer"; S.wiz.step = preset.mode ? 3 : 2; }
     const p = wizPeer(S.wiz); if (p && p.address6) S.wiz.remote6 = p.address6;
@@ -2825,7 +2929,42 @@
     if (t.dataset.act === "fe-group") { const g = S.fe.groups.filter((x) => x !== t.value); S.fe.groups = t.checked ? g.concat(t.value) : g; S.edit = true; }
     if (t.dataset.act === "restore-file" && t.files && t.files[0]) inspectBackup(t.files[0]);
     if (t.dataset.act === "st-check") { setPath(t.dataset.path, t.checked); if (!t.closest(".modal")) S.edit = true; }
+    if (t.dataset.act === "bk-add" && t.value) { S[t.dataset.path].backups.push(t.value); drawModal(); }
   });
+  // Dragging a row of the ports table to another place.
+  let portDrag = null;
+  const portRow = (e) => e.target instanceof Element ? e.target.closest("tr[data-port-drag]") : null;
+  document.addEventListener("dragstart", (e) => {
+    const tr = portRow(e);
+    if (!tr) return;
+    portDrag = tr.dataset.portDrag;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", portDrag);
+    tr.classList.add("dragging");
+  });
+  document.addEventListener("dragover", (e) => {
+    const tr = portRow(e);
+    if (!tr || !portDrag) return;
+    e.preventDefault();
+    for (const el of document.querySelectorAll("tr.drag-over")) if (el !== tr) el.classList.remove("drag-over");
+    if (tr.dataset.portDrag !== portDrag) tr.classList.add("drag-over");
+  });
+  document.addEventListener("drop", (e) => {
+    const tr = portRow(e);
+    if (!tr || !portDrag) return;
+    e.preventDefault();
+    const list = S.ov.forwards.filter((f) => f.mode !== "socks");
+    const from = list.findIndex((f) => portKey(f) === portDrag), to = list.findIndex((f) => portKey(f) === tr.dataset.portDrag);
+    portDrag = null;
+    if (from < 0 || to < 0 || from === to) { draw(); return; }
+    list.splice(to, 0, list.splice(from, 1)[0]);
+    savePortOrder(list);
+  });
+  document.addEventListener("dragend", () => {
+    portDrag = null;
+    for (const el of document.querySelectorAll("tr.dragging, tr.drag-over")) el.classList.remove("dragging", "drag-over");
+  });
+
   document.addEventListener("toggle", (e) => {
     const d = e.target;
     if (!(d instanceof HTMLDetailsElement)) return;
@@ -2968,7 +3107,7 @@
       const f = S.form, open = f.access === "all";
       try {
         const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: String(f.ports || "").trim(), proto: "tcp", mode: "socks",
-          listen: open ? "0.0.0.0" : "", auth: open || f.user ? `${(f.user || "").trim()}:${f.pass || ""}` : "", backup: f.backup || "" });
+          listen: open ? "0.0.0.0" : "", auth: open || f.user ? `${(f.user || "").trim()}:${f.pass || ""}` : "", backups: f.backups || [] });
         closeModal(); await refresh(); reportChange(ch, "پروکسی ساخته شد");
       } catch (e) { toast(errText(e.message), "bad"); }
     },
@@ -2976,7 +3115,7 @@
     async "add-forward-go"() {
       const f = S.form;
       try {
-        const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: (f.ports || "").trim(), proto: fwdProto(f.mode, f.proto || "both"), to: +f.to || 0, mode: f.mode, proxy_version: fwdVersion(f.mode, f), backup: f.backup || "" });
+        const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: (f.ports || "").trim(), proto: fwdProto(f.mode, f.proto || "both"), to: +f.to || 0, mode: f.mode, proxy_version: fwdVersion(f.mode, f), backups: f.backups || [] });
         closeModal(); await refresh(); reportChange(ch, "فوروارد اضافه شد");
       } catch (e) { toast(e.message, "bad"); }
     },
@@ -2986,7 +3125,7 @@
       const pv = f.proxy_version || 0, cut = f.auth ? f.auth.indexOf(":") : -1;
       S.tip = null;
       S.fwdEditor = { key: el.dataset.key, tunnel: f.tunnel, ports: f.ports, to: f.to || "", proto: f.proto, mode: f.mode,
-        pver: f.mode === "proxy" ? pv || 2 : 2, rver: f.mode === "relay" ? pv : 0, backup: f.backup || "",
+        pver: f.mode === "proxy" ? pv || 2 : 2, rver: f.mode === "relay" ? pv : 0, backups: (f.backups || []).slice(),
         access: f.listen && f.listen !== "127.0.0.1" ? "all" : "local", user: cut < 0 ? "" : f.auth.slice(0, cut), pass: cut < 0 ? "" : f.auth.slice(cut + 1), busy: false };
       openModal(fwdEditView);
     },
@@ -3000,10 +3139,46 @@
         : { proto: fwdProto(e.mode, e.proto), to: +e.to || 0, mode: e.mode, proxy_version: fwdVersion(e.mode, e) };
       e.busy = true; drawModal();
       try {
-        const ch = await api("POST", "forwards/update" + safeQ(), Object.assign(req, { was_tunnel: f.tunnel, was_ports: f.ports, tunnel: e.tunnel, ports: String(e.ports || "").trim(), backup: e.backup || "" }));
+        const ch = await api("POST", "forwards/update" + safeQ(), Object.assign(req, { was_tunnel: f.tunnel, was_ports: f.ports, tunnel: e.tunnel, ports: String(e.ports || "").trim(), backups: e.backups || [] }));
         S.modal = null; S.fwdEditor = null; drawModal();
         await refresh(); reportChange(ch, socks ? "پروکسی ذخیره شد" : "پورت ذخیره شد"); safeStarted(ch); draw();
       } catch (err) { e.busy = false; drawModal(); toast(errText(err.message), "bad"); }
+    },
+    "bk-move"(el) {
+      const list = S[el.dataset.path].backups, i = +el.dataset.i, j = i + +el.dataset.dir;
+      if (j < 0 || j >= list.length) return;
+      [list[i], list[j]] = [list[j], list[i]];
+      drawModal();
+    },
+    "bk-del"(el) { S[el.dataset.path].backups.splice(+el.dataset.i, 1); drawModal(); },
+    "port-sort"(el) { S.portSort = el.dataset.value; store("nt-port-sort", S.portSort); draw(); },
+    "port-move"(el) {
+      const list = S.ov.forwards.filter((f) => f.mode !== "socks"), i = list.findIndex((f) => portKey(f) === el.dataset.key), j = i + +el.dataset.dir;
+      if (i < 0 || j < 0 || j >= list.length) return;
+      [list[i], list[j]] = [list[j], list[i]];
+      savePortOrder(list);
+    },
+    async "pool-save"() {
+      const e = S.pe;
+      try {
+        await api("POST", "pools", { name: (e.name || "").trim(), net4: (e.net4 || "").trim(), net6: (e.net6 || "").trim(), was: e.was || "" });
+        S.pe = null;
+        await refresh(); toast("پریست ذخیره شد"); draw();
+      } catch (err) { toast(errText(err.message), "bad"); }
+    },
+    "pool-edit"(el) { const p = S.ov.pools.find((x) => x.name === el.dataset.name); if (p) { S.pe = { name: p.name, net4: p.net4 || "", net6: p.net6 || "", was: p.name }; draw(); } },
+    "pool-cancel"() { S.pe = null; draw(); },
+    async "pool-del"(el) {
+      try { await api("POST", "pools/remove", { name: el.dataset.name }); if (S.defs && S.defs.pool === el.dataset.name) S.defs.pool = ""; await refresh(); toast("پریست حذف شد"); draw(); }
+      catch (err) { toast(errText(err.message), "bad"); }
+    },
+    async "wiz-pool-save"() {
+      const w = S.wiz, name = (w.poolName || "").trim();
+      try {
+        await api("POST", "pools", { name, net4: (w.pool4 || "").trim(), net6: (w.pool6 || "").trim() });
+        await refresh();
+        w.pool = name; w.pool4 = w.pool6 = w.poolName = ""; toast("پریست ذخیره شد"); drawModal();
+      } catch (err) { toast(errText(err.message), "bad"); }
     },
     tip(el) { S.tip = S.tip === el.dataset.id ? null : el.dataset.id; if (el.closest(".modal")) drawModal(); else draw(); },
     async "safe-keep"(el) {
@@ -3186,7 +3361,7 @@
     "goto-sec"(el, e) { e.preventDefault(); S.sec = el.dataset.sec; location.hash = "#/settings"; },
     async "save-defaults"() {
       const d = S.defs;
-      try { await api("POST", "settings/defaults", { encrypt: d.encrypt, mtu_probe: !!d.mtu_probe, obfs: !!d.obfs, padding: +d.padding || 0, forward_mode: d.forward_mode === "nat" ? "" : d.forward_mode, no_recover: !d.recover }); S.edit = false; S.defs = null; await refresh(); toast("پیش‌فرض‌ها ذخیره شد"); }
+      try { await api("POST", "settings/defaults", { encrypt: d.encrypt, mtu_probe: !!d.mtu_probe, obfs: !!d.obfs, padding: +d.padding || 0, forward_mode: d.forward_mode === "nat" ? "" : d.forward_mode, no_recover: !d.recover, pool: d.pool || "", auto_wait: +d.auto_wait || 0 }); S.edit = false; S.defs = null; await refresh(); toast("پیش‌فرض‌ها ذخیره شد"); }
       catch (e) { toast(e.message, "bad"); }
     },
     async boost() {

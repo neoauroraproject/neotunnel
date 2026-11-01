@@ -255,9 +255,11 @@ type ForwardRequest struct {
 	To           uint16 `json:"to,omitempty"`
 	Mode         string `json:"mode,omitempty"` // nat (default), transparent, proxy, relay
 	ProxyVersion int    `json:"proxy_version,omitempty"`
-	// Backup is a second tunnel to the same far server that the forward
-	// moves to while Tunnel doesn't pass traffic ("" = none).
-	Backup string `json:"backup,omitempty"`
+	// Backups are other tunnels to the same far server the forward moves to,
+	// in this order, while Tunnel doesn't pass traffic. Backup is the same as
+	// a list, separated by commas, for callers that don't give Backups.
+	Backups []string `json:"backups,omitempty"`
+	Backup  string   `json:"backup,omitempty"`
 	// Listen and Auth are a socks forward's address ("" = 127.0.0.1) and
 	// "user:password" ("" = none; required off loopback).
 	Listen string `json:"listen,omitempty"`
@@ -311,8 +313,15 @@ func (r *ForwardRequest) check(st *config.State) error {
 	if (r.Mode == config.ForwardProxy || r.Mode == config.ForwardRelay) && len(forward.Expand(r.Ports)) > forward.MaxRelayPorts {
 		return fmt.Errorf("proxy mode supports up to %d ports per forward", forward.MaxRelayPorts)
 	}
-	if r.Backup != "" {
-		if err := checkBackup(st, *t, r.Backup); err != nil {
+	if len(r.Backups) == 0 && r.Backup != "" {
+		r.Backups = strings.Split(r.Backup, ",")
+	}
+	for i, b := range r.Backups {
+		r.Backups[i] = strings.TrimSpace(b)
+		if slices.Contains(r.Backups[:i], r.Backups[i]) {
+			return fmt.Errorf("backup tunnel %s is listed twice", r.Backups[i])
+		}
+		if err := checkBackup(st, *t, r.Backups[i]); err != nil {
 			return err
 		}
 	}
@@ -394,14 +403,18 @@ func AddForward(r ForwardRequest) (Change, error) {
 			return fmt.Errorf("unknown tunnel %q", r.Tunnel)
 		}
 		relaySecret(t, r.Mode)
-		if b, ok := s.Tunnel(r.Backup); ok {
-			relaySecret(b, r.Mode)
+		for _, n := range r.Backups {
+			if b, ok := s.Tunnel(n); ok {
+				relaySecret(b, r.Mode)
+			}
 		}
 		if err := portsFree(s, r.Ports, r.Proto, ""); err != nil {
 			return err
 		}
-		s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: r.Tunnel, Proto: r.Proto, Ports: r.Ports,
-			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Backup: r.Backup, Listen: r.Listen, Auth: r.Auth})
+		f := config.Forward{Node: s.Self, Tunnel: r.Tunnel, Proto: r.Proto, Ports: r.Ports,
+			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Listen: r.Listen, Auth: r.Auth}
+		f.SetBackups(r.Backups)
+		s.Forwards = append(s.Forwards, f)
 		return nil
 	})
 	return ch, err
@@ -441,13 +454,21 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 				if t, ok := s.Tunnel(r.Tunnel); ok {
 					relaySecret(t, r.Mode)
 				}
-				if b, ok := s.Tunnel(r.Backup); ok {
-					relaySecret(b, r.Mode)
+				for _, n := range r.Backups {
+					if b, ok := s.Tunnel(n); ok {
+						relaySecret(b, r.Mode)
+					}
 				}
+				was := f.PortKey()
 				f.Tunnel, f.Ports = r.Tunnel, r.Ports
-				f.Proto, f.To, f.Mode, f.ProxyVersion, f.Backup = r.Proto, r.To, r.Mode, r.ProxyVersion, r.Backup
+				f.Proto, f.To, f.Mode, f.ProxyVersion = r.Proto, r.To, r.Mode, r.ProxyVersion
+				f.SetBackups(r.Backups)
 				f.Listen, f.Auth = r.Listen, r.Auth
 				s.Forwards[i] = f
+				// The port keeps its place in the list under its new key.
+				if at := slices.Index(s.PortOrder, was); at >= 0 {
+					s.PortOrder[at] = f.PortKey()
+				}
 				return portsFreeExcept(s, i)
 			}
 		}
@@ -506,7 +527,7 @@ func RemoveForward(tunnel, ports string) (Change, error) {
 
 // SetDefaults saves the options new tunnels and forwards start with.
 func SetDefaults(d config.Defaults) error {
-	if d.Encrypt != "" {
+	if d.Encrypt != "" && d.Encrypt != config.EncryptAuto {
 		if _, err := config.LookupCipher(d.Encrypt); err != nil {
 			return err
 		}
@@ -514,10 +535,19 @@ func SetDefaults(d config.Defaults) error {
 	if d.Padding < 0 || d.Padding > 255 {
 		return fmt.Errorf("padding must be 0-255 bytes")
 	}
+	if d.AutoWait < 0 || d.AutoWait > 1440 {
+		return fmt.Errorf("the wait on each encryption step must be 1-1440 minutes")
+	}
 	if err := config.ValidForwardMode(d.ForwardMode, 0, "both"); err != nil {
 		return err
 	}
 	_, err := config.Update(func(s *config.State) error {
+		if d.Pool == config.DefaultPool {
+			d.Pool = ""
+		}
+		if _, ok := s.LookupPool(d.Pool); d.Pool != "" && !ok {
+			return fmt.Errorf("unknown address pool %q", d.Pool)
+		}
 		s.Defaults = &d
 		return nil
 	})

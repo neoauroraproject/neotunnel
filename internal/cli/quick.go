@@ -19,6 +19,8 @@ func quickCmd() *cobra.Command {
 		Example: `  neotunnel quick germany --address 203.0.113.10 --forward 443,8443
   neotunnel quick germany --address 198.51.100.7 --port 3000 --forward 2053 --forward-to 443
   neotunnel quick germany --encrypt aes-gcm-128 --mtu-probe
+  neotunnel quick germany --encrypt auto --pool 172
+  neotunnel quick germany --mode gre --no-pmtud --pool4 10.20.0.0/24
   neotunnel quick germany --obfs --port 8443 --padding 32
   neotunnel quick germany --forward 443 --forward-mode transparent
   neotunnel quick germany --mode wireguard`,
@@ -49,6 +51,7 @@ func quickCmd() *cobra.Command {
 	f.IntVar(&req.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --forward-mode proxy: 2 (default) or 1; with relay: 0 (none, default), 1 or 2")
 	f.BoolVar(&req.Obfs, "obfs", false, "run the tunnel over NeoObfs (encrypted UDP that looks like noise; give --port)")
 	settingsFlags(f, &req.Settings)
+	poolFlags(f, &req.PoolChoice)
 	return cmd
 }
 

@@ -123,6 +123,7 @@ func (l *Live) Overview() (Overview, error) {
 	if cc, _ := sysctl.Get("net.ipv4.tcp_congestion_control"); cc == "bbr" {
 		ov.Node.BBR = true
 	}
+	ov.Pools = poolViews(st)
 	for _, m := range st.Masters() {
 		mi := MasterInfo{Name: m.Master.Name, Address: m.Master.Address, Paired: m.EnrollToken == ""}
 		if ov.Master == nil {
@@ -174,7 +175,7 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 		v := TunnelView{
 			Name: t.Name, Label: t.Label, Kind: string(t.Kind), Mode: t.Mode, Over: t.Over, Carrier: carriers[t.Name],
 			Peer: far.Node, FarIP: far.Endpoint, Port: t.Port,
-			Limits: manage.LimitsOf(t), Blocked: engine.Blocked(t.Name),
+			Limits: manage.LimitsOf(t), Blocked: engine.Blocked(t.Name), AutoEncrypt: t.AutoEncrypt,
 		}
 		if ki, err := config.LookupKind(t.Kind); err == nil {
 			v.Layer = ki.Layer
@@ -285,13 +286,32 @@ func peerViews(st *config.State) []PeerView {
 	return out
 }
 
+// poolViews lists the address pools with how many tunnels came from each.
+func poolViews(st *config.State) []PoolView {
+	out := []PoolView{}
+	for _, p := range st.AllPools() {
+		v := PoolView{AddressPool: p, Builtin: config.BuiltinPool(p.Name)}
+		for _, t := range st.Tunnels {
+			from := (t.Pool4 != "" && t.Pool4 == p.Net4) || (t.Pool6 != "" && t.Pool6 == p.Net6)
+			if p.Name == config.DefaultPool {
+				from = t.Pool4 == "" && t.Pool6 == ""
+			}
+			if from && t.Mode != "" {
+				v.Tunnels++
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardView {
 	ts, fs := st.Effective()
 	paths := failover.Load()
 	out := []ForwardView{}
-	for _, f := range fs {
+	for _, f := range st.SortForwards(fs) {
 		v := ForwardView{Tunnel: f.Tunnel, Proto: f.Proto, Ports: f.Ports, To: f.To, Public: st.Address,
-			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Listen: f.Listen, Auth: f.Auth, Backup: f.Backup, Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
+			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Listen: f.Listen, Auth: f.Auth, Backup: f.Backup, Backups: f.Backups(), Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
 		if p := paths[failover.Key(f)]; p != nil && f.Backup != "" {
 			v.Since, v.Switches = p.Since, p.Switches
 		}

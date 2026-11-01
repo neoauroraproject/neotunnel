@@ -152,6 +152,27 @@ grep -q "\"agent_port\": *$eport" "$WORK/hub/state.json" || fail "hub did not le
 in_hub tunnel remove g9 >/dev/null
 pass "peer caught up automatically; its agent runs on its own port $eport"
 
+# 5c. A path that lets TCP through and drops anything starting like TLS: the
+#     control channel doesn't look like it, so changes keep arriving.
+if ip netns exec $EDGE nft -f - <<NFT
+table inet e2etls {
+  chain in { type filter hook input priority -300; policy accept; tcp dport $eport @ih,0,8 0x16 counter drop; }
+}
+NFT
+then
+  ip netns exec $HUB curl -sk -m 3 -o /dev/null "https://$EDGE_IP:$eport/" && fail "the filter let TLS through"
+  in_hub tunnel add g8 --kind gre --peer edge >/dev/null || fail "add a tunnel behind the TLS filter"
+  in_hub peer list | grep -q "edge.*in sync" || { in_hub peer list; fail "peer not in sync behind the TLS filter"; }
+  ip -n $EDGE -d link show nt-g8 2>/dev/null | grep -q gre || fail "the change did not reach edge behind the TLS filter"
+  in_hub tunnel remove g8 >/dev/null || fail "remove a tunnel behind the TLS filter"
+  ip -n $EDGE link show nt-g8 >/dev/null 2>&1 && fail "the removal did not reach edge behind the TLS filter"
+  [ "$(ip netns exec $HUB ss -tn state established "( dport = :$eport )" | tail -n +2 | wc -l)" -le 1 ] || { ip netns exec $HUB ss -tn; fail "connections to edge's agent left open"; }
+  ip netns exec $EDGE nft delete table inet e2etls
+  pass "control channel keeps working where TLS is dropped; no connections left open"
+else
+  echo "SKIP nft on this kernel can't match TCP payload"
+fi
+
 # 6. Port forwarding from a client: 8080 via 6to4, 9090 -> 8080 via UDP tunnel.
 [ "$(http_code http://198.18.0.1:8080/)" = 200 ] || fail "forward 8080 through 6to4"
 [ "$(http_code http://198.18.0.1:9090/)" = 200 ] || fail "forward 9090 -> 8080 through ipip/udp"
@@ -530,9 +551,9 @@ pass "panel: traffic totals, MTU probe and live settings change"
 # 16b. Backup tunnel: port 8083 goes through g1 (plain GRE) with u1 (IPIP in
 #      UDP 3001) as its backup. Edge drops 95% of GRE: g1 is still "up" and a
 #      ping gets through now and then, which the old one-reply rule took for
-#      working. Now the probe rounds grade it bad, the hub restarts it on both
-#      servers, and when that doesn't help the forward moves to u1 and keeps
-#      working; once GRE passes again for a while it comes back to g1.
+#      working. Now the probe rounds grade it bad, the forward moves to u1 and
+#      keeps working, and the hub restarts g1 on both servers behind it; once
+#      GRE passes again for a while the forward comes back to g1.
 mtu_of() { ip -n "$1" -o link show "$2" | grep -o 'mtu [0-9]*' | cut -d' ' -f2; }
 wait_for() { # seconds, command...: poll until the command succeeds
   local n=$1; shift
@@ -557,15 +578,16 @@ g1h="[t for t in o['tunnels'] if t['name']=='g1'][0].get('health') or {}"
 wait_for 60 ov "($g1h).get('grade') in ('bad', 'down')" || { api "$base/api/overview" | head -c 3000; fail "95% loss on g1 not graded bad"; }
 wait_for 60 grep -q "tunnel g1: lost .*restarting it on both servers" "$WORK/hub.log" || { tail -20 "$WORK/hub.log"; fail "g1 at 95% loss was not restarted"; }
 echo "NOTE restarted $(( $(date +%s) - t0 )) s after the loss began"
-wait_for 90 fwd_on u1 || { in_hub forward list; tail -20 "$WORK/hub.log"; fail "forward did not move to the backup after the restart didn't help"; }
+wait_for 90 fwd_on u1 || { in_hub forward list; tail -20 "$WORK/hub.log"; fail "forward did not move to the backup"; }
 echo "NOTE moved to the backup $(( $(date +%s) - t0 )) s after the loss began"
-ov "'restarted' in ($g1h).get('action', '')" || fail "panel does not show the automatic restart"
+# The forward moved first; the restart behind it reports when it is done.
+wait_for 30 ov "'restarted' in ($g1h).get('action', '')" || fail "panel does not show the automatic restart"
 g1ev=$(api "$base/api/tunnels/g1/events")
 for k in health restart failover; do grep -q "\"kind\":\"$k\"" <<<"$g1ev" || { echo "$g1ev" | head -c 2000; fail "g1 event log lacks a $k event"; }; done
 [ "$(http_code http://198.18.0.1:8083/)" = 200 ] || fail "forward 8083 through the backup u1"
 grep -q "forward g1 8083: now through u1" "$WORK/hub.log" || fail "switch to the backup not logged"
 ov "$f8083['backup'] == 'u1' and $f8083['active'] == 'u1'" || fail "panel does not show the backup as the active path"
-pass "backup: g1 at 95% loss graded bad, restarted once, then port 8083 moved to u1 and kept working"
+pass "backup: g1 at 95% loss graded bad, port 8083 moved to u1 and kept working, g1 restarted behind it"
 ip netns exec $EDGE nft delete table inet e2ecut
 t0=$(date +%s)
 wait_for 150 fwd_on g1 || { in_hub forward list; fail "forward did not come back to its primary"; }
@@ -574,6 +596,146 @@ echo "NOTE back on the primary $(( $(date +%s) - t0 )) s after GRE passed again"
 ov "$f8083['active'] == 'g1' and [s['to'] for s in $f8083['switches']] == ['u1', 'g1']" || fail "panel switch history"
 in_hub forward remove g1 8083 >/dev/null
 pass "backup: back on g1 once it was healthy again, with the history in the panel"
+
+# 16b'. Several backups: 8084 runs on g1, then u1, then b3 (GENEVE). GRE and
+#       UDP 3001 stop passing at once: the port skips the dead first backup,
+#       fast, and climbs back up the list when they pass again.
+in_hub tunnel add b3 --kind geneve --peer edge >/dev/null || fail "add a third tunnel"
+in_hub forward add g1 8084 --to 8080 --proto tcp --backup u1,b3 >/dev/null || fail "add forward with two backups"
+in_hub forward add g1 8086 --to 8080 --proto tcp --backup b3,b3 >/dev/null 2>&1 && fail "accepted a backup listed twice"
+fwd84_on() { in_hub forward list | grep -q "8084 .*backup u1, b3, now through $1"; }
+fwd84_on g1 || { in_hub forward list; fail "forward with two backups does not start on its primary"; }
+ip netns exec $EDGE nft -f - <<'NFT'
+table inet e2ecut {
+  chain in { type filter hook input priority -300; policy accept; meta l4proto gre drop; udp dport 3001 drop; }
+}
+NFT
+t0=$(date +%s)
+wait_for 60 fwd84_on b3 || { in_hub forward list; tail -20 "$WORK/hub.log"; fail "forward did not skip to its second backup"; }
+echo "NOTE on the second backup $(( $(date +%s) - t0 )) s after both tunnels stopped"
+[ "$(http_code http://198.18.0.1:8084/)" = 200 ] || fail "forward 8084 through its second backup"
+f8084="[f for f in o['forwards'] if f['ports']=='8084'][0]"
+ov "$f8084['backups'] == ['u1', 'b3'] and $f8084['active'] == 'b3'" || fail "panel does not show both backups and the active one"
+ip netns exec $EDGE nft delete table inet e2ecut
+wait_for 150 fwd84_on g1 || { in_hub forward list; fail "forward did not come back to its primary"; }
+[ "$(http_code http://198.18.0.1:8084/)" = 200 ] || fail "forward 8084 back through g1"
+pass "several backups: 8084 skipped a dead backup, kept working, and came back up the list"
+
+# 16b''. The order of ports: saved for the listing, nothing else changes.
+in_hub forward add b3 8087 --to 8080 --proto tcp >/dev/null || fail "add a second forward"
+api -d '{"keys":["tcp/8087","tcp/8084"]}' "$base/api/forwards/order" | grep -q '"ok":true' || fail "save the order of ports"
+[ "$(in_hub forward list | grep -E '808[47] ' | head -1 | grep -o 8087)" = 8087 ] || { in_hub forward list; fail "order not used in the forward list"; }
+ov "[f['ports'] for f in o['forwards']][:2] == ['8087', '8084']" || fail "order not used in the panel"
+in_hub peer list | grep -q "edge.*in sync" || fail "saving the order should not touch the peer"
+in_hub forward remove b3 8087 >/dev/null
+in_hub forward remove g1 8084 >/dev/null
+pass "port order: saved, listed in that order, peer untouched"
+
+# 16b'''. Automatic encryption: a1 starts plain. The path stops passing plain
+#         GRE (ESP still gets through, at the wire, before decryption): after
+#         a restart that doesn't help, it steps to AES-128 on both servers and
+#         traffic passes. Nothing changes while traffic passes. e1 goes first:
+#         IPsec covers all GRE between two addresses, so with an encrypted GRE
+#         tunnel around, a1's "plain" packets would leave as ESP too.
+in_hub tunnel remove e1 >/dev/null
+in_hub quick edge --name a1 --mode gre --encrypt auto --pool 172 >/dev/null || fail "quick with automatic encryption"
+a1peer=$(inner $EDGE nt-a1)
+case "$a1peer" in 172.27.*) ;; *) fail "a1 should get its address from pool 172, got $a1peer";; esac
+ip netns exec $HUB ping -c 2 -W 2 "$a1peer" >/dev/null || fail "ping through a1, plain"
+a1="[t for t in o['tunnels'] if t['name']=='a1'][0]"
+ov "$a1['auto_encrypt'] and not $a1.get('encrypt') and $a1['settings']['encrypt'] == 'auto'" || fail "panel does not show a1 as automatic and plain"
+ip netns exec $EDGE nft -f - <<'NFT'
+table netdev e2eplain {
+  chain in { type filter hook ingress device "veth-edge" priority 0; policy accept; ip protocol gre drop; }
+}
+NFT
+t0=$(date +%s)
+a1step() { grep -q "tunnel a1: .*automatic encryption moves from no encryption to aes-gcm-128" "$WORK/hub.log"; }
+wait_for 120 a1step || { tail -20 "$WORK/hub.log"; fail "a1 did not take the next step of automatic encryption"; }
+echo "NOTE stepped to AES-128 $(( $(date +%s) - t0 )) s after plain GRE stopped"
+a1on() { ov "$a1.get('encrypt') == 'aes-gcm-128'"; }
+wait_for 30 a1on || fail "panel does not show a1 on AES-128"
+a1ping() { ip netns exec $HUB ping -c 1 -W 2 "$a1peer" >/dev/null; }
+wait_for 30 a1ping || { tail -20 "$WORK/hub.log"; ip -n $HUB xfrm state; fail "no traffic through a1 on AES-128"; }
+grep -q '"name": "a1"' "$WORK/edge/state.json" || fail "edge lacks a1"
+# The step is recorded once its restart is done, which traffic may beat.
+a1logged() { api "$base/api/tunnels/a1/events" | grep -q '"kind":"cipher"'; }
+wait_for 60 a1logged || { api "$base/api/tunnels/a1/events" | head -c 2000; fail "a1 event log lacks the encryption step"; }
+pass "automatic encryption: plain GRE blocked, a1 moved to AES-128 on both servers and passes again"
+ip netns exec $EDGE nft delete table netdev e2eplain
+
+# 16b''''. The last step: from ChaCha20, with ESP blocked too, a NeoObfs layer
+#          goes under the tunnel on both servers and traffic passes as UDP.
+#          Choosing a cipher by hand takes the layer away again.
+in_hub tunnel set a1 --encrypt auto >/dev/null || fail "keep automatic encryption"
+ov "$a1.get('encrypt') == 'aes-gcm-128'" || fail "saving auto should keep the current step"
+in_hub tunnel set a1 --encrypt chacha20-poly1305 >/dev/null || fail "choose a cipher by hand"
+ov "not $a1.get('auto_encrypt') and $a1['settings']['encrypt'] == 'chacha20-poly1305'" || fail "choosing a cipher should turn automatic encryption off"
+in_hub tunnel remove a1 >/dev/null
+in_hub quick edge --name a5 --mode gre --encrypt chacha20-poly1305 >/dev/null || fail "quick on ChaCha20"
+in_hub tunnel set a5 --encrypt auto >/dev/null || fail "back to automatic encryption"
+a5="[t for t in o['tunnels'] if t['name']=='a5'][0]"
+ov "$a5['auto_encrypt'] and $a5.get('encrypt') == 'chacha20-poly1305'" || fail "automatic encryption should start from the current cipher"
+# (No ping here: not every kernel has ChaCha20 for ESP; the next step doesn't depend on it.)
+ip netns exec $EDGE nft -f - <<'NFT'
+table netdev e2eplain {
+  chain in { type filter hook ingress device "veth-edge" priority 0; policy accept; ip protocol { gre, esp } drop; }
+}
+NFT
+t0=$(date +%s)
+a5layer() { ip -n $HUB link show nt-a5-o >/dev/null 2>&1 && ip -n $EDGE link show nt-a5-o >/dev/null 2>&1; }
+wait_for 150 a5layer || { tail -20 "$WORK/hub.log"; ip -n $HUB -o link show; fail "a5 did not get its NeoObfs layer"; }
+echo "NOTE NeoObfs layer up $(( $(date +%s) - t0 )) s after ESP stopped"
+a5ping() { ip netns exec $HUB ping -c 1 -W 2 "$(inner $EDGE nt-a5)" >/dev/null; }
+wait_for 60 a5ping || { tail -20 "$WORK/hub.log"; ip -n $HUB -d link show nt-a5; fail "no traffic through a5 over NeoObfs"; }
+ov "$a5['auto_encrypt'] and $a5['obfs'] and [l['kind'] for l in $a5['stack']] == ['obfs', 'gre']" || { api "$base/api/overview" | head -c 3000; fail "panel does not show a5 over NeoObfs"; }
+ov "not any(t['name'] == 'a5-o' and not t['carrier'] for t in o['tunnels'])" || fail "the NeoObfs layer shows as a tunnel of its own"
+ip netns exec $EDGE nft delete table netdev e2eplain
+in_hub tunnel set a5 --encrypt aes-gcm-256 >/dev/null || fail "choose a cipher by hand over the layer"
+a5gone() { ! ip -n $HUB link show nt-a5-o >/dev/null 2>&1 && ! ip -n $EDGE link show nt-a5-o >/dev/null 2>&1; }
+hup 2
+wait_for 30 a5gone || { ip -n $HUB -o link show; fail "the NeoObfs layer stayed after choosing a cipher"; }
+ov "not $a5.get('auto_encrypt') and $a5.get('encrypt') == 'aes-gcm-256'" || fail "a5 not on the cipher chosen by hand"
+wait_for 30 a5ping || { tail -20 "$WORK/hub.log"; ip -n $HUB -d link show nt-a5; fail "no traffic through a5 after the layer went"; }
+in_hub tunnel remove a5 >/dev/null
+in_hub tunnel remove b3 >/dev/null
+pass "automatic encryption: NeoObfs layer as the last step, gone again with a cipher chosen by hand"
+
+# 16b'''''. Address pools: a preset, ranges by hand, and what they refuse.
+in_hub pool add office --net4 10.99.0.0/29 --net6 fd99::/48 >/dev/null || fail "add a pool"
+in_hub pool list | grep -q "office" || fail "pool not listed"
+in_hub tunnel add a2 --kind gre --peer edge --pool office >/dev/null || fail "tunnel from a pool"
+ip -n $HUB -o -4 addr show dev nt-a2 | grep -q "10.99.0.1/30" || { ip -n $HUB -o addr show dev nt-a2; fail "a2 not on its pool's range"; }
+ip -n $HUB -o -6 addr show dev nt-a2 | grep -q "fd99::1/64" || { ip -n $HUB -o addr show dev nt-a2; fail "a2 not on its pool's IPv6 range"; }
+ip netns exec $HUB ping -c 2 -W 2 10.99.0.2 >/dev/null || fail "ping through a tunnel from a pool"
+in_hub tunnel add a3 --kind gre --peer edge --pool4 10.98.0.4/30 >/dev/null || fail "tunnel with a range by hand"
+ip -n $EDGE -o -4 addr show dev nt-a3 | grep -q "10.98.0.6/30" || fail "a3 not on the range given by hand"
+in_hub tunnel add a4 --kind gre --peer edge --pool4 10.98.0.4/30 >/dev/null 2>&1 && fail "a full range gave out addresses"
+in_hub tunnel add a4 --kind gre --peer edge --pool nope >/dev/null 2>&1 && fail "accepted an unknown pool"
+in_hub tunnel add a4 --kind gre --peer edge --pool4 $HUB_IP/24 >/dev/null 2>&1 && fail "accepted a range with the server's own address"
+in_hub pool use office >/dev/null || fail "use a pool for new tunnels"
+in_hub tunnel add a4 --kind gre --peer edge >/dev/null || fail "tunnel from the default pool"
+ip -n $HUB -o -4 addr show dev nt-a4 | grep -q "10.99.0.5/30" || { ip -n $HUB -o addr show dev nt-a4; fail "a4 not on the pool in use"; }
+in_hub pool remove office >/dev/null || fail "remove a pool"
+ip netns exec $HUB ping -c 1 -W 2 10.99.0.6 >/dev/null || fail "removing a pool should leave its tunnels"
+in_hub tunnel remove a2 >/dev/null; in_hub tunnel remove a3 >/dev/null; in_hub tunnel remove a4 >/dev/null
+pass "address pools: presets, ranges by hand, the default pool, and what they refuse"
+
+# 16b''''''. PMTUD flags reach the kernel, on both ends.
+in_hub tunnel add p3 --kind gre --peer edge >/dev/null || fail "add gre"
+# (ip prints only nopmtudisc, and nothing when path MTU discovery is on.)
+ip -n $HUB -d link show nt-p3 | grep -qw nopmtudisc && { ip -n $HUB -d link show nt-p3; fail "PMTUD should be on by default"; }
+in_hub tunnel set p3 --no-pmtud >/dev/null || fail "turn PMTUD off"
+for ns in $HUB $EDGE; do ip -n $ns -d link show nt-p3 | grep -qw nopmtudisc || { ip -n $ns -d link show nt-p3; fail "PMTUD still on in $ns"; }; done
+ip -n $HUB -d link show nt-p3 | grep -q "ignore-df" && fail "ignore-df set by itself"
+in_hub tunnel set p3 --ignore-df >/dev/null || fail "ignore DF"
+for ns in $HUB $EDGE; do ip -n $ns -d link show nt-p3 | grep -qw nopmtudisc && ip -n $ns -d link show nt-p3 | grep -q "ignore-df" || { ip -n $ns -d link show nt-p3; fail "ignore-df missing in $ns"; }; done
+ip netns exec $HUB ping -c 2 -W 2 "$(inner $EDGE nt-p3)" >/dev/null || fail "ping with PMTUD off and DF ignored"
+in_hub tunnel set p3 --no-pmtud=false >/dev/null || fail "turn PMTUD back on"
+ip -n $HUB -d link show nt-p3 | grep -qE "nopmtudisc|ignore-df" && { ip -n $HUB -d link show nt-p3; fail "PMTUD not back on"; }
+in_hub tunnel add p4 --kind ipip --peer edge --port 3004 --no-pmtud --ignore-df >/dev/null 2>&1 && fail "IPIP accepted ignore-df"
+in_hub tunnel remove p3 >/dev/null
+pass "PMTUD: on by default, off with nopmtudisc, ignore-df on GRE, on both servers"
 
 # 16c. Safe apply. Kept: the panel and edge confirm, nothing reverts. Cut:
 #      after the change the agent port is dropped on edge, so edge can't

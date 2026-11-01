@@ -122,6 +122,13 @@ func (m *Managed) view(rename bool, own map[string]bool) ([]Tunnel, []Forward) {
 	fs := make([]Forward, 0, len(m.Forwards))
 	for _, f := range m.Forwards {
 		f.Tunnel, f.Backup = local(f.Tunnel), local(f.Backup)
+		if len(f.MoreBackups) > 0 {
+			more := make([]string, len(f.MoreBackups))
+			for i, n := range f.MoreBackups {
+				more[i] = local(n)
+			}
+			f.MoreBackups = more
+		}
 		fs = append(fs, f)
 	}
 	return ts, fs

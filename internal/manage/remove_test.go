@@ -6,6 +6,21 @@ import (
 	"neotunnel/internal/config"
 )
 
+// A forward's next backup takes over from a removed tunnel, in order.
+func TestRemoveKeepsTheOtherBackups(t *testing.T) {
+	st := &config.State{Self: "ir", Forwards: []config.Forward{
+		{Node: "ir", Tunnel: "a", Backup: "b", MoreBackups: []string{"c", "d"}, Ports: "443", Proto: "tcp"},
+		{Node: "ir", Tunnel: "x", Backup: "b", MoreBackups: []string{"c"}, Ports: "80", Proto: "tcp"},
+	}}
+	removeTunnels(st, []string{"a", "c"})
+	if f := st.Forwards[0]; f.Tunnel != "b" || f.Backup != "d" || len(f.MoreBackups) != 0 {
+		t.Errorf("443: %+v", f)
+	}
+	if f := st.Forwards[1]; f.Tunnel != "x" || f.Backup != "b" || len(f.MoreBackups) != 0 {
+		t.Errorf("80: %+v", f)
+	}
+}
+
 func TestRemoveTunnelKeepsForwardOnItsBackup(t *testing.T) {
 	st := &config.State{
 		Tunnels: []config.Tunnel{{Name: "de1"}, {Name: "de2"}, {Name: "nl"}},

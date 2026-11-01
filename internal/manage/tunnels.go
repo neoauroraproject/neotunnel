@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -69,9 +70,10 @@ type Settings struct {
 	MTU       int    `json:"mtu,omitempty"`       // the user-facing tunnel's MTU
 	MTUProbe  bool   `json:"mtu_probe,omitempty"` // size from the measured path MTU
 	TTL       uint8  `json:"ttl,omitempty"`
-	NoDF      bool   `json:"no_df,omitempty"`     // let the path fragment oversized packets
+	NoDF      bool   `json:"no_df,omitempty"`     // path MTU discovery off: let the path fragment oversized packets
+	IgnoreDF  bool   `json:"ignore_df,omitempty"` // GRE, GRETAP: fragment them even when the inner packet sets DF
 	DSCP      uint8  `json:"dscp,omitempty"`      // outer DSCP class, 0 = inherit
-	Encrypt   string `json:"encrypt,omitempty"`   // IPsec cipher on the bottom tunnel
+	Encrypt   string `json:"encrypt,omitempty"`   // IPsec cipher on the bottom tunnel, or config.EncryptAuto
 	Padding   int    `json:"padding,omitempty"`   // NeoObfs
 	Keepalive int    `json:"keepalive,omitempty"` // WireGuard / NeoObfs
 	PeerKey   string `json:"peer_key,omitempty"`  // WireGuard far end not run by NeoTunnel
@@ -85,6 +87,18 @@ type Settings struct {
 	Lanes int `json:"lanes,omitempty"`
 }
 
+// pmtuFlags are the path MTU discovery flags a tunnel of kind k keeps: kinds
+// that have no outer DF bit to clear drop them.
+func pmtuFlags(k config.Kind, noDF, ignoreDF bool) (bool, bool, error) {
+	if ignoreDF && !config.IgnoreDFKinds(k) {
+		return false, false, fmt.Errorf("only GRE and GRETAP over IPv4 can ignore the DF bit; %s can't", k)
+	}
+	if !config.PMTUKinds(k) {
+		return false, false, nil
+	}
+	return noDF, ignoreDF, nil
+}
+
 func (s Settings) validate() error {
 	if !config.ValidProfile(s.Profile) {
 		return fmt.Errorf("profile must be lean, balanced or max")
@@ -95,10 +109,13 @@ func (s Settings) validate() error {
 	if s.MTU != 0 && (s.MTU < 576 || s.MTU > 9000) {
 		return fmt.Errorf("MTU must be between 576 and 9000")
 	}
-	if s.Encrypt != "" {
+	if s.Encrypt != "" && s.Encrypt != config.EncryptAuto {
 		if _, err := config.LookupCipher(s.Encrypt); err != nil {
 			return err
 		}
+	}
+	if s.IgnoreDF && !s.NoDF {
+		return fmt.Errorf("ignoring DF needs path MTU discovery off")
 	}
 	if s.Padding < 0 || s.Padding > 255 {
 		return fmt.Errorf("padding must be 0-255 bytes")
@@ -135,6 +152,7 @@ type TunnelRequest struct {
 	Local6   string `json:"local6,omitempty"`
 	Remote6  string `json:"remote6,omitempty"`
 	Settings
+	PoolChoice
 	// Optional forward created together with the tunnel.
 	Forward      string `json:"forward,omitempty"`
 	ForwardTo    uint16 `json:"forward_to,omitempty"`
@@ -268,6 +286,10 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 	if req.Obfs && mode.Crypt {
 		req.Obfs = false // already encrypted; a second layer only costs speed
 	}
+	auto := req.Encrypt == config.EncryptAuto && !mode.Crypt && !req.Obfs
+	if req.Encrypt == config.EncryptAuto {
+		req.Encrypt = "" // the first step of automatic encryption
+	}
 	name := req.Name
 	if name == "" {
 		name = FreeName(st)
@@ -301,7 +323,7 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 		default:
 			n = name + "-6" // carrier
 		}
-		opts := TunnelOpts{Kind: string(k), Peer: req.Peer, Remote: req.Remote, stacked: i > 0}
+		opts := TunnelOpts{Kind: string(k), Peer: req.Peer, Remote: req.Remote, PoolChoice: req.PoolChoice, stacked: i > 0}
 		if i == 0 {
 			opts.Port = port // the port belongs to the outer tunnel
 		}
@@ -321,7 +343,10 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 		}
 		if i == 0 {
 			t.MTUProbe, t.TTL, t.Keepalive, t.Padding, t.PeerKey = req.MTUProbe, req.TTL, req.Keepalive, req.Padding, req.PeerKey
-			t.NoDF, t.DSCP = req.NoDF, req.DSCP
+			t.DSCP = req.DSCP
+			if t.NoDF, t.IgnoreDF, err = pmtuFlags(k, req.NoDF, req.IgnoreDF); err != nil {
+				return "", nil, err
+			}
 			ki, _ := config.LookupKind(k)
 			if !ki.Encrypted {
 				t.Encrypt = req.Encrypt
@@ -338,6 +363,7 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 	}
 	top := &defs[len(defs)-1]
 	top.Mode, top.MTU, top.Profile = mode.Name, req.MTU, profileOf(req.Profile)
+	top.AutoEncrypt = auto
 	top.Lanes = lanesOf(req.Lanes)
 	if err := checkLanes(*top); err != nil {
 		return "", nil, err
@@ -363,12 +389,30 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 	}
 	stack := Stack(st, name)
 	bottom, _ := st.Tunnel(stack[0])
+	// Automatic encryption's NeoObfs layer goes away with it: what the choice
+	// lands on is the tunnel above the layer.
+	auto := set.Encrypt == config.EncryptAuto
+	dropLayer := !auto && bottom.AutoLayer && len(stack) > 1
+	if dropLayer {
+		if port == bottom.Port {
+			port = 0 // the layer's port, which goes with it
+		}
+		bottom, _ = st.Tunnel(stack[1])
+	}
 	bk, _ := config.LookupKind(bottom.Kind)
-	if set.Encrypt != "" && bk.Encrypted {
+	if auto && bk.Encrypted && !bottom.AutoLayer {
+		auto = false
 		set.Encrypt = ""
 	}
-	if set.Encrypt != "" && bottom.Sides[1].Node == "" {
+	if set.Encrypt != "" && !auto && bk.Encrypted {
+		set.Encrypt = ""
+	}
+	if set.Encrypt != "" && bottom.Sides[1].Node == "" && !dropLayer {
 		return Change{}, fmt.Errorf("IPsec needs NeoTunnel on the far end")
+	}
+	noDF, ignoreDF, err := pmtuFlags(bottom.Kind, set.NoDF, set.IgnoreDF)
+	if err != nil {
+		return Change{}, err
 	}
 	if t.Kind == config.KindEoIP {
 		c := *t
@@ -398,15 +442,29 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 		pmtu.Forget(remote)
 	}
 	_, ch, err := Commit(st.PeersOf(*t), func(s *config.State) error {
-		top, _ := s.Tunnel(name)
-		b, _ := s.Tunnel(stack[0])
-		if top == nil || b == nil {
+		var b *config.Tunnel
+		var ok bool
+		if dropLayer {
+			b, ok = dropAutoLayer(s, stack[0], stack[1])
+		} else {
+			b, ok = s.Tunnel(stack[0])
+		}
+		top, ok2 := s.Tunnel(name)
+		if !ok || !ok2 {
 			return fmt.Errorf("tunnel %q changed meanwhile", name)
 		}
 		top.MTU, top.Profile = set.MTU, profileOf(set.Profile)
 		top.Lanes = lanesOf(set.Lanes)
-		b.MTUProbe, b.TTL, b.Encrypt = set.MTUProbe, set.TTL, set.Encrypt
-		b.NoDF, b.DSCP = set.NoDF, set.DSCP
+		top.AutoEncrypt = auto
+		b.MTUProbe, b.TTL = set.MTUProbe, set.TTL
+		if !auto {
+			b.Encrypt = set.Encrypt
+		}
+		// A layer that automatic encryption added doesn't hold these flags.
+		if !b.AutoLayer {
+			b.NoDF, b.IgnoreDF = noDF, ignoreDF
+		}
+		b.DSCP = set.DSCP
 		b.Keepalive, b.Padding = set.Keepalive, set.Padding
 		if b.Kind == config.KindWireGuard {
 			b.PeerKey = set.PeerKey
@@ -441,8 +499,12 @@ func SettingsOf(st *config.State, name string) (Settings, uint16) {
 		return config.Tunnel{}
 	}
 	top, b := find(name), find(stack[0])
-	return Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, NoDF: b.NoDF, DSCP: b.DSCP, Encrypt: b.Encrypt,
-		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID, Profile: top.Profile, Lanes: top.Lanes}, b.Port
+	s := Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, NoDF: b.NoDF, IgnoreDF: b.IgnoreDF, DSCP: b.DSCP, Encrypt: b.Encrypt,
+		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID, Profile: top.Profile, Lanes: top.Lanes}
+	if top.AutoEncrypt {
+		s.Encrypt = config.EncryptAuto
+	}
+	return s, b.Port
 }
 
 // TunnelOpts describes a single tunnel of any kind.
@@ -452,6 +514,7 @@ type TunnelOpts struct {
 	Port                     uint16
 	VNI                      uint32
 	Settings
+	PoolChoice
 	// stacked: the tunnel will run over another one of the same request, on
 	// its inner addresses, so it cannot clash with tunnels on public ones.
 	stacked bool
@@ -493,9 +556,18 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		return config.Tunnel{}, err
 	}
 	t := config.Tunnel{Name: name, Kind: kind, Over: o.Over, MTU: o.MTU, Port: o.Port, VNI: o.VNI,
-		MTUProbe: o.MTUProbe, TTL: o.TTL, NoDF: o.NoDF, DSCP: o.DSCP, Encrypt: o.Encrypt, Padding: o.Padding, Keepalive: o.Keepalive, PeerKey: o.PeerKey}
+		MTUProbe: o.MTUProbe, TTL: o.TTL, DSCP: o.DSCP, Encrypt: o.Encrypt, Padding: o.Padding, Keepalive: o.Keepalive, PeerKey: o.PeerKey}
+	if t.NoDF, t.IgnoreDF, err = pmtuFlags(kind, o.NoDF, o.IgnoreDF); err != nil {
+		return t, err
+	}
+	if t.Pool4, t.Pool6, err = o.PoolChoice.ranges(st); err != nil {
+		return t, err
+	}
 	if o.MTU == 0 {
 		t.MTU = o.Settings.MTU
+	}
+	if t.Encrypt == config.EncryptAuto {
+		t.Encrypt, t.AutoEncrypt = "", !ki.Encrypted
 	}
 	if ki.Encrypted {
 		t.Encrypt = ""
@@ -532,7 +604,7 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		if ki.NeedsPeer {
 			return t, fmt.Errorf("%s needs NeoTunnel on the far end", kind)
 		}
-		if t.Encrypt != "" {
+		if t.Encrypt != "" || t.AutoEncrypt {
 			return t, fmt.Errorf("IPsec needs NeoTunnel on the far end")
 		}
 		if kind == config.KindWireGuard && t.PeerKey == "" {
@@ -546,6 +618,9 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 		return t, fmt.Errorf("port %d is already used on %s by another main server's tunnel; pick another", t.Port, t.Sides[1].Node)
 	}
 	if err := checkTunnelID(t); err != nil {
+		return t, err
+	}
+	if err := checkPoolAddrs(t); err != nil {
 		return t, err
 	}
 	t.Lanes = lanesOf(o.Lanes)
@@ -785,19 +860,16 @@ func removeTunnels(s *config.State, names []string) {
 	}
 	s.Tunnels = ts
 	// A forward goes with its tunnel, unless it has a backup that stays: then
-	// the backup becomes its tunnel and the port keeps working. A forward
-	// that loses its backup just runs without one.
+	// the first such backup becomes its tunnel and the port keeps working. A
+	// forward that loses a backup just runs without it.
 	var fs []config.Forward
 	for _, f := range s.Forwards {
-		if drop[f.Tunnel] {
-			if f.Backup == "" || drop[f.Backup] {
-				continue
-			}
-			f.Tunnel, f.Backup = f.Backup, ""
+		left := slices.DeleteFunc(f.Paths(), func(n string) bool { return drop[n] })
+		if len(left) == 0 {
+			continue
 		}
-		if drop[f.Backup] {
-			f.Backup = ""
-		}
+		f.Tunnel = left[0]
+		f.SetBackups(left[1:])
 		fs = append(fs, f)
 	}
 	s.Forwards = fs

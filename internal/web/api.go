@@ -292,6 +292,33 @@ func (s *Server) routes(m *http.ServeMux) {
 		}
 		s.change(w, r, "forward "+req.Ports+" on "+req.Tunnel, func() (manage.Change, error) { return b.UpdateForward(req) })
 	}))
+	m.HandleFunc("POST /api/forwards/order", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Keys []string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		reply(w, map[string]bool{"ok": true}, manage.SetPortOrder(req.Keys))
+	}))
+	m.HandleFunc("POST /api/pools", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			config.AddressPool
+			Was string `json:"was"`
+		}
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		reply(w, map[string]bool{"ok": true}, manage.SavePool(req.AddressPool, req.Was))
+	}))
+	m.HandleFunc("POST /api/pools/remove", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Name string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		reply(w, map[string]bool{"ok": true}, manage.RemovePool(req.Name))
+	}))
 	m.HandleFunc("POST /api/forwards/remove", s.changing(func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Tunnel, Ports string }
 		if readJSON(r, &req) != nil {

@@ -38,20 +38,22 @@ type LinkSpec struct {
 	Tunnel string `json:"tunnel"`
 	// KeyName is the tunnel's name as both ends know it (Tunnel is the
 	// local one): keys are derived from it. See config.Tunnel.KeyName.
-	KeyName string         `json:"key_name,omitempty"`
-	Kind    config.Kind    `json:"kind"`
-	Local   netip.Addr     `json:"local"`
-	Remote  netip.Addr     `json:"remote"`
-	Key     uint32         `json:"key,omitempty"`
-	VNI     uint32         `json:"vni,omitempty"`
-	Port    uint16         `json:"port,omitempty"`
-	FOU     bool           `json:"fou,omitempty"` // Port is a FOU (UDP) encapsulation port
-	TTL     uint8          `json:"ttl"`
-	MTU     int            `json:"mtu"`
-	NoDF    bool           `json:"no_df,omitempty"`
-	DSCP    uint8          `json:"dscp,omitempty"`
-	Addrs   []netip.Prefix `json:"addrs"`
-	Parent  string         `json:"parent,omitempty"`
+	KeyName string      `json:"key_name,omitempty"`
+	Kind    config.Kind `json:"kind"`
+	Local   netip.Addr  `json:"local"`
+	Remote  netip.Addr  `json:"remote"`
+	Key     uint32      `json:"key,omitempty"`
+	VNI     uint32      `json:"vni,omitempty"`
+	Port    uint16      `json:"port,omitempty"`
+	FOU     bool        `json:"fou,omitempty"` // Port is a FOU (UDP) encapsulation port
+	TTL     uint8       `json:"ttl"`
+	MTU     int         `json:"mtu"`
+	NoDF    bool        `json:"no_df,omitempty"`
+	// IgnoreDF: fragment oversized packets even when the inner one sets DF.
+	IgnoreDF bool           `json:"ignore_df,omitempty"`
+	DSCP     uint8          `json:"dscp,omitempty"`
+	Addrs    []netip.Prefix `json:"addrs"`
+	Parent   string         `json:"parent,omitempty"`
 
 	// Side is this node's side of the tunnel (0 or 1); keys are derived
 	// per direction from Secret, which never leaves the node in a spec.
@@ -97,7 +99,9 @@ func (l LinkSpec) Hash() string {
 		FOU, NoDF bool
 		TTL, DSCP uint8
 		Keys      string `json:",omitempty"`
-	}{l.Kind, l.Local, l.Remote, l.Key, l.VNI, l.Port, l.FOU, l.NoDF, l.TTL, l.DSCP, keys})
+		// Left out when off, so tunnels that don't use it keep their hash.
+		IgnoreDF bool `json:",omitempty"`
+	}{l.Kind, l.Local, l.Remote, l.Key, l.VNI, l.Port, l.FOU, l.NoDF, l.TTL, l.DSCP, keys, l.IgnoreDF})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:8])
 }
@@ -365,6 +369,7 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		Remote:    remote,
 		TTL:       t.TTL,
 		NoDF:      t.NoDF,
+		IgnoreDF:  t.IgnoreDF && t.NoDF && config.IgnoreDFKinds(t.Kind),
 		DSCP:      t.DSCP,
 		MTU:       t.MTU,
 		Side:      me,

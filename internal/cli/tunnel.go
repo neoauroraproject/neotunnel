@@ -82,6 +82,7 @@ func tunnelAddCmd() *cobra.Command {
 	f.StringVar(&o.Over, "over", "", "run on top of another tunnel")
 	f.Uint16Var(&o.Port, "port", 0, "UDP port the tunnel runs on (FOU for sit/ipip/gre/gretap; vxlan/geneve/wireguard/obfs port; L2TPv3 and EoIP over UDP)")
 	settingsFlags(f, &o.Settings)
+	poolFlags(f, &o.PoolChoice)
 	f.Uint32Var(&o.VNI, "vni", 0, "VNI for vxlan/geneve (default: derived from name)")
 	cmd.MarkFlagRequired("kind")
 	return cmd
@@ -274,14 +275,14 @@ func forwardCmd() *cobra.Command {
 				info("none")
 			}
 			paths := failover.Load()
-			for i, f := range fs {
+			for i, f := range st.SortForwards(fs) {
 				to := ""
 				if f.To != 0 {
 					to = fmt.Sprintf(" :%d", f.To)
 				}
 				backup := ""
 				if f.Backup != "" {
-					backup = fmt.Sprintf("  (backup %s, now through %s)", f.Backup, paths.ActiveOf(f))
+					backup = fmt.Sprintf("  (backup %s, now through %s)", strings.Join(f.Backups(), ", "), paths.ActiveOf(f))
 				}
 				if f.ModeOf() == config.ForwardSocks {
 					to = " (proxy on " + proxyAddr(f.Listen, f.Ports) + ")"

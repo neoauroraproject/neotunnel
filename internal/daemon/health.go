@@ -69,6 +69,7 @@ func pingRound(ctx context.Context, addr string) (sent, got int, rtt time.Durati
 // (reconcile applies the move).
 func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracker, reconcile func()) {
 	rec := newRecovery()
+	auto := newAutoCrypt()
 	classes := map[string]string{} // last logged health class, by tunnel
 	t := time.NewTicker(healthEvery)
 	defer t.Stop()
@@ -98,13 +99,15 @@ func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracke
 			wg.Wait()
 			tr.Forget(keep)
 			logHealth(tr.Snapshot(), classes)
-			// Restart first: a tunnel it restarts starts its count over, so
-			// forwards move to a backup only if the restart didn't help.
-			rec.step(ctx, id, st, tr)
-			tr.Save()
+			// Forwards first: with a backup that works, not being cut off
+			// comes before fixing the tunnel. They move as soon as the tunnel
+			// fails; its restart and encryption steps follow behind.
 			if failoverStep(st, tr.Snapshot()) {
 				reconcile()
 			}
+			rec.step(ctx, id, st, tr)
+			auto.step(ctx, id, st, tr, reconcile)
+			tr.Save()
 		}
 		select {
 		case <-ctx.Done():

@@ -153,6 +153,59 @@ func TestBackupRemovedOrChanged(t *testing.T) {
 	}
 }
 
+// With several backups the forward goes to the first that works, climbs back
+// up the list as tunnels recover, and a failed backup hands over at once.
+func TestSeveralBackups(t *testing.T) {
+	f := config.Forward{Node: "ir", Tunnel: "a", Backup: "b", MoreBackups: []string{"c"}, Proto: "tcp", Ports: "443"}
+	now := time.Unix(1_700_000_000, 0)
+	ps := Paths{}
+	step := func(hs map[string]health.State, want string) {
+		t.Helper()
+		Step(ps, []config.Forward{f}, hs, now)
+		if got := ps.ActiveOf(f); got != want {
+			t.Fatalf("active %s, want %s", got, want)
+		}
+	}
+	// The first backup is dead too: skip to the second.
+	step(map[string]health.State{"a": dead, "b": dead, "c": good}, "c")
+	// Working beats merely less bad, even later in the list.
+	ps = Paths{}
+	step(map[string]health.State{"a": dead, "b": lossy(50), "c": good}, "c")
+	// Nothing works: the least-bad-enough one, in order.
+	ps = Paths{}
+	step(map[string]health.State{"a": lossy(95), "b": lossy(60), "c": lossy(40)}, "b")
+	// From it, a tunnel higher up that recovered takes the forward, but not
+	// within MinStay of the last move.
+	now = now.Add(time.Second)
+	step(map[string]health.State{"a": good, "b": good, "c": good}, "b")
+	now = now.Add(MinStay)
+	step(map[string]health.State{"a": good, "b": good, "c": good}, "a")
+	// A backup that failed doesn't wait out MinStay.
+	ps = Paths{}
+	step(map[string]health.State{"a": dead, "b": good, "c": good}, "b")
+	now = now.Add(time.Second)
+	step(map[string]health.State{"a": dead, "b": dead, "c": good}, "c")
+	// c is recovering second: b, higher up, takes it back before a does.
+	now = now.Add(MinStay)
+	step(map[string]health.State{"a": lossy(50), "b": good, "c": good}, "b")
+}
+
+func TestRouteWithSeveralBackups(t *testing.T) {
+	f := config.Forward{Node: "ir", Tunnel: "a", Backup: "b", MoreBackups: []string{"c"}, Ports: "80"}
+	ts := []config.Tunnel{{Name: "a"}, {Name: "b", Disabled: true}, {Name: "c"}}
+	if out := Route([]config.Forward{f}, ts, Paths{Key(f): {Active: "c"}}); out[0].Tunnel != "c" {
+		t.Fatalf("%+v", out)
+	}
+	// The active tunnel turned off: the first one still on.
+	if out := Route([]config.Forward{f}, ts, Paths{Key(f): {Active: "b"}}); out[0].Tunnel != "a" {
+		t.Fatalf("%+v", out)
+	}
+	ts[0].Disabled = true
+	if out := Route([]config.Forward{f}, ts, Paths{}); out[0].Tunnel != "c" {
+		t.Fatalf("%+v", out)
+	}
+}
+
 func TestRoute(t *testing.T) {
 	plain := config.Forward{Node: "ir", Tunnel: "main", Ports: "80"}
 	ts := []config.Tunnel{{Name: "main"}, {Name: "spare"}}

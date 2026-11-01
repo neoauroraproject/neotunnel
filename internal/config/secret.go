@@ -10,6 +10,13 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
+// EncryptAuto, given as a tunnel's cipher, turns on automatic encryption (see
+// Tunnel.AutoEncrypt); RungObfs is that ladder's last step, a NeoObfs layer.
+const (
+	EncryptAuto = "auto"
+	RungObfs    = "obfs"
+)
+
 // Cipher is a kernel IPsec (ESP) algorithm a tunnel can be encrypted with.
 type Cipher struct {
 	Name  string `json:"name"`

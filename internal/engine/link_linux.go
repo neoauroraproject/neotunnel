@@ -98,6 +98,13 @@ func create(s LinkSpec) error {
 			return err
 		}
 	}
+	if s.IgnoreDF {
+		// The netlink library has no attribute for it.
+		if err := ipCmd("link", "set", "dev", s.Name, "type", string(s.Kind), "ignore-df"); err != nil {
+			netlink.LinkDel(l)
+			return fmt.Errorf("ignore-df on %s: %w", s.Name, err)
+		}
+	}
 	return nil
 }
 

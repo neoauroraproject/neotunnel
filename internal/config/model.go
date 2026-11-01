@@ -9,6 +9,7 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 )
 
@@ -32,6 +33,13 @@ type State struct {
 	Tunnels  []Tunnel  `json:"tunnels,omitempty"`
 	Forwards []Forward `json:"forwards,omitempty"`
 	Peers    []Peer    `json:"peers,omitempty"`
+
+	// Pools are the address pools the user defined, next to the ready-made
+	// ones (see AllPools).
+	Pools []AddressPool `json:"pools,omitempty"`
+	// PortOrder is the order the user arranged the ports in, by PortKey. It
+	// only affects how forwards are listed.
+	PortOrder []string `json:"port_order,omitempty"`
 
 	// Managed is the first server that manages this node, More the others
 	// (see Masters).
@@ -62,7 +70,7 @@ type Telegram struct {
 	// tunnel and leaves from the far server).
 	Proxy string `json:"proxy,omitempty"`
 	// Mute lists alerts that are not sent: down, recover, restart,
-	// failover, quota, guard.
+	// failover, cipher, quota, guard.
 	Mute []string `json:"mute,omitempty"`
 	// Users lets anyone who starts the bot look up a port's traffic, of
 	// UserPorts ("" = every forward).
@@ -127,6 +135,11 @@ type Defaults struct {
 	// lose most of their packets (restart once, then move forwards to the
 	// backup); see daemon/recover.go.
 	NoRecover bool `json:"no_recover,omitempty"`
+	// Pool names the address pool new tunnels use ("" = the default one).
+	Pool string `json:"pool,omitempty"`
+	// AutoWait is how many minutes a tunnel on automatic encryption gets on
+	// each step before the next one (0 = 5); see daemon/autocrypt.go.
+	AutoWait int `json:"auto_wait,omitempty"`
 }
 
 // D returns the defaults, never nil.
@@ -226,6 +239,10 @@ type Tunnel struct {
 
 	Net4 string `json:"net4,omitempty"` // inner IPv4 subnet, side 0 = .1, side 1 = .2
 	Net6 string `json:"net6,omitempty"` // inner IPv6 subnet, side 0 = ::1, side 1 = ::2
+	// Pool4 and Pool6 are the ranges Net4 and Net6 are carved from when they
+	// aren't the default ones, so a tunnel that has to move stays in them.
+	Pool4 string `json:"pool4,omitempty"`
+	Pool6 string `json:"pool6,omitempty"`
 
 	Key uint32 `json:"key,omitempty"` // GRE key
 	VNI uint32 `json:"vni,omitempty"` // VXLAN / GENEVE id
@@ -244,6 +261,10 @@ type Tunnel struct {
 	// oversized packet is fragmented on the path instead of dropped. Default
 	// (false) sets DF, which is faster but needs a correct MTU.
 	NoDF bool `json:"no_df,omitempty"`
+	// IgnoreDF goes further on GRE and GRETAP over IPv4: an oversized packet
+	// is fragmented even when the inner packet asks not to be, where NoDF
+	// alone copies that request to the outer packet. Needs NoDF.
+	IgnoreDF bool `json:"ignore_df,omitempty"`
 	// DSCP is the outer packets' DSCP class: 0 inherits from the inner
 	// packet, 1-63 sets a fixed class (e.g. for a provider that prioritizes
 	// one). Only kernel IP tunnels honor it.
@@ -255,6 +276,12 @@ type Tunnel struct {
 	// Encrypt protects the tunnel's outer packets with kernel IPsec (ESP in
 	// transport mode, like MikroTik's ipsec-secret); see Ciphers.
 	Encrypt string `json:"encrypt,omitempty"`
+	// AutoEncrypt, on the user-facing tunnel, lets the daemon step the
+	// tunnel's encryption from none toward the strongest while traffic does
+	// not pass (see daemon/autocrypt.go). The current step stays in Encrypt
+	// of the bottom tunnel, or is a NeoObfs layer marked AutoLayer.
+	AutoEncrypt bool `json:"auto_encrypt,omitempty"`
+	AutoLayer   bool `json:"auto_layer,omitempty"`
 	// Padding adds up to this many random bytes to NeoObfs packets so their
 	// sizes don't reveal the traffic inside.
 	Padding int `json:"padding,omitempty"`
@@ -298,6 +325,19 @@ func (t Tunnel) LaneCount() int {
 	}
 	return t.Lanes
 }
+
+// PMTUKinds reports whether a kind honors a tunnel's path MTU discovery flag:
+// those that set a DF bit on outer IPv4 packets (IPv6 has no such bit).
+func PMTUKinds(k Kind) bool {
+	switch k {
+	case KindSIT, KindIPIP, KindGRE, KindGRETAP, KindEoIP:
+		return true
+	}
+	return false
+}
+
+// IgnoreDFKinds reports whether a kind can also ignore the inner DF bit.
+func IgnoreDFKinds(k Kind) bool { return k == KindGRE || k == KindGRETAP }
 
 // LaneKinds reports whether a kind can run on several lanes: the kernel GRE
 // family, whose lanes are told apart by their keys. (Keyless SIT and IPIP
@@ -358,8 +398,10 @@ type Forward struct {
 	ProxyVersion int `json:"proxy_version,omitempty"`
 	// Backup names a second tunnel to the same far node: when Tunnel stops
 	// passing traffic the daemon moves the forward there, and back once
-	// Tunnel is healthy again (see package failover).
-	Backup string `json:"backup,omitempty"`
+	// Tunnel is healthy again (see package failover). MoreBackups are the
+	// next ones, tried in order; see Backups.
+	Backup      string   `json:"backup,omitempty"`
+	MoreBackups []string `json:"more_backups,omitempty"`
 	// Listen is the address a socks forward listens on: "" = 127.0.0.1,
 	// only programs on this server. Any other needs Auth.
 	Listen string `json:"listen,omitempty"`
@@ -370,9 +412,31 @@ type Forward struct {
 	Fetch bool `json:"fetch,omitempty"`
 }
 
+// Backups lists the forward's backup tunnels, first choice first.
+func (f Forward) Backups() []string {
+	if f.Backup == "" {
+		return nil
+	}
+	return append([]string{f.Backup}, f.MoreBackups...)
+}
+
+// SetBackups stores the backup tunnels, first choice first.
+func (f *Forward) SetBackups(names []string) {
+	f.Backup, f.MoreBackups = "", nil
+	if len(names) > 0 {
+		f.Backup = names[0]
+		f.MoreBackups = slices.Clone(names[1:])
+	}
+}
+
+// Paths lists every tunnel the forward can run on: Tunnel, then its backups.
+func (f Forward) Paths() []string {
+	return append([]string{f.Tunnel}, f.Backups()...)
+}
+
 // Uses reports whether the forward can run on the named tunnel.
 func (f Forward) Uses(tunnel string) bool {
-	return f.Tunnel == tunnel || (f.Backup != "" && f.Backup == tunnel)
+	return slices.Contains(f.Paths(), tunnel)
 }
 
 // Forward modes.
@@ -466,7 +530,7 @@ func (s *State) ForPeer(peer string) ([]Tunnel, []Forward) {
 		// The far end of a transparent forward must know about it to route
 		// replies back through the tunnel, and of a relay forward to accept
 		// its connections (a socks one too).
-		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay || f.ModeOf() == ForwardSocks) && (touches[f.Tunnel] || touches[f.Backup])) {
+		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay || f.ModeOf() == ForwardSocks) && slices.ContainsFunc(f.Paths(), func(n string) bool { return touches[n] })) {
 			fs = append(fs, f)
 		}
 	}
@@ -507,10 +571,10 @@ func (s *State) ReturnPaths() []string {
 		if f.ModeOf() != ForwardTransparent || s.IsSelf(f.Node) {
 			continue
 		}
-		// The far side may move the forward to its backup at any time, so
-		// both tunnels need a return path.
-		for _, name := range []string{f.Tunnel, f.Backup} {
-			if name == "" || seen[name] {
+		// The far side may move the forward to a backup at any time, so all
+		// its tunnels need a return path.
+		for _, name := range f.Paths() {
+			if seen[name] {
 				continue
 			}
 			for _, t := range ts {

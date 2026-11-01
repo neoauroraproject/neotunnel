@@ -314,6 +314,8 @@ func alertKind(e events.Event) string {
 		if e.Tunnel == e.From { // recorded on both tunnels; tell it once
 			return "failover"
 		}
+	case events.Cipher:
+		return "cipher"
 	case events.Quota:
 		return "quota"
 	case events.Guard:
@@ -364,6 +366,20 @@ func tunnelLabel(st *config.State, name string) string {
 	return name
 }
 
+// rungTitle names a step of automatic encryption.
+func rungTitle(r string) string {
+	if r == "" {
+		return "بدون رمزنگاری"
+	}
+	if r == config.RungObfs {
+		return "NeoObfs"
+	}
+	if c, err := config.LookupCipher(r); err == nil {
+		return c.Title
+	}
+	return esc(r)
+}
+
 func alertText(st *config.State, e events.Event) string {
 	t := "<b>" + esc(tunnelLabel(st, e.Tunnel)) + "</b>"
 	where := "\n<i>" + esc(nodeName(st)) + "</i>"
@@ -389,6 +405,11 @@ func alertText(st *config.State, e events.Event) string {
 			s += "\n" + esc(why)
 		}
 		return s + where
+	case events.Cipher:
+		if e.Detail != "" {
+			return "🔐 رمزنگاری خودکار " + t + " عوض نشد: " + esc(e.Detail) + where
+		}
+		return fmt.Sprintf("🔐 %s ترافیک رد نمی‌کرد (افت %.0f٪)؛ رمزنگاری خودکار از %s به %s رفت.", t, e.Loss, rungTitle(e.From), rungTitle(e.To)) + where
 	case events.Quota:
 		if e.To == "blocked" {
 			return "📦 حجم ماهانه‌ی " + t + " تمام شد؛ تا ماه بعد خاموش است." + where

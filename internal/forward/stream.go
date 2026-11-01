@@ -182,11 +182,11 @@ func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit 
 		if (f.ModeOf() != config.ForwardRelay && f.ModeOf() != config.ForwardSocks) || st.IsSelf(f.Node) {
 			continue
 		}
-		// The far side may move the forward to its backup at any time, so
-		// the exits of both tunnels are open.
-		for _, name := range []string{f.Tunnel, f.Backup} {
+		// The far side may move the forward to a backup at any time, so the
+		// exits of all its tunnels are open.
+		for _, name := range f.Paths() {
 			t, ok := byName[name]
-			if name == "" || !ok || t.Disabled || t.Secret == "" || t.Sides[1-sideOf(st, t)].Node != f.Node {
+			if !ok || t.Disabled || t.Secret == "" || t.Sides[1-sideOf(st, t)].Node != f.Node {
 				continue
 			}
 			e := relay.Exit{Tunnel: t.KeyName(), Secret: t.Secret, Side: sideOf(st, t), From: farAddrs(st, t)}

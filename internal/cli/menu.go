@@ -365,7 +365,7 @@ func (s *session) createTunnel(peer string) {
 		switch {
 		case d.Obfs:
 			def = 2
-		case d.Encrypt != "":
+		case d.Encrypt != "" && d.Encrypt != config.EncryptAuto:
 			def = 1
 		}
 		choices := []item{
@@ -379,13 +379,21 @@ func (s *session) createTunnel(peer string) {
 			choices[1] = item{"Encrypt", "AES-GCM on the TCP stream, keys from the tunnel secret", false}
 			def = min(def, 1)
 		}
+		choices = append(choices, item{"Automatic", "starts plain; while traffic doesn't pass, tries each encryption in turn", false})
+		autoAt := len(choices) - 1
+		if d.Encrypt == config.EncryptAuto && !d.Obfs {
+			def = autoAt
+		}
 		c := s.choose("Create a tunnel · step 3 of 6 · protection", choices, def)
 		switch c {
 		case -1:
 			return
+		case autoAt:
+			req.Encrypt = config.EncryptAuto
+			done = append(done, "protection   automatic")
 		case 1:
 			req.Encrypt = d.Encrypt
-			if req.Encrypt == "" {
+			if req.Encrypt == "" || req.Encrypt == config.EncryptAuto {
 				req.Encrypt = "aes-gcm-128"
 			}
 			if mode.TCP {

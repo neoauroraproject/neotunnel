@@ -24,13 +24,16 @@ const (
 	Health   = "health"   // From → To grade (ok/degraded vs bad/down), Loss
 	Restart  = "restart"  // Auto or by hand; Detail: why, or the far end's error
 	Failover = "failover" // forwards (Detail: their ports) moved From → To
-	Up       = "up"       // the interface was (re)created
-	Error    = "error"    // Detail: the error
-	Created  = "created"
-	Changed  = "changed" // Detail: what
-	On       = "on"
-	Off      = "off"
-	Quota    = "quota" // To: "blocked" or "back"
+	// Cipher: automatic encryption moved From → To ("" = none, a cipher or
+	// "obfs"); with Detail, it couldn't and stayed, and that says why.
+	Cipher  = "cipher"
+	Up      = "up"    // the interface was (re)created
+	Error   = "error" // Detail: the error
+	Created = "created"
+	Changed = "changed" // Detail: what
+	On      = "on"
+	Off     = "off"
+	Quota   = "quota" // To: "blocked" or "back"
 	// Guard: the firewall turned itself off (Tunnel is empty).
 	Guard = "guard"
 )

@@ -23,7 +23,9 @@ func settingsFlags(f *pflag.FlagSet, s *manage.Settings) {
 	f.IntVar(&s.MTU, "mtu", 0, "MTU of the tunnel (default: computed from the overhead)")
 	f.BoolVar(&s.MTUProbe, "mtu-probe", false, "measure the path MTU to the far end and size the tunnel from it")
 	f.Uint8Var(&s.TTL, "ttl", 0, "TTL of the outer packets (default 255)")
-	f.StringVar(&s.Encrypt, "encrypt", "", "kernel IPsec on the outer packets (a TCP tunnel seals its stream instead): aes-gcm-128, aes-gcm-256, chacha20-poly1305")
+	f.StringVar(&s.Encrypt, "encrypt", "", "kernel IPsec on the outer packets (a TCP tunnel seals its stream instead): aes-gcm-128, aes-gcm-256, chacha20-poly1305; or auto: start plain and, while traffic doesn't pass, try each of them and then NeoObfs in turn")
+	f.BoolVar(&s.NoDF, "no-pmtud", false, "turn path MTU discovery off (nopmtudisc): outer packets don't set DF themselves, so the path may fragment them (SIT, IPIP, GRE, GRETAP, EoIP over IPv4)")
+	f.BoolVar(&s.IgnoreDF, "ignore-df", false, "with --no-pmtud on GRE and GRETAP over IPv4: fragment oversized packets even when the inner packet sets DF")
 	f.IntVar(&s.Padding, "padding", 0, "NeoObfs: up to this many random padding bytes per packet (0-255)")
 	f.IntVar(&s.Keepalive, "keepalive", 0, "WireGuard/NeoObfs keepalive in seconds (-1 = off, default 25)")
 	f.StringVar(&s.PeerKey, "peer-key", "", "WireGuard: the far end's public key, when it doesn't run NeoTunnel")
@@ -97,6 +99,9 @@ func tunnelSetCmd() *cobra.Command {
 			keep("mtu", func() { s.MTU = cur.MTU })
 			keep("mtu-probe", func() { s.MTUProbe = cur.MTUProbe })
 			keep("ttl", func() { s.TTL = cur.TTL })
+			keep("no-pmtud", func() { s.NoDF = cur.NoDF })
+			keep("ignore-df", func() { s.IgnoreDF = cur.IgnoreDF })
+			s.DSCP = cur.DSCP // no flag for it
 			keep("encrypt", func() { s.Encrypt = cur.Encrypt })
 			keep("padding", func() { s.Padding = cur.Padding })
 			keep("keepalive", func() { s.Keepalive = cur.Keepalive })
@@ -106,6 +111,9 @@ func tunnelSetCmd() *cobra.Command {
 			keep("lanes", func() { s.Lanes = cur.Lanes })
 			if f.Changed("no-encrypt") {
 				s.Encrypt = ""
+			}
+			if !s.NoDF {
+				s.IgnoreDF = false // path MTU discovery on leaves nothing to ignore
 			}
 			ch, err := manage.UpdateTunnel(args[0], s, port)
 			if err != nil {
@@ -203,7 +211,7 @@ func forwardSetCmd() *cobra.Command {
 						r.ProxyVersion = fw.ProxyVersion
 					}
 					if !f.Changed("backup") {
-						r.Backup = fw.Backup
+						r.Backups = fw.Backups()
 					}
 				}
 			}
@@ -227,7 +235,106 @@ func forwardModeFlags(f *pflag.FlagSet, r *manage.ForwardRequest) {
 	f.IntVar(&r.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --mode proxy: 2 (default, TCP+UDP) or 1 (TCP); with --mode relay: 0 (no header, default), 1 or 2")
 	f.StringVar(&r.Listen, "listen", "", "with --mode socks: the address the proxy listens on (default 127.0.0.1, only this server; any other needs --auth)")
 	f.StringVar(&r.Auth, "auth", "", "with --mode socks: user:password the proxy asks for")
-	f.StringVar(&r.Backup, "backup", "", "a second tunnel to the same far server: the forward moves there while its tunnel stops passing traffic, and back once it has worked again for about a minute (set \"\" to remove)")
+	f.StringVar(&r.Backup, "backup", "", "other tunnels to the same far server, separated by commas, first choice first: the forward moves to the first that works while its tunnel stops passing traffic, and back once it has worked again for about a minute (set \"\" to remove)")
+}
+
+// poolFlags registers where a new tunnel's inner addresses come from.
+func poolFlags(f *pflag.FlagSet, c *manage.PoolChoice) {
+	f.StringVar(&c.Pool, "pool", "", "address pool to take the tunnel's inner addresses from (see: neotunnel pool list)")
+	f.StringVar(&c.Pool4, "pool4", "", "or an IPv4 range by hand, e.g. 10.20.0.0/24 (a /30 per tunnel layer)")
+	f.StringVar(&c.Pool6, "pool6", "", "or an IPv6 range by hand, e.g. fd20::/48 (a /64 per tunnel layer)")
+}
+
+func poolCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "pool", Short: "List and manage the address pools tunnels take their inner addresses from"}
+	list := &cobra.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List address pools",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			st, err := loadNode()
+			if err != nil {
+				return err
+			}
+			title("Address pools")
+			def := st.D().Pool
+			if def == "" {
+				def = config.DefaultPool
+			}
+			for _, p := range st.AllPools() {
+				mark := ""
+				if p.Name == def {
+					mark = dim(" (used for new tunnels)")
+				}
+				if config.BuiltinPool(p.Name) {
+					mark += dim(" (ready-made)")
+				}
+				n6 := p.Net6
+				if n6 == "" {
+					n6 = dim("this server's ULA")
+				}
+				n4 := p.Net4
+				if n4 == "" {
+					n4 = dim(config.Pool4.String())
+				}
+				fmt.Printf("  %s  %s  %s%s\n", bold(p.Name), n4, n6, mark)
+			}
+			return nil
+		},
+	}
+	var p config.AddressPool
+	var was string
+	add := &cobra.Command{
+		Use:   "add <name>",
+		Short: "Add an address pool, or change one with --rename-from",
+		Example: `  neotunnel pool add office --net4 10.50.0.0/16 --net6 fd50::/48
+  neotunnel pool add small --net4 192.168.200.0/28`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p.Name = args[0]
+			if err := manage.SavePool(p, was); err != nil {
+				return err
+			}
+			success("pool %s saved; tunnels made from now on can use it", p.Name)
+			return nil
+		},
+	}
+	add.Flags().StringVar(&p.Net4, "net4", "", "IPv4 range, /8 to /30")
+	add.Flags().StringVar(&p.Net6, "net6", "", "IPv6 range, /8 to /126")
+	add.Flags().StringVar(&was, "rename-from", "", "change the pool with this name instead of adding one")
+	rm := &cobra.Command{
+		Use:     "remove <name>",
+		Aliases: []string{"rm"},
+		Short:   "Remove an address pool (tunnels made from it keep their addresses)",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := manage.RemovePool(args[0]); err != nil {
+				return err
+			}
+			success("pool %s removed", args[0])
+			return nil
+		},
+	}
+	use := &cobra.Command{
+		Use:   "use <name>",
+		Short: "Use a pool for new tunnels from now on",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			st, err := loadNode()
+			if err != nil {
+				return err
+			}
+			d := st.D()
+			d.Pool = args[0]
+			if err := manage.SetDefaults(d); err != nil {
+				return err
+			}
+			success("new tunnels use pool %s", args[0])
+			return nil
+		},
+	}
+	cmd.AddCommand(list, add, rm, use)
+	return cmd
 }
 
 // resetRequest asks the daemon, which owns the counters, to zero them.

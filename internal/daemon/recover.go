@@ -9,10 +9,9 @@ package daemon
 // keys, new connections and, for UDP carriers, new source ports) often
 // clears it. So a tunnel this node manages that has lost most of its probes
 // for restartAfter rounds in a row is restarted once on both servers. Its
-// count then starts over: if it is still bad a few rounds later, the
-// failover step moves its forwards to a backup that does better (see
-// package failover). A tunnel is restarted at most once per restartGap, and
-// nothing happens while a speed test fills the tunnels on purpose.
+// forwards with a backup that does better have moved by then (see package
+// failover). A tunnel is restarted at most once per restartGap, and nothing
+// happens while a speed test fills the tunnels on purpose.
 
 import (
 	"context"
