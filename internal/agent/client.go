@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -28,27 +29,36 @@ type Client struct {
 	// public one); see innerBases.
 	bases  []string
 	pinned string // the far end's key: which route worked is kept by it
-	http   *http.Client
+	// veiled reaches the far end with its TLS hidden (see veil.go), plain as
+	// it is, which is what nodes before v0.8.15 understand.
+	veiled, plain *http.Client
 }
 
-// lastGood remembers, per far end (by its key), the base that last answered,
-// so the next call starts there instead of waiting out a dead route first.
+// route is one way to reach the far end.
+type route struct {
+	base  string
+	plain bool
+}
+
+// lastGood remembers, per far end (by its key), the route that last answered,
+// so the next call starts there instead of waiting out a dead one first.
 var lastGood sync.Map
 
-// order returns the bases with the one that last answered first.
-func (c *Client) order() []string {
-	v, ok := lastGood.Load(c.pinned)
-	if !ok {
-		return c.bases
-	}
-	out := []string{v.(string)}
-	for _, b := range c.bases {
-		if b != out[0] {
-			out = append(out, b)
+// routes lists every base veiled, then every base plain, with the route that
+// last answered first. Plain comes last for older nodes: they refuse a veil at
+// once, while on a filtered path it is plain TLS that stalls.
+func (c *Client) routes() []route {
+	out := make([]route, 0, 2*len(c.bases))
+	for _, plain := range []bool{false, true} {
+		for _, b := range c.bases {
+			out = append(out, route{b, plain})
 		}
 	}
-	if len(out) > len(c.bases) { // that route is gone (a tunnel removed)
-		return c.bases
+	if v, ok := lastGood.Load(c.pinned); ok {
+		// That route may be gone (a tunnel removed): then the order stays.
+		if at := slices.Index(out, v.(route)); at > 0 {
+			out = slices.Insert(slices.Delete(out, at, at+1), 0, v.(route))
+		}
 	}
 	return out
 }
@@ -58,14 +68,18 @@ func newClient(id *identity.Identity, bases []string, pinned string, timeout tim
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
-		bases:  bases,
-		pinned: pinned,
-		http: &http.Client{
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	client := func(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Client {
+		return &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
 				TLSClientConfig: tc,
-				DialContext:     (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+				DialContext:     dial,
+				// Every call gets its own connection. A client lasts one call,
+				// so one left open would stay open for good, and a new
+				// connection is also what gets past a path that stalled the
+				// last one.
+				DisableKeepAlives: true,
 				// Bound each phase on its own, so a stalled link reports which
 				// phase failed instead of one opaque deadline: the TCP connect
 				// succeeds, the TLS session to the agent port hangs, or the
@@ -75,7 +89,24 @@ func newClient(id *identity.Identity, bases []string, pinned string, timeout tim
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: timeout,
 			},
-		},
+		}
+	}
+	return &Client{
+		bases:  bases,
+		pinned: pinned,
+		plain:  client(dialer.DialContext),
+		veiled: client(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			v, err := veilClient(conn, pinned)
+			if err != nil {
+				conn.Close()
+				return nil, err
+			}
+			return v, nil
+		}),
 	}, nil
 }
 
@@ -154,31 +185,45 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, hdr m
 	}
 
 	var lastErr error
-	bases := c.order()
-	for i, base := range bases {
+	unreachable := map[string]bool{}
+	for _, rt := range c.routes() {
+		// A base nothing connects to won't do better without the veil.
+		if unreachable[rt.base] {
+			continue
+		}
+		if lastErr != nil && ctx.Err() != nil {
+			return lastErr
+		}
 		var r io.Reader
 		if in != nil {
 			r = bytes.NewReader(body)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, base+path, r)
+		req, err := http.NewRequestWithContext(ctx, method, rt.base+path, r)
 		if err != nil {
 			return err
 		}
 		for k, v := range hdr {
 			req.Header.Set(k, v)
 		}
-		resp, err := c.http.Do(req)
+		hc := c.veiled
+		if rt.plain {
+			hc = c.plain
+		}
+		resp, err := hc.Do(req)
 		if err != nil {
 			// No answer on this route: try the next one (e.g. the public
 			// address when the inner tunnel address is not reachable, or the
 			// reverse). The request was not processed, so replaying is safe.
+			// It isn't the route to start with next time either.
 			lastErr = err
-			if i < len(bases)-1 {
-				continue
+			lastGood.CompareAndDelete(c.pinned, rt)
+			var op *net.OpError
+			if errors.As(err, &op) && op.Op == "dial" {
+				unreachable[rt.base] = true
 			}
-			return err
+			continue
 		}
-		lastGood.Store(c.pinned, base)
+		lastGood.Store(c.pinned, rt)
 		return c.handle(method, path, resp, out)
 	}
 	return lastErr

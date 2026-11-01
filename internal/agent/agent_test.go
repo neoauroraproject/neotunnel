@@ -29,6 +29,19 @@ func newIdentity(t *testing.T) *identity.Identity {
 // serve starts an agent for id on a random port, using the current config.Dir.
 func serve(t *testing.T, id *identity.Identity) string {
 	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{ID: id, Probe: probe.NewServer(), Started: time.Now()}
+	go s.Serve(l)
+	t.Cleanup(func() { l.Close() })
+	return l.Addr().String()
+}
+
+// serveOld starts an agent as nodes before v0.8.15 ran it: TLS only.
+func serveOld(t *testing.T, id *identity.Identity) string {
+	t.Helper()
 	s := &Server{ID: id, Probe: probe.NewServer(), Started: time.Now()}
 	ts := httptest.NewUnstartedServer(s.Handler())
 	tc, err := id.Server()

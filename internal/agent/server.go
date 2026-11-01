@@ -55,20 +55,31 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// ListenAndServe serves the agent API over TLS on addr.
+// ListenAndServe serves the agent API on addr; see Serve.
 func (s *Server) ListenAndServe(addr string) error {
-	tc, err := s.ID.Server()
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
+	return s.Serve(l)
+}
+
+// Serve serves the agent API over TLS on l, veiled or as it is (see veil.go).
+func (s *Server) Serve(l net.Listener) error {
+	tc, err := s.ID.Server()
+	if err != nil {
+		l.Close()
+		return err
+	}
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           s.Handler(),
 		TLSConfig:         tc,
 		ReadHeaderTimeout: 10 * time.Second,
-		ErrorLog:          log.New(io.Discard, "", 0), // scanners hitting the port are noise
+		// Nodes before v0.8.15 leave a connection open after every call.
+		IdleTimeout: 2 * time.Minute,
+		ErrorLog:    log.New(io.Discard, "", 0), // scanners hitting the port are noise
 	}
-	return srv.ListenAndServeTLS("", "")
+	return srv.ServeTLS(veilListener{l, s.ID.PublicString()}, "", "")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

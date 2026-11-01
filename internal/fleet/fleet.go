@@ -188,7 +188,7 @@ func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer 
 	}
 	// Long enough for the client to fall back from a dead route (a tunnel
 	// that is up but carries nothing) to the next one.
-	sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s, err := c.Status(sctx)
 	if err != nil {
