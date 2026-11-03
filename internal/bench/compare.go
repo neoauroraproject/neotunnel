@@ -3,9 +3,6 @@ package bench
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/netip"
-	"strconv"
 	"sync"
 	"time"
 
@@ -109,22 +106,17 @@ func (r *Runner) Compare(ctx context.Context, cs []Candidate, report func(Result
 		case t == nil && needsDaemon(c):
 			res.Status, res.Err = StatusSkipped, engine.ErrNeedsDaemon.Error()
 			set(i, res)
+		case t == nil && c.stream() && !r.Peer.StreamTests:
+			res.Status, res.Err = StatusSkipped, "skipped: "+errOldPeer(r.Peer.Name).Error()
+			set(i, res)
 		case t != nil:
 			res.Title += " [" + t.Name + "]"
 			res.MTU = engine.State(engine.Ifname(t.Name)).MTU
 			res.Status = StatusMeasuring
 			set(i, res)
-			far := 1
-			if r.State.IsSelf(t.Sides[1].Node) {
-				far = 0
-			}
-			n := t.Net4
-			if n == "" {
-				n = t.Net6
-			}
-			target, _ := config.Inner(n, far)
+			tg, _ := tunnelTarget(r.State, *t)
 			if r.CheckOnly {
-				lat, err := r.quickCheck(ctx, target.Addr())
+				lat, err := r.quickCheck(ctx, tg)
 				res.Latency, res.Status = lat, StatusPassed
 				if err != nil {
 					res.Status, res.Err = StatusFailed, err.Error()
@@ -132,7 +124,7 @@ func (r *Runner) Compare(ctx context.Context, cs []Candidate, report func(Result
 				set(i, res)
 				continue
 			}
-			lat, up, down, err := r.MeasureTunnel(ctx, t.Name, target.Addr())
+			lat, up, down, err := r.measureTunnel(ctx, t.Name, tg)
 			res.Latency, res.Up, res.Down = lat, up, down
 			res.Status = StatusDone
 			if err != nil {
@@ -219,8 +211,7 @@ func (r *Runner) runWave(ctx context.Context, wave []Candidate, index map[string
 			i := index[c.Name]
 			res := results[i]
 			res.MTU = mtu[c.Name]
-			target := candidateTarget(c)
-			lat, err := r.quickCheck(ctx, target)
+			lat, err := r.quickCheck(ctx, candidateTarget(c))
 			res.Latency = lat
 			if err != nil {
 				res.Status, res.Err = StatusFailed, err.Error()
@@ -249,12 +240,12 @@ func (r *Runner) runWave(ctx context.Context, wave []Candidate, index map[string
 		res.Status = StatusMeasuring
 		set(i, res)
 		r.say("%s", c.Title)
-		hp := net.JoinHostPort(candidateTarget(c).String(), strconv.Itoa(probe.DefaultPort))
-		up, err := probe.BandwidthLive(ctx, hp, r.token, probe.Upload, r.Opts.Duration, r.Opts.Streams, func(bps float64) { r.live("upload", bps) })
+		t := candidateTarget(c)
+		up, err := r.bandwidth(ctx, t, probe.Upload)
 		if err == nil {
 			res.Up = up
 			var down float64
-			down, err = probe.BandwidthLive(ctx, hp, r.token, probe.Download, r.Opts.Duration, r.Opts.Streams, func(bps float64) { r.live("download", bps) })
+			down, err = r.bandwidth(ctx, t, probe.Download)
 			res.Down = down
 		}
 		res.Status = StatusDone
@@ -265,26 +256,37 @@ func (r *Runner) runWave(ctx context.Context, wave []Candidate, index map[string
 	}
 }
 
-// candidateTarget is the far inner address of a candidate's top tunnel.
-func candidateTarget(c Candidate) netip.Addr {
+// candidateTarget is where a candidate's probes go: the far inner address
+// of its top tunnel, or the sessions of its connection tunnel.
+func candidateTarget(c Candidate) target {
 	last := c.Tunnels[len(c.Tunnels)-1]
+	if last.IsStream() {
+		return target{stream: streamName(last.Name)}
+	}
 	n := last.Net4
 	if n == "" {
 		n = last.Net6
 	}
 	a, _ := config.Inner(n, 1)
-	return a.Addr()
+	return target{addr: a.Addr()}
 }
 
 // quickCheck waits up to a few seconds for the first reply, then measures
 // latency, jitter and loss with a short burst.
-func (r *Runner) quickCheck(ctx context.Context, a netip.Addr) (probe.LatencyResult, error) {
-	hp := net.JoinHostPort(a.String(), strconv.Itoa(probe.DefaultPort))
-	deadline := time.Now().Add(5 * time.Second)
+func (r *Runner) quickCheck(ctx context.Context, t target) (probe.LatencyResult, error) {
+	deadline := time.Now().Add(waitFor(t, 5*time.Second))
 	for time.Now().Before(deadline) && ctx.Err() == nil {
-		if l, err := probe.Latency(ctx, hp, r.token, 3, 50*time.Millisecond, 64); err == nil && l.Received > 0 {
-			return probe.Latency(ctx, hp, r.token, 30, 20*time.Millisecond, 64)
+		if r.reaches(ctx, t) {
+			return r.latency(ctx, t, 30, 20*time.Millisecond)
 		}
 	}
-	return probe.LatencyResult{}, fmt.Errorf("no traffic passes on this path")
+	return probe.LatencyResult{}, notPassing(t)
+}
+
+// stream reports whether c is a connection tunnel, measured over its
+// sessions.
+func (c Candidate) stream() bool { return c.Tunnels[len(c.Tunnels)-1].IsStream() }
+
+func errOldPeer(peer string) error {
+	return fmt.Errorf("%s runs an older NeoTunnel that can't test connection tunnels; update it first", peer)
 }

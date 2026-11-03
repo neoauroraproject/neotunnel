@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -22,9 +23,16 @@ type Userspace interface {
 	// reports one.
 	SyncStreams(specs []transport.Spec) []error
 	StreamState(tunnel string) (transport.State, bool)
+	// StreamPing measures a round trip over a connection tunnel's sessions
+	// (a temporary one too); StreamProbe opens a stream to its far end's
+	// probe server.
+	StreamPing(tunnel string, timeout time.Duration) (time.Duration, error)
+	StreamProbe(tunnel string) (net.Conn, error)
 	// StartBench runs a temporary tunnel for a speed test until expiry or
-	// StopBench, whichever comes first.
+	// StopBench, whichever comes first; StartStreamBench the same for a
+	// connection tunnel.
 	StartBench(spec LinkSpec, expiry time.Time) error
+	StartStreamBench(spec transport.Spec, expiry time.Time) error
 	StopBench(names []string)
 }
 

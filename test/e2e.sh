@@ -315,6 +315,68 @@ EOF
 kill $busy 2>/dev/null
 pass "TCP comparison moved off the busy port 40420 and measured both directions"
 
+# 12b''. Connection tunnels: TCP + mux direct (edge listens) and TLS + mux
+#        reverse (edge connects in, like FRP), a relay forward over each,
+#        the speed test over their sessions, the panel's check of both
+#        directions before creation, and the comparison of both kinds.
+out=$(in_hub tunnel add m1 --kind stream-tcp --peer edge --port 8447 2>&1) || { echo "$out"; fail "add tcp + mux"; }
+out=$(in_hub tunnel add m2 --kind stream-tls --peer edge --port 8448 --reverse 2>&1) || { echo "$out"; fail "add tls + mux, reverse"; }
+in_hub forward add m1 8092 --to 8080 --mode relay >/dev/null || fail "add a forward over tcp + mux"
+in_hub forward add m2 8093 --to 8080 --mode relay >/dev/null || fail "add a forward over tls + mux"
+hup 3
+ip netns exec $EDGE ss -Htln "( sport = :8447 )" | grep -q . || fail "edge doesn't listen for tcp + mux on 8447"
+ip netns exec $HUB ss -Htln "( sport = :8448 )" | grep -q . || fail "hub doesn't listen for the reverse tls + mux on 8448"
+ok=
+for _ in $(seq 15); do
+  [ "$(http_code http://198.18.0.1:8092/)" = 200 ] && [ "$(http_code http://198.18.0.1:8093/)" = 200 ] && { ok=1; break; }
+  sleep 1
+done
+[ -n "$ok" ] || fail "forwards over the connection tunnels"
+wait_job() {
+  for _ in $(seq 120); do
+    api "$base/api/jobs/$1" > "$WORK/job.json"
+    python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["status"] != "running" else 1)' "$WORK/job.json" && return 0
+    sleep 1
+  done
+  return 1
+}
+for n in m1 m2; do
+  job=$(api -d "{\"kind\":\"test\",\"target\":\"$n\",\"seconds\":2,\"streams\":4}" "$base/api/jobs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') || fail "start the speed test of $n"
+  wait_job "$job" || fail "speed test of $n did not finish"
+  python3 - "$WORK/job.json" <<'EOF' || { cat "$WORK/job.json"; fail "speed test of connection tunnel $n"; }
+import json, sys
+j = json.load(open(sys.argv[1]))
+assert j["status"] == "done", j
+r = j["results"][0]
+assert not r.get("error"), r
+assert r["ping_ms"] > 0 and r["loss"] == 0, r
+assert r["down_bps"] > 0 and r["up_bps"] > 0, r
+EOF
+done
+out=$(in_hub test m1 2>&1) && fail "the CLI ran a connection tunnel's test outside the service"
+grep -q "from the panel" <<<"$out" || { echo "$out"; fail "the CLI should point a connection tunnel's test to the panel"; }
+for req in '{"peer":"edge","mode":"tcpmux"}' '{"peer":"edge","mode":"tlsmux","reverse":true}' '{"peer":"edge","mode":"tcpmux","encrypt":"aes-gcm-128","port":8449}'; do
+  api -d "$req" "$base/api/check" | tee "$WORK/streamcheck.json" | grep -q '"status":"passed"' || { cat "$WORK/streamcheck.json"; fail "panel check of $req"; }
+done
+job=$(api -d '{"kind":"bench","target":"edge","only":["tcpmux","tlsmux"],"seconds":2,"streams":4}' "$base/api/jobs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') || fail "start a comparison of connection tunnels"
+wait_job "$job" || fail "comparison of connection tunnels did not finish"
+python3 - "$WORK/job.json" <<'EOF' || { cat "$WORK/job.json"; fail "comparison of connection tunnels"; }
+import json, sys
+j = json.load(open(sys.argv[1]))
+assert j["status"] == "done", j
+rs = {r["name"]: r for r in j["results"]}
+for n in ("tcpmux", "tlsmux"):
+    r = rs[n]
+    assert r.get("status") == "done", r
+    assert r["down_bps"] > 0 and r["up_bps"] > 0 and r["ping_ms"] > 0, r
+EOF
+sleep 1
+for ns in $HUB $EDGE; do
+  ip netns exec $ns ss -Htln "( sport = :40421 or sport = :40422 or sport = :8449 )" | grep -q . && fail "a test's connection tunnel still listens on $ns"
+done
+[ "$(http_code http://198.18.0.1:8092/)" = 200 ] || fail "forward over m1 after the tests"
+pass "connection tunnels: direct and reverse carry forwards, take speed tests, the panel check and the comparison"
+
 # 12c. Lanes: one GRE tunnel on 4 parallel GRE tunnels (distinct keys), the
 #      far end's address reached by a multipath route over all of them; a
 #      speed test, a NAT and a transparent forward through it, then back to

@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/netip"
 	"sort"
 	"strconv"
@@ -96,7 +95,7 @@ type Candidate struct {
 }
 
 // BenchPort is the port used to test tunnels wrapped in UDP (and, +3, the
-// TCP transport).
+// TCP transport; +4 and +5, the connection tunnels).
 const BenchPort = 40417
 
 // Candidates returns the tests for an IPv4 underlay between self and peer.
@@ -135,6 +134,12 @@ func Candidates(self, peer string, selfAddr, peerAddr string) []Candidate {
 		{"l2tpv3", "L2TPv3 (L2)", "l2tpv3", 0, []config.Tunnel{mk("l2tp", config.KindL2TPv3, "", 0)}},
 		{"l2tpv3-udp", fmt.Sprintf("L2TPv3 on UDP %d", BenchPort+2), "l2tpv3", BenchPort + 2, []config.Tunnel{mk("l2tpu", config.KindL2TPv3, "", BenchPort+2)}},
 		{"tcp", fmt.Sprintf("TCP %d", BenchPort+3), "tcp", BenchPort + 3, []config.Tunnel{secret(mk("tcp", config.KindTCP, "", BenchPort+3))}},
+		// Connection tunnels, the far server listening, as they are made by
+		// default; measured over their sessions.
+		{"tcpmux", fmt.Sprintf("TCP + mux on %d", BenchPort+4), "tcpmux", BenchPort + 4,
+			[]config.Tunnel{secret(mk("tcpmux", config.KindStreamTCP, "", BenchPort+4))}},
+		{"tlsmux", fmt.Sprintf("TLS + mux on %d", BenchPort+5), "tlsmux", BenchPort + 5,
+			[]config.Tunnel{secret(mk("tlsmux", config.KindStreamTLS, "", BenchPort+5))}},
 	}
 }
 
@@ -181,25 +186,24 @@ func (r *Runner) open(ctx context.Context) error {
 	return nil
 }
 
-// Measure runs latency then both throughput directions against addr.
-func (r *Runner) Measure(ctx context.Context, addr netip.Addr) (probe.LatencyResult, float64, float64, error) {
+// measure runs latency then both throughput directions against t.
+func (r *Runner) measure(ctx context.Context, t target) (probe.LatencyResult, float64, float64, error) {
 	if err := r.open(ctx); err != nil {
 		return probe.LatencyResult{}, 0, 0, err
 	}
-	hp := net.JoinHostPort(addr.String(), strconv.Itoa(probe.DefaultPort))
 	r.live("ping", 0)
-	lat, err := probe.Latency(ctx, hp, r.token, r.Opts.Pings, r.Opts.Interval, 64)
+	lat, err := r.latency(ctx, t, r.Opts.Pings, r.Opts.Interval)
 	if err != nil {
 		return lat, 0, 0, err
 	}
 	r.say("  latency %.1f ms, jitter %.1f ms, loss %.0f%%", ms(lat.Avg), ms(lat.Jitter), lat.Loss())
 	r.live("ping", ms(lat.Avg))
-	up, err := probe.BandwidthLive(ctx, hp, r.token, probe.Upload, r.Opts.Duration, r.Opts.Streams, func(bps float64) { r.live("upload", bps) })
+	up, err := r.bandwidth(ctx, t, probe.Upload)
 	if err != nil {
 		return lat, 0, 0, fmt.Errorf("upload: %w", err)
 	}
 	r.say("  upload %s", Rate(up))
-	down, err := probe.BandwidthLive(ctx, hp, r.token, probe.Download, r.Opts.Duration, r.Opts.Streams, func(bps float64) { r.live("download", bps) })
+	down, err := r.bandwidth(ctx, t, probe.Download)
 	if err != nil {
 		return lat, up, 0, fmt.Errorf("download: %w", err)
 	}
@@ -216,7 +220,7 @@ func (r *Runner) Baseline(ctx context.Context) Result {
 		return res
 	}
 	r.say("direct path to %s", a)
-	res.Latency, res.Up, res.Down, err = r.Measure(ctx, a)
+	res.Latency, res.Up, res.Down, err = r.measure(ctx, target{addr: a})
 	if err != nil {
 		res.Err = err.Error()
 	}
@@ -269,17 +273,9 @@ func (r *Runner) Run(ctx context.Context, c Candidate) Result {
 		r.say("  measuring existing tunnel %s", t.Name)
 		res.Title += " [" + t.Name + "]"
 		res.MTU = engine.State(engine.Ifname(t.Name)).MTU
-		far := 1
-		if r.State.IsSelf(t.Sides[1].Node) {
-			far = 0
-		}
-		n := t.Net4
-		if n == "" {
-			n = t.Net6
-		}
-		target, _ := config.Inner(n, far)
+		tg, _ := tunnelTarget(r.State, *t)
 		var err error
-		if res.Latency, res.Up, res.Down, err = r.MeasureTunnel(ctx, t.Name, target.Addr()); err != nil {
+		if res.Latency, res.Up, res.Down, err = r.measureTunnel(ctx, t.Name, tg); err != nil {
 			res.Err = err.Error()
 		}
 		return res
@@ -305,30 +301,27 @@ func (r *Runner) Run(ctx context.Context, c Candidate) Result {
 	}
 	res.MTU = u.mtu
 
-	last := c.Tunnels[len(c.Tunnels)-1]
-	n := last.Net4
-	if n == "" {
-		n = last.Net6
-	}
-	target, _ := config.Inner(n, 1)
-	if err := r.waitUp(ctx, target.Addr()); err != nil {
+	t := candidateTarget(c)
+	if err := r.waitUp(ctx, t); err != nil {
 		res.Err = err.Error()
 		return res
 	}
-	res.Latency, res.Up, res.Down, err = r.Measure(ctx, target.Addr())
+	res.Latency, res.Up, res.Down, err = r.measure(ctx, t)
 	if err != nil {
 		res.Err = err.Error()
 	}
 	return res
 }
 
-func (r *Runner) waitUp(ctx context.Context, a netip.Addr) error {
-	hp := net.JoinHostPort(a.String(), strconv.Itoa(probe.DefaultPort))
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		if l, err := probe.Latency(ctx, hp, r.token, 3, 100*time.Millisecond, 64); err == nil && l.Received > 0 {
+func (r *Runner) waitUp(ctx context.Context, t target) error {
+	deadline := time.Now().Add(waitFor(t, 8*time.Second))
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if r.reaches(ctx, t) {
 			return nil
 		}
+	}
+	if t.stream != "" {
+		return notPassing(t)
 	}
 	return fmt.Errorf("no traffic passes (protocol filtered on the path?)")
 }
@@ -374,12 +367,12 @@ func Table(rs []Result) string {
 	return b.String()
 }
 
-// MeasureTunnel measures through an existing tunnel and keeps the test's
+// measureTunnel measures through an existing tunnel and keeps the test's
 // bytes out of the tunnel's traffic totals, here and on the peer (which
 // sees the same bytes the other way round).
-func (r *Runner) MeasureTunnel(ctx context.Context, tunnel string, addr netip.Addr) (probe.LatencyResult, float64, float64, error) {
+func (r *Runner) measureTunnel(ctx context.Context, tunnel string, t target) (probe.LatencyResult, float64, float64, error) {
 	before := engine.TunnelState(tunnel)
-	lat, up, down, err := r.Measure(ctx, addr)
+	lat, up, down, err := r.measure(ctx, t)
 	after := engine.TunnelState(tunnel)
 	if before.Exists && after.Exists && after.RxBytes >= before.RxBytes && after.TxBytes >= before.TxBytes {
 		d := traffic.Pair{Rx: after.RxBytes - before.RxBytes, Tx: after.TxBytes - before.TxBytes,

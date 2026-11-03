@@ -62,6 +62,7 @@ func (r *Runner) startBoth(ctx context.Context, c Candidate, ttl time.Duration) 
 	for _, s := range res.Specs {
 		u.peer = append(u.peer, s.Name)
 	}
+	u.peer = append(u.peer, res.Streams...)
 	undo := func() {
 		engine.RemoveBench(u.local)
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -71,6 +72,10 @@ func (r *Runner) startBoth(ctx context.Context, c Candidate, ttl time.Duration) 
 	if err != nil {
 		undo()
 		return up{}, fmt.Errorf("peer: %w", err)
+	}
+	if c.stream() && len(res.Streams) == 0 {
+		undo()
+		return up{}, errOldPeer(r.Peer.Name)
 	}
 	isSelf := func(n string) bool { return n == r.State.Self }
 	specs, errs := engine.RenderTunnels(isSelf, c.Tunnels, engine.RouteSource)
@@ -86,7 +91,15 @@ func (r *Runner) startBoth(ctx context.Context, c Candidate, ttl time.Duration) 
 		undo()
 		return up{}, err
 	}
-	u.mtu = specs[len(specs)-1].MTU
+	streams, err := engine.ApplyStreamBench(isSelf, c.Tunnels, streamName, ttl)
+	u.local = append(u.local, streams...)
+	if err != nil {
+		undo()
+		return up{}, err
+	}
+	if len(specs) > 0 {
+		u.mtu = specs[len(specs)-1].MTU
+	}
 	return u, nil
 }
 

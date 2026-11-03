@@ -2,9 +2,13 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
+	"net"
 	"net/netip"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"neotunnel/internal/metrics"
 	"neotunnel/internal/obfs"
 	"neotunnel/internal/pmtu"
+	"neotunnel/internal/probe"
 	"neotunnel/internal/relay"
 	"neotunnel/internal/tcptun"
 	"neotunnel/internal/traffic"
@@ -42,6 +47,7 @@ func newDataPlane() *dataPlane {
 	d := &dataPlane{obfs: obfs.NewManager(), tcp: tcptun.NewManager(), eoip: eoip.NewManager(), relay: relay.NewManager(),
 		hub: transport.NewHub(), bench: map[string]closer{}}
 	d.relay.SetHub(d.hub)
+	d.hub.SetProbe(net.JoinHostPort("127.0.0.1", strconv.Itoa(probe.DefaultPort)))
 	return d
 }
 
@@ -163,6 +169,59 @@ func (d *dataPlane) SyncStreams(specs []transport.Spec) []error {
 
 func (d *dataPlane) StreamState(tunnel string) (transport.State, bool) {
 	return d.hub.State(tunnel)
+}
+
+func (d *dataPlane) StreamPing(tunnel string, timeout time.Duration) (time.Duration, error) {
+	return d.hub.Ping(tunnel, timeout)
+}
+
+func (d *dataPlane) StreamProbe(tunnel string) (net.Conn, error) { return d.hub.OpenProbe(tunnel) }
+
+// StartStreamBench runs a speed test's connection tunnel: its sessions in
+// the hub and, on the side that listens, the listener on its port.
+func (d *dataPlane) StartStreamBench(s transport.Spec, expiry time.Time) error {
+	d.StopBench([]string{s.Name})
+	if err := d.hub.StartBench(s); err != nil {
+		return err
+	}
+	if !s.Dial {
+		d.relay.SyncListen()
+		open := d.relay.ListenPorts()
+		for _, p := range s.PortList() {
+			if !slices.Contains(open, p) {
+				d.hub.StopBench([]string{s.Name})
+				d.relay.SyncListen()
+				return fmt.Errorf("TCP port %d is in use by another program", p)
+			}
+		}
+	}
+	l := &streamBench{d, s.Name}
+	d.benchMu.Lock()
+	d.bench[s.Name] = l
+	d.benchMu.Unlock()
+	time.AfterFunc(time.Until(expiry), func() {
+		d.benchMu.Lock()
+		cur := d.bench[s.Name]
+		if cur == l {
+			delete(d.bench, s.Name)
+		}
+		d.benchMu.Unlock()
+		if cur == l {
+			l.Close()
+		}
+	})
+	return nil
+}
+
+// streamBench is a running speed test's connection tunnel.
+type streamBench struct {
+	d    *dataPlane
+	name string
+}
+
+func (b *streamBench) Close() {
+	b.d.hub.StopBench([]string{b.name})
+	b.d.relay.SyncListen()
 }
 
 func (d *dataPlane) Close() {

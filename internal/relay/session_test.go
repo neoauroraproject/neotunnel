@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"net"
 	"net/netip"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,12 +64,10 @@ func sessionPair(t *testing.T, kind config.Kind, reverse bool, secret, exitSecre
 	return port, hubs[0], hubs[1]
 }
 
+// The connections write, half-close, then read the answer: smux before
+// 1.5.58 dropped what arrived just before the far end's FIN on a stream
+// whose write side was already closed, and they got none.
 func TestSessionRelay(t *testing.T) {
-	if os.Getenv("NEOTUNNEL_SESSION_TEST") == "" {
-		// Known issue: now and then one of several connections at once ends
-		// with no answer (see the logs "tunnel t1: ..."); being looked into.
-		t.Skip("intermittent; set NEOTUNNEL_SESSION_TEST=1 to run")
-	}
 	secret := config.NewSecret()
 	data := make([]byte, 3<<20)
 	rand.Read(data)

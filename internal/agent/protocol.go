@@ -17,6 +17,11 @@ type RegisterRequest struct {
 	Arch      string `json:"arch"`
 	AgentPort int    `json:"agent_port"`
 	Revision  uint64 `json:"revision"` // configuration the peer already runs
+	// What the peer's version can do, as its Status says (older versions
+	// leave these out): known from pairing on, not a minute later.
+	ObfsAES       bool `json:"obfs_aes,omitempty"`
+	StreamTunnels bool `json:"stream_tunnels,omitempty"`
+	StreamTests   bool `json:"stream_tests,omitempty"`
 }
 
 type ApplyRequest struct {
@@ -65,6 +70,9 @@ type Status struct {
 	ObfsAES bool `json:"obfs_aes,omitempty"`
 	// StreamTunnels: this version runs connection tunnels and relay ports.
 	StreamTunnels bool `json:"stream_tunnels,omitempty"`
+	// StreamTests: this version takes speed tests over connection tunnels
+	// and runs temporary ones for the checks and comparisons.
+	StreamTests bool `json:"stream_tests,omitempty"`
 	// RolledBack is the last version an upgrade went back from, because
 	// it didn't answer its main server in time (see package upgrade).
 	RolledBack string `json:"rolled_back,omitempty"`
@@ -96,6 +104,9 @@ type BenchUpRequest struct {
 
 type BenchUpResponse struct {
 	Specs []engine.LinkSpec `json:"specs"`
+	// Streams are the connection tunnels started (versions before
+	// connection tunnel tests leave them out and start none).
+	Streams []string `json:"streams,omitempty"`
 }
 
 type BenchDownRequest struct {

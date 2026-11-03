@@ -844,11 +844,8 @@ func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all bool, sp
 		return []bench.Result{{Name: "check", Mode: req.Mode, Status: "skipped",
 			Err: "NeoObfs is checked once created: use the tunnel's speed test"}}, nil
 	}
-	if m, err := manage.LookupMode(req.Mode); err == nil && m.Stream {
-		// Connection tunnels run in the daemon too, and carry no packets.
-		return []bench.Result{{Name: "check", Mode: req.Mode, Status: "skipped",
-			Err: "connection tunnels are checked once created: watch the tunnel's health"}}, nil
-	}
+	// A connection tunnel is checked like the others, as a temporary one in
+	// both daemons, the same side listening, and measured over its sessions.
 	req.Name, req.Forward = "nwz", ""
 	_, defs, err := manage.PlanTunnel(st, req)
 	if err != nil {

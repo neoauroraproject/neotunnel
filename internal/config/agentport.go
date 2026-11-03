@@ -72,7 +72,7 @@ func EnsureAgentPort(s *State, free func(port int) bool) bool {
 // and the comparison's test ports.
 func (s *State) usedPorts() map[int]bool {
 	used := map[int]bool{LegacyAgentPort: true, 7711: true, 7712: true, FetchPort: true}
-	for p := 40417; p <= 40420; p++ {
+	for p := 40417; p <= 40422; p++ {
 		used[p] = true
 	}
 	if s.Panel != nil {

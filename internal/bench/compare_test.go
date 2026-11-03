@@ -29,3 +29,36 @@ func TestWavesKeepConflictsApart(t *testing.T) {
 		t.Errorf("first wave should take nearly everything, got %d of %d", len(ws[0]), len(cs))
 	}
 }
+
+// The connection tunnels are compared too: each on a test port of its own,
+// with a secret, the far server listening, measured over the sessions of
+// the temporary tunnel both servers start under the same name.
+func TestStreamCandidates(t *testing.T) {
+	ports := map[uint16]string{}
+	found := 0
+	for _, c := range Candidates("hub", "edge", "192.0.2.1", "192.0.2.2") {
+		if c.Port != 0 {
+			if o, ok := ports[c.Port]; ok {
+				t.Errorf("%s and %s share test port %d", o, c.Name, c.Port)
+			}
+			ports[c.Port] = c.Name
+		}
+		if !c.stream() {
+			if tg := candidateTarget(c); tg.stream != "" {
+				t.Errorf("%s: packet tunnel measured over sessions", c.Name)
+			}
+			continue
+		}
+		found++
+		top := c.Tunnels[0]
+		if top.Secret == "" || top.Port == 0 || top.Listener() != 1 {
+			t.Errorf("%s: secret %t, port %d, listener %d", c.Name, top.Secret != "", top.Port, top.Listener())
+		}
+		if tg := candidateTarget(c); tg.stream != "ntx-"+top.Name {
+			t.Errorf("%s: probes go to %+v", c.Name, tg)
+		}
+	}
+	if found != 2 {
+		t.Fatalf("want TCP + mux and TLS + mux among the candidates, found %d", found)
+	}
+}

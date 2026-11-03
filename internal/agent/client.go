@@ -307,6 +307,7 @@ func Register(ctx context.Context, id *identity.Identity, m *config.Managed) err
 	return c.do(ctx, "POST", "/v1/register", RegisterRequest{
 		Token: m.EnrollToken, Name: m.Self, Version: version.Version, Arch: version.Arch(),
 		AgentPort: listenPort(), Revision: m.Revision,
+		ObfsAES: true, StreamTunnels: true, StreamTests: true,
 	}, nil, nil)
 }
 

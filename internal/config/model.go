@@ -249,6 +249,9 @@ type Peer struct {
 	// StreamTunnels: the peer's version runs connection tunnels and takes
 	// relay connections on each tunnel's own ports (RelayPorts).
 	StreamTunnels bool `json:"stream_tunnels,omitempty"`
+	// StreamTests: the peer's version takes speed tests over connection
+	// tunnels and runs temporary ones for checks and comparisons.
+	StreamTests bool `json:"stream_tests,omitempty"`
 	// RolledBack is the last version an upgrade of the peer went back from
 	// (it didn't answer in time); automatic upgrades skip it.
 	RolledBack      string    `json:"rolled_back,omitempty"`

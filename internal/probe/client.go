@@ -105,16 +105,52 @@ func Latency(ctx context.Context, addr string, tok Token, count int, interval ti
 	c.Close()
 	<-done
 
-	r := LatencyResult{Sent: sent}
 	var seq []time.Duration
 	for i := range got {
 		if got[i] {
 			seq = append(seq, rtts[i])
 		}
 	}
-	r.Received = len(seq)
+	r := summarize(sent, seq)
 	if r.Received == 0 {
 		return r, fmt.Errorf("no replies from %s (tunnel down or port blocked)", addr)
+	}
+	return r, nil
+}
+
+// PingLatency measures latency where there is no UDP to send probes on (a
+// connection tunnel): count round trips by ping, interval apart, one at a
+// time. A ping that fails counts as lost.
+func PingLatency(ctx context.Context, ping func() (time.Duration, error), count int, interval time.Duration) (LatencyResult, error) {
+	var seq []time.Duration
+	var last error
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for i := 0; i < count; i++ {
+		if d, err := ping(); err == nil {
+			seq = append(seq, d)
+		} else {
+			last = err
+		}
+		select {
+		case <-ctx.Done():
+			return LatencyResult{}, ctx.Err()
+		case <-t.C:
+		}
+	}
+	r := summarize(count, seq)
+	if r.Received == 0 {
+		return r, fmt.Errorf("no replies: %v", last)
+	}
+	return r, nil
+}
+
+// summarize is the result of sent probes whose round trips were seq, in
+// the order they were sent.
+func summarize(sent int, seq []time.Duration) LatencyResult {
+	r := LatencyResult{Sent: sent, Received: len(seq)}
+	if len(seq) == 0 {
+		return r
 	}
 	var sum, jsum time.Duration
 	for i, d := range seq {
@@ -131,7 +167,7 @@ func Latency(ctx context.Context, addr string, tok Token, count int, interval ti
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	r.Min, r.Max = sorted[0], sorted[len(sorted)-1]
 	r.P95 = sorted[int(math.Ceil(0.95*float64(len(sorted))))-1]
-	return r, nil
+	return r
 }
 
 type Direction byte
@@ -156,13 +192,32 @@ func Bandwidth(ctx context.Context, addr string, tok Token, dir Direction, d tim
 // not the bytes written: the first writes only fill socket buffers, which
 // made the live rate jump high and then fall.
 func BandwidthLive(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, streams int, report func(bps float64)) (float64, error) {
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var dl net.Dialer
+		return dl.DialContext(ctx, "tcp", addr)
+	}
+	return bandwidth(ctx, dial, false, tok, dir, d, streams, report)
+}
+
+// Dial opens one connection to a probe server.
+type Dial func(ctx context.Context) (net.Conn, error)
+
+// BandwidthOver is BandwidthLive on connections dial opens to the far probe
+// server: the streams of a connection tunnel. A stream's write returns once
+// its frame is on the session's socket, which keeps little unsent, so an
+// upload counts the bytes written once the run is past its start.
+func BandwidthOver(ctx context.Context, dial Dial, tok Token, dir Direction, d time.Duration, streams int, report func(bps float64)) (float64, error) {
+	return bandwidth(ctx, dial, true, tok, dir, d, streams, report)
+}
+
+func bandwidth(ctx context.Context, dial Dial, written bool, tok Token, dir Direction, d time.Duration, streams int, report func(bps float64)) (float64, error) {
 	if streams < 1 {
 		streams = 1
 	}
 	// The test fills the tunnel on purpose; the loss it causes must not
 	// make the daemon restart the tunnel or move its forwards.
 	health.QuietFor(d + 30*time.Second)
-	m := &meter{dir: dir}
+	m := &meter{dir: dir, written: written}
 	var (
 		wg    sync.WaitGroup
 		mu    sync.Mutex
@@ -174,7 +229,7 @@ func BandwidthLive(ctx context.Context, addr string, tok Token, dir Direction, d
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := stream(ctx, addr, tok, dir, d, m)
+			n, err := stream(ctx, dial, tok, dir, d, m)
 			mu.Lock()
 			defer mu.Unlock()
 			total += n
@@ -215,7 +270,7 @@ sampling:
 		return 0, first
 	}
 	rate := float64(total*8) / time.Since(start).Seconds()
-	if steady, ok := steadyRate(samples, start.Add(Warmup(d))); ok && (dir == Download || m.exact) {
+	if steady, ok := steadyRate(samples, start.Add(Warmup(d))); ok && (dir == Download || m.exact || m.written) {
 		rate = steady
 	}
 	if report != nil {
@@ -257,6 +312,9 @@ type meter struct {
 	mu    sync.Mutex
 	conns []*counted
 	exact bool // the kernel reports acknowledged bytes
+	// written: the bytes written are close to what arrived (see
+	// BandwidthOver).
+	written bool
 }
 
 type counted struct {
@@ -274,7 +332,7 @@ func (m *meter) track(c net.Conn) {
 // download; for an upload the acknowledged bytes, or the written ones where
 // the kernel can't tell.
 func (m *meter) delivered() int64 {
-	if m.dir == Download {
+	if m.dir == Download || m.written {
 		return m.moved.Load()
 	}
 	m.mu.Lock()
@@ -293,10 +351,9 @@ func (m *meter) delivered() int64 {
 	return int64(sum)
 }
 
-func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.Duration, m *meter) (int64, error) {
-	var dl net.Dialer
+func stream(ctx context.Context, dial Dial, tok Token, dir Direction, d time.Duration, m *meter) (int64, error) {
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	c, err := dl.DialContext(dctx, "tcp", addr)
+	c, err := dial(dctx)
 	cancel()
 	if err != nil {
 		return 0, err
@@ -325,7 +382,9 @@ func stream(ctx context.Context, addr string, tok Token, dir Direction, d time.D
 				break
 			}
 		}
-		c.(*net.TCPConn).CloseWrite()
+		if cw, ok := c.(interface{ CloseWrite() error }); ok {
+			cw.CloseWrite()
+		}
 		c.SetReadDeadline(time.Now().Add(10 * time.Second))
 		var out [8]byte
 		if _, err := io.ReadFull(c, out[:]); err != nil {

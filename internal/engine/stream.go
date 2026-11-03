@@ -2,7 +2,9 @@ package engine
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
+	"time"
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/transport"
@@ -93,4 +95,49 @@ func StreamState(tunnel string) (LinkState, bool) {
 		return LinkState{}, false
 	}
 	return LinkState{Exists: true, Up: st.Sessions > 0, RxBytes: st.Rx, TxBytes: st.Tx}, true
+}
+
+// StreamPing measures a round trip over a connection tunnel's sessions.
+func StreamPing(tunnel string, timeout time.Duration) (time.Duration, error) {
+	us := currentUserspace()
+	if us == nil {
+		return 0, ErrNeedsDaemon
+	}
+	return us.StreamPing(tunnel, timeout)
+}
+
+// StreamProbe opens a stream to the far end's probe server over a
+// connection tunnel, for a speed test.
+func StreamProbe(tunnel string) (net.Conn, error) {
+	us := currentUserspace()
+	if us == nil {
+		return nil, ErrNeedsDaemon
+	}
+	return us.StreamProbe(tunnel)
+}
+
+// ApplyStreamBench starts the connection tunnels among ts, a speed test's
+// temporary tunnels, under the names rename gives them, until ttl. It
+// returns the names of those it started, which RemoveBench takes.
+func ApplyStreamBench(isSelf func(string) bool, ts []config.Tunnel, rename func(string) string, ttl time.Duration) ([]string, error) {
+	var started []string
+	for _, t := range ts {
+		if !t.IsStream() {
+			continue
+		}
+		us := currentUserspace()
+		if us == nil {
+			return started, ErrNeedsDaemon
+		}
+		t.Name, t.Origin = rename(t.Name), ""
+		s, err := streamSpec(isSelf, t)
+		if err != nil {
+			return started, fmt.Errorf("%s: %w", t.Name, err)
+		}
+		if err := us.StartStreamBench(s, time.Now().Add(ttl)); err != nil {
+			return started, fmt.Errorf("%s: %w", t.Name, err)
+		}
+		started = append(started, t.Name)
+	}
+	return started, nil
 }

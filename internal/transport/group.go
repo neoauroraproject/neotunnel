@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -179,8 +180,33 @@ func (g *group) stream(st *smux.Stream) {
 		}
 	case streamPing:
 		st.Write(t[:])
+	case streamProbe:
+		if a := g.hub.probe.Load(); a != nil {
+			probeTo(*a, &Stream{st})
+			return
+		}
 	}
 	st.Close()
+}
+
+// probeTo carries a speed test's stream to the probe server at addr, both
+// ways, passing on each side's end of data.
+func probeTo(addr string, st *Stream) {
+	defer st.Close()
+	c, err := net.DialTimeout("tcp", addr, dialTimeout)
+	if err != nil {
+		return
+	}
+	defer c.Close()
+	done := make(chan struct{})
+	go func() {
+		io.Copy(c, st)
+		c.(*net.TCPConn).CloseWrite()
+		close(done)
+	}()
+	io.Copy(st, c)
+	st.CloseWrite()
+	<-done
 }
 
 // pick is the live session with the fewest streams.

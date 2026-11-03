@@ -27,8 +27,12 @@ type Hub struct {
 	groups map[string]*group
 	ctrs   map[string]*Counters // by tunnel name, kept across changes
 	lims   map[string]*limiter
+	// bench are the temporary tunnels of speed tests, which Sync leaves be.
+	bench map[string]*group
 
 	handler atomic.Pointer[Handler]
+	// probe is where streamProbe streams go: this server's probe server.
+	probe atomic.Pointer[string]
 
 	certOnce sync.Once
 	tlsConf  *tls.Config
@@ -38,11 +42,14 @@ type Hub struct {
 }
 
 func NewHub() *Hub {
-	return &Hub{groups: map[string]*group{}, ctrs: map[string]*Counters{}, lims: map[string]*limiter{}}
+	return &Hub{groups: map[string]*group{}, ctrs: map[string]*Counters{}, lims: map[string]*limiter{}, bench: map[string]*group{}}
 }
 
 // SetHandler sets what carries the relay streams the far ends open.
 func (h *Hub) SetHandler(fn Handler) { h.handler.Store(&fn) }
+
+// SetProbe sets where the far ends' speed test streams go (host:port).
+func (h *Hub) SetProbe(addr string) { h.probe.Store(&addr) }
 
 // Sync runs exactly these tunnels. A tunnel whose sessions must change gets
 // new ones before the old ones go (see group.handOver).
@@ -95,12 +102,53 @@ func check(s Spec) error {
 }
 
 // Close ends every tunnel.
-func (h *Hub) Close() { h.Sync(nil) }
+func (h *Hub) Close() {
+	h.Sync(nil)
+	h.mu.Lock()
+	var names []string
+	for n := range h.bench {
+		names = append(names, n)
+	}
+	h.mu.Unlock()
+	h.StopBench(names)
+}
+
+// StartBench runs a temporary tunnel for a speed test, apart from the ones
+// Sync keeps, until StopBench. Its name must not be a real tunnel's.
+func (h *Hub) StartBench(s Spec) error {
+	if err := check(s); err != nil {
+		return err
+	}
+	h.StopBench([]string{s.Name})
+	h.mu.Lock()
+	h.bench[s.Name] = newGroup(h, s, &Counters{}, &limiter{})
+	h.mu.Unlock()
+	return nil
+}
+
+// StopBench ends the temporary tunnels of these names.
+func (h *Hub) StopBench(names []string) {
+	h.mu.Lock()
+	var stop []*group
+	for _, n := range names {
+		if g, ok := h.bench[n]; ok {
+			stop = append(stop, g)
+			delete(h.bench, n)
+		}
+	}
+	h.mu.Unlock()
+	for _, g := range stop {
+		g.close()
+	}
+}
 
 func (h *Hub) group(name string) (*group, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	g, ok := h.groups[name]
+	if !ok {
+		g, ok = h.bench[name]
+	}
 	return g, ok
 }
 
@@ -111,6 +159,16 @@ func (h *Hub) Open(name string) (net.Conn, error) {
 		return nil, fmt.Errorf("tunnel %s is not running here", name)
 	}
 	return g.open(streamRelay)
+}
+
+// OpenProbe starts a stream to the far end's probe server over the tunnel
+// named name, for a speed test.
+func (h *Hub) OpenProbe(name string) (net.Conn, error) {
+	g, ok := h.group(name)
+	if !ok {
+		return nil, fmt.Errorf("tunnel %s is not running here", name)
+	}
+	return g.open(streamProbe)
 }
 
 // Ping measures a round trip to the far end over one of the sessions.
@@ -152,7 +210,7 @@ func (h *Hub) ListenPorts() []uint16 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var out []uint16
-	for _, g := range h.groups {
+	for _, g := range h.all() {
 		if g.spec.Dial {
 			continue
 		}
@@ -165,13 +223,25 @@ func (h *Hub) ListenPorts() []uint16 {
 	return out
 }
 
+// all are the running tunnels, real and temporary; h.mu is held.
+func (h *Hub) all() []*group {
+	out := make([]*group, 0, len(h.groups)+len(h.bench))
+	for _, g := range h.groups {
+		out = append(out, g)
+	}
+	for _, g := range h.bench {
+		out = append(out, g)
+	}
+	return out
+}
+
 // listening finds the listening tunnel a session names; from tells apart
 // two of the same name (from two main servers).
 func (h *Hub) listening(tunnel string, from netip.Addr) (*group, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var found []*group
-	for _, g := range h.groups {
+	for _, g := range h.all() {
 		if !g.spec.Dial && g.spec.Tunnel == tunnel {
 			found = append(found, g)
 		}

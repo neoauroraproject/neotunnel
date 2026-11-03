@@ -21,8 +21,10 @@
 // the middle that ends TLS on each side (and so has different keys on each
 // leg) fails the handshake instead of reading the tunnel. Whoever does not
 // hold the secret meets a plain web server. Each stream then starts with a
-// type byte: streamRelay (a relay request follows, see internal/relay) or
-// streamPing (echoed, for the health probes).
+// type byte: streamRelay (a relay request follows, see internal/relay),
+// streamPing (echoed, for the health probes) or streamProbe (carried to
+// this server's probe server, for speed tests: a connection tunnel has no
+// inner address the test could reach it on).
 //
 // Several sessions run at once (Spec.Conns) and each new stream goes to the
 // least busy one: one session's lost packet then holds back only the users
@@ -80,6 +82,7 @@ const (
 
 	streamRelay = 0
 	streamPing  = 1
+	streamProbe = 2
 
 	dialTimeout      = 10 * time.Second
 	fallbackTimeout  = 4 * time.Second // per port while another remains

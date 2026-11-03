@@ -216,6 +216,7 @@ func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer 
 			}
 			p.ObfsAES = s.ObfsAES
 			p.StreamTunnels = s.StreamTunnels
+			p.StreamTests = s.StreamTests
 			p.RolledBack = s.RolledBack
 		}
 		return nil

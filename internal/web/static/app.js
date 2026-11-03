@@ -172,7 +172,7 @@
     eoip: { t: "EoIP", d: "تانل لایه ۲ میکروتیک (Ethernet over IP) در لینوکس: فریم‌های Ethernet داخل GRE با شناسه‌ی تانل می‌روند؛ روی IPv6 همان EoIPv6 است. اگر مسیر پروتکل 47 را ببندد، با یک پورت داخل UDP اجرا می‌شود. در فضای کاربری NeoTunnel اجرا می‌شود و ماژول کرنلی نمی‌خواهد.", layer: 2, carry: "Ethernet", over: 42, crypt: "ندارد (IPsec اختیاری)", mt: "بله، EoIP و EoIPv6 (با شناسه‌ی تانل یکسان)", best: "بریج لایه ۲ بین دو سرور، یا اتصال به میکروتیک" },
   };
   Object.assign(PROTO, {
-    tcpmux: { t: "TCP + mux", d: "تانل اتصال، مثل FRP: بسته‌ای جابه‌جا نمی‌شود؛ هر اتصال کاربر روی یک stream از چند جلسه‌ی TCP ماندگار بین دو سرور می‌رود و TCP کاربر در همین سرور تمام و آن طرف دوباره شروع می‌شود. آدرس داخلی و interface ندارد و فوروارد رویش «رله TCP» است. جهت را خودتان انتخاب می‌کنید: این سرور وصل شود یا سرور مقابل به این سرور وصل شود. تانل روی سه پورت گوش می‌دهد و اگر اولی بسته بود، دومی و سومی امتحان می‌شوند.", layer: "۴ (اتصال)", carry: "اتصال‌های TCP کاربران", over: 8, crypt: "اختیاری، AES-GCM یا ChaCha20 روی جلسه", mt: "خیر؛ دو طرف NeoTunnel", best: "مثل FRP؛ وقتی فقط TCP رد می‌شود یا فقط اتصال از یک طرف باز است", stream: true },
+    tcpmux: { t: "TCP + mux", d: "تانل اتصال، مثل FRP: بسته‌ای جابه‌جا نمی‌شود؛ هر اتصال کاربر روی یک stream از چند جلسه‌ی TCP ماندگار بین دو سرور می‌رود و TCP کاربر در همین سرور تمام و آن طرف دوباره شروع می‌شود. آدرس داخلی و interface ندارد و فوروارد رویش «رله TCP» است. جهت را خودتان انتخاب می‌کنید: مستقیم (Direct)، این سرور به سرور مقابل وصل می‌شود؛ یا معکوس (Reverse)، سرور مقابل به این سرور وصل می‌شود. تانل روی سه پورت گوش می‌دهد و اگر اولی بسته بود، دومی و سومی امتحان می‌شوند.", layer: "۴ (اتصال)", carry: "اتصال‌های TCP کاربران", over: 8, crypt: "اختیاری، AES-GCM یا ChaCha20 روی جلسه", mt: "خیر؛ دو طرف NeoTunnel", best: "مثل FRP؛ وقتی فقط TCP رد می‌شود یا فقط اتصال از یک طرف باز است", stream: true },
     tlsmux: { t: "TLS + mux", d: "همان TCP + mux، داخل TLS 1.3. جلسه با رمز مشترک تانل احراز هویت می‌شود و کلیدهایش به همان اتصال TLS گره خورده است؛ کسی که رمز تانل را ندارد فقط یک وب‌سرور می‌بیند.", layer: "۴ (اتصال)", carry: "اتصال‌های TCP کاربران", over: 30, crypt: "TLS 1.3", mt: "خیر؛ دو طرف NeoTunnel", best: "مثل TCP + mux، وقتی ترافیک باید رمزدار و شبیه HTTPS باشد", stream: true },
   });
   PROTO["stream-tcp"] = PROTO.tcpmux; PROTO["stream-tls"] = PROTO.tlsmux;
@@ -213,7 +213,12 @@
     ["direct", "مسیر مستقیم"], ["6to4", "6to4"], ["6to4-udp", "6to4 روی UDP"], ["6to4-gre", "6to4 + GRE6"],
     ["ipip", "IPIP"], ["gre", "GRE"], ["gretap", "GRETAP"], ["vxlan", "VXLAN"], ["geneve", "GENEVE"],
     ["wireguard", "WireGuard"], ["l2tpv3", "L2TPv3"], ["l2tpv3-udp", "L2TPv3 روی UDP"], ["tcp", "TCP"],
+    ["tcpmux", "TCP + mux"], ["tlsmux", "TLS + mux"],
   ];
+  // A connection tunnel's direction, by its own name: Direct (this server
+  // connects out, the far one listens) or Reverse (the far one connects in,
+  // like FRP).
+  const dirName = (rev) => (rev ? "معکوس (Reverse)" : "مستقیم (Direct)");
   const kindTitle = (t) => { const p = PROTO[t.mode] || PROTO[t.kind]; return p ? p.t : (t.mode || t.kind).toUpperCase(); };
   const cipherTitle = (c) => ({ "aes-gcm-128": "AES-128-GCM", "aes-gcm-256": "AES-256-GCM", "chacha20-poly1305": "ChaCha20", wireguard: "WireGuard", "xchacha20-poly1305": "XChaCha20" }[c] || c);
 
@@ -1360,10 +1365,10 @@
         <div class="tc-dest">${I.server(14)} ${pname(t.peer) || "دستگاه دیگر"} <span class="ltr faint">${t.far_ip}</span></div>
         <div class="tc-rates"><div><span class="faint small">دانلود</span><b class="ltr" data-live="rx:${t.name}">${unitSmall(fmtRate(r.rx))}</b></div><div><span class="faint small">آپلود</span><b class="ltr" data-live="tx:${t.name}">${unitSmall(fmtRate(r.tx))}</b></div><div><span class="faint small">امروز</span><b class="ltr" data-live="today:${t.name}">${unitSmall(fmtBytes(t.today.rx + t.today.tx))}</b></div></div>
         ${off ? "" : pingTrend(pings && Object.assign({ name: t.name }, pings))}
-        <div class="tc-tags">${t.stream ? html`<span class="tag">${t.stream.listens ? "گوش می‌دهد" : "وصل می‌شود"} · ${t.stream.sessions}/${t.stream.want} جلسه</span>` : ""}${profileTag(t)}${encryptTag(t)}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}${t.limits && t.limits.queue_mbit ? html`<span class="tag" title="صف هوشمند (CAKE) روی ${t.limits.queue_mbit} Mbps">صف هوشمند</span>` : ""}</div>
+        <div class="tc-tags">${t.stream ? html`<span class="tag">${t.settings && t.settings.reverse ? "معکوس" : "مستقیم"} · ${t.stream.sessions}/${t.stream.want} جلسه</span>` : ""}${profileTag(t)}${encryptTag(t)}${t.obfs ? html`<span class="tag lock">${I.mask(12)} مبهم</span>` : ""}${t.limits && t.limits.rate_mbit ? html`<span class="tag ltr">≤ ${t.limits.rate_mbit} Mbps</span>` : ""}${t.limits && t.limits.queue_mbit ? html`<span class="tag" title="صف هوشمند (CAKE) روی ${t.limits.queue_mbit} Mbps">صف هوشمند</span>` : ""}</div>
       </button>
       <footer class="tc-foot">
-        ${t.stream ? "" : html`<button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(14)} تست</button>`}
+        <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(14)} تست</button>
         ${t.managed ? "" : html`<button class="btn sm" data-act="tunnel-restart" data-name="${t.name}" ${busy || off ? "disabled" : ""}>${I.sync(14)} ری‌استارت</button>
         <button class="btn sm ${off ? "primary" : "ghost"}" data-act="tunnel-power" data-name="${t.name}">${I.power(14)} ${off ? "روشن" : "خاموش"}</button>`}
         <span class="grow"></span>
@@ -1696,9 +1701,9 @@
   function streamSettings(t, st) {
     const path = `tset.${t.name}`, far = pname(t.peer) || t.peer;
     return html`<div class="field"><span class="lbl">جهت اتصال</span><div class="seg" role="radiogroup">
-        <button type="button" role="radio" aria-checked="${!st.reverse}" class="${!st.reverse ? "on" : ""}" data-act="set" data-path="${path}.reverse" data-value="">این سرور به ${far} وصل می‌شود</button>
-        <button type="button" role="radio" aria-checked="${!!st.reverse}" class="${st.reverse ? "on" : ""}" data-act="set" data-path="${path}.reverse" data-value="1">${far} به این سرور وصل می‌شود (مثل FRP)</button></div>
-        <span class="help">طرفی که گوش می‌دهد پورت‌ها را باز می‌کند و ${far} یا این سرور به آن وصل می‌شود. تغییرش اول جلسه‌های تازه را بالا می‌آورد و بعد قبلی‌ها را می‌بندد.</span></div>
+        <button type="button" role="radio" aria-checked="${!st.reverse}" class="${!st.reverse ? "on" : ""}" data-act="set" data-path="${path}.reverse" data-value="">${dirName(false)}</button>
+        <button type="button" role="radio" aria-checked="${!!st.reverse}" class="${st.reverse ? "on" : ""}" data-act="set" data-path="${path}.reverse" data-value="1">${dirName(true)}</button></div>
+        <span class="help">${st.reverse ? `${far} به این سرور وصل می‌شود، مثل FRP؛ این سرور پورت‌ها را باز می‌کند.` : `این سرور به ${far} وصل می‌شود؛ ${far} پورت‌ها را باز می‌کند.`} تغییرش اول جلسه‌های تازه را بالا می‌آورد و بعد قبلی‌ها را می‌بندد.</span></div>
       <div class="field"><label>پورت اول (TCP)</label><div class="pf"><input class="input ltr" type="number" min="1" max="65535" data-bind="${path}.port" value="${st.port || ""}" style="max-width:220px"><button type="button" class="btn sm" data-act="random-port" data-path="${path}.port" data-proto="tcp">${I.dice(14)} تصادفی</button></div>
         <span class="help">بعد از این، ${t.stream.ports.slice(1).join(" و ") || "پورت‌های پشتیبان"} امتحان می‌شوند.</span></div>
       ${t.kind === "stream-tls" ? html`<div class="field"><label>نام سرور TLS (SNI)</label><input class="input ltr" data-bind="${path}.sni" value="${st.sni || ""}" placeholder="خالی = بدون SNI" style="max-width:320px"></div>` : ""}
@@ -1716,7 +1721,7 @@
     const tabs = t.managed ? [["overview", "نمای کلی"], ["events", "رویدادها"]] : [["overview", "نمای کلی"], ["events", "رویدادها"], ["nightly", "تست‌های شبانه"], ["limits", "محدودیت‌ها"], ["settings", "تنظیمات"]];
     return html`<div class="detail">
         <div class="row dbar">
-          ${t.stream ? "" : html`<button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>`}
+          <button class="btn sm" data-act="test" data-name="${t.name}">${I.gauge(15)} تست سرعت</button>
           ${t.managed || t.stream ? "" : html`<button class="btn sm" data-act="mtu" data-name="${t.name}">${I.ruler(15)} بهترین MTU</button>`}
           <button class="btn sm" data-act="mtr" data-name="${t.name}">${I.wave(15)} مسیر (MTR)</button>
           <button class="btn sm" data-act="drawer" data-type="tunnel" data-name="${t.name}">نمودار</button>
@@ -1741,7 +1746,7 @@
         <dl class="kv">
           ${t.here4 ? html`<dt>IPv4 این طرف ⇄ آن طرف</dt><dd class="ltr">${t.here4.split("/")[0]} ⇄ ${t.there4}</dd>` : ""}
           ${t.here6 ? html`<dt>IPv6</dt><dd class="ltr small">${t.here6.split("/")[0]} ⇄ ${t.there6}</dd>` : ""}
-          ${t.stream ? html`<dt>جهت</dt><dd>${t.stream.listens ? "این سرور گوش می‌دهد و سرور مقابل وصل می‌شود" : "این سرور به سرور مقابل وصل می‌شود"}</dd>
+          ${t.stream ? html`<dt>جهت</dt><dd>${dirName(t.settings && t.settings.reverse)}: ${t.stream.listens ? "این سرور گوش می‌دهد و سرور مقابل وصل می‌شود" : "این سرور به سرور مقابل وصل می‌شود"}</dd>
           <dt>پورت‌ها (به ترتیب امتحان)</dt><dd class="ltr">${t.stream.ports.join(", ")}</dd>
           <dt>جلسه‌ها</dt><dd>${t.stream.sessions} باز از ${t.stream.want}</dd>
           <dt>اتصال‌های باز کاربران</dt><dd>${t.stream.conns}</dd>
@@ -2798,12 +2803,14 @@
   // With a connected server every choice is checked live: the same stack is
   // brought up on both ends for a few seconds to see that traffic passes.
   const WIZ_STEPS = ["مقصد", "پروتکل", "امنیت و پورت", "فوروارد و ساخت"];
+  // A connection tunnel's third step is mostly its direction.
+  const wizSteps = (w) => (w.mode && isStreamMode(w.mode) ? ["مقصد", "پروتکل", "جهت و پورت", "فوروارد و ساخت"] : WIZ_STEPS);
   const SIT_MODES = ["6to4", "6to4-gre"];
 
   function wizardView() {
     const w = S.wiz;
     const anim = w.anim ? ` enter-${w.anim}` : "";
-    const stepper = html`<ol class="stepper" aria-label="مرحله ${w.step} از ${WIZ_STEPS.length}">${WIZ_STEPS.map((l, i) => html`<li class="${w.step === i + 1 ? "now" : w.step > i + 1 ? "done" : ""}"><i>${w.step > i + 1 ? I.check(12) : i + 1}</i><span>${l}</span></li>`)}</ol>`;
+    const stepper = html`<ol class="stepper" aria-label="مرحله ${w.step} از ${WIZ_STEPS.length}">${wizSteps(w).map((l, i) => html`<li class="${w.step === i + 1 ? "now" : w.step > i + 1 ? "done" : ""}"><i>${w.step > i + 1 ? I.check(12) : i + 1}</i><span>${l}</span></li>`)}</ol>`;
     const body = [wizDest, wizProto, wizProtect, wizFinish][w.step - 1](w);
     const canNext = wizCanNext(w);
     return html`${modalHead("تانل جدید")}
@@ -2866,7 +2873,7 @@
       ${sel ? html`<div class="proto-info"><div><span class="k">لایه و محتوا</span>لایه ${sel.layer}، ${sel.carry}</div><div><span class="k">سربار</span>${sel.over} بایت</div>
         <div><span class="k">رمزنگاری</span>${sel.crypt}</div><div><span class="k">میکروتیک</span>${sel.mt}</div></div>
         <p class="help" style="margin:0">${sel.d}</p>` : ""}
-      ${sel && sel.stream ? html`<div class="note"><b>تانل اتصال.</b> برای فوروارد پورت‌های TCP (رله) و پروکسی؛ UDP و حالت NAT یا IP واقعی رویش نیست. پیش از ساخت زنده بررسی نمی‌شود؛ بعد از ساخت، سلامت تانل روی همین جلسه‌ها اندازه گرفته می‌شود.</div>` : ""}
+      ${sel && sel.stream ? html`<div class="note"><b>تانل اتصال.</b> برای فوروارد پورت‌های TCP (رله) و پروکسی؛ UDP و حالت NAT یا IP واقعی رویش نیست. مثل بقیه پیش از ساخت روی هر دو سرور بررسی می‌شود؛ پینگ و سرعتش روی همین جلسه‌ها اندازه گرفته می‌شود.</div>` : ""}
       ${sel && sel.tcp ? html`<div class="note warn"><b>TCP آخرین راه است.</b> ترافیک کاربران (که خودش بیشتر TCP است) داخل یک اتصال TCP دیگر می‌رود؛ با هر بسته‌ی گم‌شده کل تانل منتظر ارسال دوباره می‌ماند و سرعت در مسیرِ با افت بسته خیلی پایین می‌آید. اول 6to4، GRE یا یک پروتکل روی UDP را امتحان کنید؛ اگر هیچ‌کدام رد نشد، TCP را انتخاب کنید.</div>` : ""}
       <div class="field"><label for="w-name">نام تانل (اختیاری)</label><input id="w-name" class="input ltr" data-bind="wiz.name" value="${w.name}" placeholder="${S.ov.next_name || "t1"}" maxlength="8" style="max-width:220px"><span class="help">خالی بگذارید تا <b class="ltr">${S.ov.next_name || "t1"}</b> انتخاب شود.</span></div>`;
   }
@@ -2945,8 +2952,8 @@
     const ov = S.ov, p = wizProt(w, mode), far = w.dest === "new" ? (w.newName || "سرور مقصد") : w.peer, here = ov.node.name;
     return html`${checkBanner(w)}
       <div class="field"><span class="lbl">جهت اتصال</span><div class="choices">
-          <button type="button" class="choice ${!w.reverse ? "on" : ""}" data-act="set" data-path="wiz.reverse" data-value=""><b>${here} به ${far} وصل می‌شود</b><span>${far} روی پورت‌ها گوش می‌دهد؛ معمول‌ترین حالت.</span></button>
-          <button type="button" class="choice ${w.reverse ? "on" : ""}" data-act="set" data-path="wiz.reverse" data-value="1"><b>${far} به ${here} وصل می‌شود (مثل FRP)</b><span>${here} گوش می‌دهد؛ وقتی اتصال از این سرور به آن طرف بسته است ولی برعکسش باز است.</span></button>
+          <button type="button" class="choice ${!w.reverse ? "on" : ""}" data-act="set" data-path="wiz.reverse" data-value=""><b>${dirName(false)}</b><span>${here} به ${far} وصل می‌شود و ${far} روی پورت‌ها گوش می‌دهد؛ معمول‌ترین حالت.</span></button>
+          <button type="button" class="choice ${w.reverse ? "on" : ""}" data-act="set" data-path="wiz.reverse" data-value="1"><b>${dirName(true)}</b><span>${far} به ${here} وصل می‌شود، مثل FRP، و ${here} گوش می‌دهد؛ وقتی اتصال از این سرور به آن طرف بسته است ولی برعکسش باز است.</span></button>
         </div><span class="help">فوروارد پورت‌ها در هر دو حالت از همین سرور به سرور مقابل است؛ فقط اینکه کدام طرف اتصال را باز می‌کند فرق دارد.</span></div>
       ${mode.crypt ? html`<div class="note">${PROTO[w.mode].t} با TLS 1.3 رمز می‌شود؛ لایه‌ی دیگری لازم نیست.</div>
         <div class="field"><label for="w-sni">نام سرور TLS (SNI، اختیاری)</label><input id="w-sni" class="input ltr" data-bind="wiz.sni" value="${w.sni || ""}" placeholder="خالی = بدون SNI، مثل اتصال به IP" style="max-width:320px"><span class="help">اگر دامنه‌ای دارید که به سرور گوش‌دهنده اشاره می‌کند، همان را بدهید.</span></div>`
@@ -2982,7 +2989,7 @@
         <div><dt>محافظت</dt><dd>${mode.crypt ? "رمزنگاری خودِ پروتکل" : prot}</dd></div>
         <div><dt>حالت سرعت</dt><dd>${profileName(w.profile)}</dd></div>
         <div><dt>پورت</dt><dd class="ltr">${w.port ? `${mode.tcp ? "TCP" : "UDP"} ${w.port}` : mode.stream ? "تصادفی" : mode.udp || mode.tcp ? "خودکار" : "پروتکل خام"}${mode.stream ? " + ۲ پورت پشتیبان" : ""}</dd></div>
-        ${mode.stream ? html`<div><dt>جهت</dt><dd>${w.reverse ? "سرور مقابل به این سرور وصل می‌شود" : "این سرور به سرور مقابل وصل می‌شود"}</dd></div>` : ""}
+        ${mode.stream ? html`<div><dt>جهت</dt><dd>${dirName(w.reverse)}: ${w.reverse ? "سرور مقابل به این سرور وصل می‌شود" : "این سرور به سرور مقابل وصل می‌شود"}</dd></div>` : ""}
       </dl>
       <div class="grid2">
         <div class="field"><label for="w-fwd">فوروارد پورت‌های این سرور (اختیاری)</label><input id="w-fwd" class="input ltr" data-bind="wiz.fwd" value="${w.fwd}" placeholder="443, 8443, 2053-2096"><span class="help">ترافیک این پورت‌ها از داخل تانل به مقصد می‌رود.</span></div>
@@ -3017,26 +3024,28 @@
   function checkKey(w, mode, opts) {
     const k = { mode, u: w.underlay, l6: w.underlay === "ipv6" ? w.local6 : "", r6: w.underlay === "ipv6" ? w.remote6 : "" };
     if (opts) Object.assign(k, { p: w.protect, e: w.protect === "ipsec" ? w.encrypt : "", port: +w.port || 0 });
+    if (opts && isStreamMode(mode)) Object.assign(k, { rev: !!w.reverse, sni: (w.sni || "").trim() });
     return JSON.stringify(k);
   }
   function checkChip(c) {
     if (!c) return "";
     if (c.state === "run") return html`<span class="chk run"><i class="spin"></i>بررسی اتصال…</span>`;
     if (c.state === "skip") return html`<span class="chk run">بعد از ساخت تست می‌شود</span>`;
+    if (c.state === "old") return html`<span class="chk warn" title="${c.err || ""}">${I.alert(12)} سرور مقابل به‌روز نیست</span>`;
     if (c.state === "ok") return html`<span class="chk ok">${I.check(12)} وصل شد · ${ms(c.ping)}</span>`;
     return html`<span class="chk ${c.cfg ? "warn" : "bad"}" title="${c.err || ""}">${I.x(12)} ${c.cfg ? "با تنظیمات فعلی ساخته نمی‌شود" : "وصل نشد"}</span>`;
   }
   function checkBanner(w) {
     if (!canCheck(w)) return "";
-    if (isStreamMode(w.mode)) return html`<div class="check">${I.tunnel(16)}<div><b>تانل اتصال بعد از ساخت بررسی می‌شود</b><span>جلسه‌ها در خود سرویس اجرا می‌شوند؛ بعد از ساخت، وضعیت و پینگ تانل را روی کارت آن ببینید.</span></div></div>`;
     const c = w.checks[checkKey(w, w.mode, true)];
     if (!c || c.state === "run") return html`<div class="check run"><i class="spin"></i><div><b>بررسی اتصال با این تنظیمات…</b><span>تانل چند ثانیه روی هر دو سرور بالا می‌آید و پاک می‌شود.</span></div></div>`;
+    if (c.state === "old") return html`<div class="check bad">${I.alert(16)}<div><b>سرور مقابل باید به‌روز شود</b><span>نسخه‌ی NeoTunnel روی ${w.peer} تانل اتصال را پیش از ساخت تست نمی‌کند. آن را از صفحه‌ی سرورها به‌روز کنید؛ ساختن تانل مشکلی ندارد.</span></div></div>`;
     if (c.state === "skip") return html`<div class="check">${I.mask(16)}<div><b>NeoObfs پیش از ساخت سنجیده نمی‌شود</b><span>در فضای کاربر اجرا می‌شود؛ بعد از ساخت، با «تست سرعت» همان تانل بررسی کنید.</span></div></div>`;
     if (c.state === "ok" && c.moved) return html`<div class="check bad">${I.alert(16)}<div><b>پورت <span class="ltr">${c.moved}</span> روی یکی از دو سرور اشغال است</b><span>اتصال روی پورت آزاد <span class="ltr">${c.port}</span> بررسی شد و وصل شد (پینگ ${ms(c.ping)}). تانل با پورت اشغال ساخته نمی‌شود؛ همین پورت را بردارید یا پورت دیگری بدهید.</span>
       <span><button type="button" class="btn sm primary" data-act="set" data-path="wiz.port" data-value="${c.port}">استفاده از پورت ${c.port}</button></span></div></div>`;
     if (c.state === "ok") return html`<div class="check ok">${I.check(16)}<div><b>با این تنظیمات وصل می‌شود</b><span>پینگ ${ms(c.ping)}${c.loss ? `، افت ${c.loss.toFixed(0)}٪` : ""}${c.mtu ? `، MTU ${c.mtu}` : ""}</span></div></div>`;
     if (c.cfg) return html`<div class="check bad">${I.alert(16)}<div><b>این ترکیب ساخته نمی‌شود</b><span title="${c.err || ""}">${errText(c.err)}</span></div></div>`;
-    return html`<div class="check bad">${I.alert(16)}<div><b>با این تنظیمات ترافیک رد نمی‌شود</b><span title="${c.err || ""}">${errText(c.err)}</span><span>${w.mode === "tcp" ? "پورت TCP دیگری بدهید که بین دو سرور باز است." : +w.port ? "پروتکل دیگری امتحان کنید یا NeoObfs را بزنید." : "یک پورت UDP بدهید یا پروتکل دیگری امتحان کنید."}</span></div></div>`;
+    return html`<div class="check bad">${I.alert(16)}<div><b>با این تنظیمات ترافیک رد نمی‌شود</b><span title="${c.err || ""}">${errText(c.err)}</span><span>${isStreamMode(w.mode) ? (w.reverse ? "پورت TCP دیگری بدهید که از آن طرف به این سرور باز است، یا مستقیم (Direct) را امتحان کنید." : "پورت TCP دیگری بدهید که بین دو سرور باز است، یا معکوس (Reverse) را امتحان کنید.") : w.mode === "tcp" ? "پورت TCP دیگری بدهید که بین دو سرور باز است." : +w.port ? "پروتکل دیگری امتحان کنید یا NeoObfs را بزنید." : "یک پورت UDP بدهید یا پروتکل دیگری امتحان کنید."}</span></div></div>`;
   }
 
   function wizRequest(w, peerName) {
@@ -3055,10 +3064,13 @@
     return req;
   }
 
+  // A far server too old to test connection tunnels (see bench.errOldPeer).
+  const oldPeer = (err) => /can't test connection tunnels/.test(err || "");
+
   // Run a check unless its answer is known; repaint only the open modal.
   async function runCheck(opts, tries = 0) {
     const w = S.wiz;
-    if (!w || !canCheck(w) || !w.mode || isStreamMode(w.mode)) return;
+    if (!w || !canCheck(w) || !w.mode) return;
     if (w.underlay === "ipv6" && (!w.local6 || !w.remote6)) return;
     const key = checkKey(w, w.mode, opts);
     if (w.checks[key] && w.checks[key].state !== "run") return;
@@ -3068,7 +3080,7 @@
     req.forward = "";
     try {
       const r = ((await api("POST", "check", req)) || [])[0] || {};
-      w.checks[key] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu, moved: r.moved_from, port: r.port } : r.status === "skipped" ? (r.error && /NeoObfs/.test(r.error) ? { state: "skip" } : { state: "bad", err: r.error, cfg: true }) : { state: "bad", err: r.error };
+      w.checks[key] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu, moved: r.moved_from, port: r.port } : oldPeer(r.error) ? { state: "old", err: r.error } : r.status === "skipped" ? (r.error && /NeoObfs/.test(r.error) ? { state: "skip" } : { state: "bad", err: r.error, cfg: true }) : { state: "bad", err: r.error };
     } catch (e) {
       if (/در حال اجراست/.test(e.message) && tries < 8) { setTimeout(() => runCheck(opts, tries + 1), 1500); return; }
       w.checks[key] = { state: "bad", err: e.message, cfg: true };
@@ -3120,7 +3132,7 @@
       for (const r of rs) {
         if (/-udp$/.test(r.name)) continue; // the UDP variants answer a different question
         const k = checkKey(w, r.mode || r.name, false);
-        w.checks[k] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu } : { state: "bad", err: r.error, cfg: r.status === "skipped" };
+        w.checks[k] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu } : oldPeer(r.error) ? { state: "old", err: r.error } : { state: "bad", err: r.error, cfg: r.status === "skipped" };
       }
     } catch (e) { toast(e.message, "bad"); }
     for (const k of Object.keys(w.checks)) if (w.checks[k].state === "run") delete w.checks[k];
@@ -3423,7 +3435,7 @@
     set(el) {
       setPath(el.dataset.path, el.dataset.value);
       if (el.dataset.path === "wiz.profile") setTimeout(() => runSpeed(), 0);
-      if (el.dataset.path === "wiz.port") checkSoon(true);
+      if (["wiz.port", "wiz.reverse"].includes(el.dataset.path)) checkSoon(true);
       if (el.closest(".modal")) drawModal(); else { S.edit = el.dataset.path.startsWith("tset") || el.dataset.path.startsWith("defs") ? true : S.edit; draw(); }
     },
     drawer(el) {
