@@ -442,7 +442,22 @@ hup 3
 [ "$(http_code http://198.18.0.1:8090/)" = 200 ] || fail "relay forward 8090 -> edge 8080"
 [ "$(http_code http://198.18.0.1:8091/)" = 200 ] || fail "encrypted relay forward 8091 -> edge 8080"
 ip netns exec $CLIENT curl -s -m 5 http://198.18.0.1:8090/ | grep -q hello-from-edge || fail "relay forward content"
-ip netns exec $EDGE ss -Htn state established "( sport = :7712 )" | grep -q "$HUB_IP" || fail "no relay connections from hub on edge:7712"
+# Each tunnel's relay has random ports of its own (7712 only before the
+# far server's version reports it can listen on them).
+relay_ports() {
+  python3 - "$WORK/hub/state.json" "$@" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1]))
+ps = []
+for t in st.get("tunnels", []):
+    if t["name"] in sys.argv[2:]:
+        ps += t.get("relay_ports") or [7712]
+print(" or ".join("sport = :%d" % p for p in sorted(set(ps))))
+PY
+}
+rp=$(relay_ports t1 e1)
+echo "$rp" | grep -q 7712 && echo "  (relay ports not assigned yet; on 7712)"
+ip netns exec $EDGE ss -Htn state established "( $rp )" | grep -q "$HUB_IP" || fail "no relay connections from hub on edge's relay ports ($rp)"
 ip netns exec $HUB nft list chain inet neotunnel prerouting | grep -q "8090" && fail "relay forward must not be a DNAT rule"
 ip netns exec $CLIENT bash -c 'exec 3<>/dev/tcp/198.18.0.1/9103; printf hello >&3; exec 3>&-' || fail "connect to relay forward 9103"
 sleep 1
@@ -475,7 +490,7 @@ who() { ip netns exec "$1" curl -s -m 8 "${@:2}" http://$EDGE_IP:8095/ || true; 
 [ -z "$(who $CLIENT -x http://u1:wrong@198.18.0.1:1082)" ] || fail "proxy accepted a wrong password"
 [ -z "$(who $CLIENT --socks5 198.18.0.1:1080)" ] || fail "loopback-only proxy reachable from the client"
 ip netns exec $HUB curl -s -m 5 --socks5-hostname 127.0.0.1:1080 http://127.0.0.1:8080/ >/dev/null && fail "proxy reached edge's loopback"
-ip netns exec $EDGE ss -Htn state established "( sport = :7712 )" | grep -vq "$HUB_IP" || fail "proxy connections did not come through the tunnel"
+ip netns exec $EDGE ss -Htn state established "( $(relay_ports t1 e1) )" | grep -vq "$HUB_IP" || fail "proxy connections did not come through the tunnel"
 in_hub forward list | grep -q "proxy on 127.0.0.1:1080" || fail "forward list shows the proxy"
 in_hub forward remove t1 1080 >/dev/null && in_hub forward remove e1 1082 >/dev/null || fail "remove proxies"
 pass "proxy: SOCKS5 and HTTP on one port leave from edge through the tunnel; loopback refused; password enforced"
