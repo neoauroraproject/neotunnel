@@ -27,6 +27,9 @@ type Mode struct {
 	TCP   bool          `json:"tcp"`   // always runs on a TCP port
 	Crypt bool          `json:"crypt"` // encrypted by itself
 	Peer  bool          `json:"peer"`  // needs NeoTunnel on the far end
+	// Stream modes are connection tunnels (like FRP): each user connection
+	// rides a stream of a few long-lived sessions; forwards are relays.
+	Stream bool `json:"stream,omitempty"`
 }
 
 var modes = []Mode{
@@ -44,6 +47,8 @@ var modes = []Mode{
 	// TCP is the last resort for paths that pass neither UDP nor raw IP.
 	{Name: "tcp", Title: "TCP", Kinds: []config.Kind{config.KindTCP}, Layer: 3, Port: true, TCP: true, Peer: true},
 	{Name: "eoip", Title: "EoIP (L2)", Kinds: []config.Kind{config.KindEoIP}, Layer: 2, Port: true},
+	{Name: "tcpmux", Title: "TCP + mux", Kinds: []config.Kind{config.KindStreamTCP}, Port: true, TCP: true, Peer: true, Stream: true},
+	{Name: "tlsmux", Title: "TLS + mux", Kinds: []config.Kind{config.KindStreamTLS}, Port: true, TCP: true, Crypt: true, Peer: true, Stream: true},
 }
 
 func Modes() []Mode { return modes }
@@ -85,6 +90,12 @@ type Settings struct {
 	// Lanes runs the tunnel on this many parallel GRE tunnels (0 or 1 = one,
 	// up to config.MaxLanes), so its flows spread over CPU cores.
 	Lanes int `json:"lanes,omitempty"`
+	// Connection tunnels: the server it was made on listens and the far one
+	// connects (Reverse, like FRP), the TLS server name, and how many
+	// sessions run at once (0 = by profile).
+	Reverse bool   `json:"reverse,omitempty"`
+	SNI     string `json:"sni,omitempty"`
+	Conns   int    `json:"conns,omitempty"`
 }
 
 // pmtuFlags are the path MTU discovery flags a tunnel of kind k keeps: kinds
@@ -105,6 +116,12 @@ func (s Settings) validate() error {
 	}
 	if s.Lanes < 0 || s.Lanes > config.MaxLanes {
 		return fmt.Errorf("lanes must be 1-%d", config.MaxLanes)
+	}
+	if s.Conns < 0 || s.Conns > config.MaxStreamConns {
+		return fmt.Errorf("sessions must be 1-%d", config.MaxStreamConns)
+	}
+	if s.SNI != "" && !validSNI(s.SNI) {
+		return fmt.Errorf("server name %q is not a domain name", s.SNI)
 	}
 	if s.MTU != 0 && (s.MTU < 576 || s.MTU > 9000) {
 		return fmt.Errorf("MTU must be between 576 and 9000")
@@ -163,6 +180,10 @@ type TunnelRequest struct {
 
 // CreateTunnel builds the mode's stack (carrier first) and its forward.
 func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
+	if m, err := LookupMode(req.Mode); err == nil && m.Stream && req.ForwardMode != config.ForwardSocks {
+		// A connection tunnel has no inner address: its forwards are relays.
+		req.ForwardMode, req.Proto = config.ForwardRelay, "tcp"
+	}
 	if req.Forward != "" {
 		if req.Proto == "" && req.ForwardMode == config.ForwardRelay {
 			req.Proto = "tcp"
@@ -207,7 +228,7 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 			s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: name, Proto: proto, Ports: req.Forward,
 				To: req.ForwardTo, Mode: req.ForwardMode, ProxyVersion: req.ProxyVersion})
 			if t, ok := s.Tunnel(name); ok {
-				relaySecret(t, req.ForwardMode)
+				relaySecret(s, t, req.ForwardMode)
 			}
 		}
 		return nil
@@ -282,6 +303,17 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 	}
 	if req.Obfs && mode.TCP {
 		return "", nil, fmt.Errorf("NeoObfs is UDP; it can't run under a TCP tunnel")
+	}
+	if mode.Stream {
+		if req.Peer == "" {
+			return "", nil, fmt.Errorf("%s needs NeoTunnel on the far end; choose a managed server", mode.Title)
+		}
+		if p, ok := st.Peer(req.Peer); ok && p.Paired() && !p.StreamTunnels {
+			return "", nil, fmt.Errorf("%s runs an older NeoTunnel without connection tunnels; update it first", req.Peer)
+		}
+		if req.Encrypt == config.EncryptAuto {
+			req.Encrypt = "" // a connection tunnel's cipher doesn't step
+		}
 	}
 	if req.Obfs && mode.Crypt {
 		req.Obfs = false // already encrypted; a second layer only costs speed
@@ -362,6 +394,13 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 		defs = append(defs, t)
 	}
 	top := &defs[len(defs)-1]
+	if mode.Stream {
+		top.Reverse, top.SNI, top.Conns = req.Reverse, req.SNI, req.Conns
+		if top.Kind != config.KindStreamTLS {
+			top.SNI = ""
+		}
+		auto = false
+	}
 	top.Mode, top.MTU, top.Profile = mode.Name, req.MTU, profileOf(req.Profile)
 	top.AutoEncrypt = auto
 	top.Lanes = lanesOf(req.Lanes)
@@ -469,8 +508,18 @@ func UpdateTunnel(name string, set Settings, port uint16) (Change, error) {
 		if b.Kind == config.KindWireGuard {
 			b.PeerKey = set.PeerKey
 		}
+		if b.Kind == config.KindObfs {
+			// Saving is when an older tunnel moves to the faster cipher.
+			b.ObfsAES = obfsAES(s, b.Sides[1].Node)
+		}
 		if top.Kind == config.KindEoIP {
 			top.TunnelID = set.TunnelID
+		}
+		if top.IsStream() {
+			top.Reverse, top.Conns = set.Reverse, set.Conns
+			if top.Kind == config.KindStreamTLS {
+				top.SNI = set.SNI
+			}
 		}
 		if port != 0 {
 			b.Port = port
@@ -500,7 +549,8 @@ func SettingsOf(st *config.State, name string) (Settings, uint16) {
 	}
 	top, b := find(name), find(stack[0])
 	s := Settings{MTU: top.MTU, MTUProbe: b.MTUProbe, TTL: b.TTL, NoDF: b.NoDF, IgnoreDF: b.IgnoreDF, DSCP: b.DSCP, Encrypt: b.Encrypt,
-		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID, Profile: top.Profile, Lanes: top.Lanes}
+		Padding: b.Padding, Keepalive: b.Keepalive, PeerKey: b.PeerKey, TunnelID: top.TunnelID, Profile: top.Profile, Lanes: top.Lanes,
+		Reverse: top.Reverse, SNI: top.SNI, Conns: top.Conns}
 	if top.AutoEncrypt {
 		s.Encrypt = config.EncryptAuto
 	}
@@ -569,6 +619,9 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 	if t.Encrypt == config.EncryptAuto {
 		t.Encrypt, t.AutoEncrypt = "", !ki.Encrypted
 	}
+	if kind == config.KindObfs {
+		t.ObfsAES = obfsAES(st, o.Peer)
+	}
 	if ki.Encrypted {
 		t.Encrypt = ""
 	}
@@ -629,6 +682,21 @@ func NewTunnel(st *config.State, name string, o TunnelOpts) (config.Tunnel, erro
 	}
 	if other := keylessConflict(st, t); other != "" && !o.stacked {
 		return t, fmt.Errorf("tunnel %s already runs %s between these two servers and the kernel allows only one, even on a UDP port: pick GRE, GENEVE or another kind", other, kind)
+	}
+	if ki.Stream {
+		t.Reverse, t.Conns = o.Reverse, o.Conns
+		if kind == config.KindStreamTLS {
+			t.SNI = o.SNI
+		}
+		if o.Remote != "" {
+			return t, fmt.Errorf("%s needs NeoTunnel on the far end", kind)
+		}
+		if p, ok := st.Peer(o.Peer); ok && p.Paired() && !p.StreamTunnels {
+			return t, fmt.Errorf("%s runs an older NeoTunnel without connection tunnels; update it first", o.Peer)
+		}
+	}
+	if ki.Stream && o.Over != "" {
+		return t, fmt.Errorf("a connection tunnel runs between the servers' public addresses, not over another tunnel")
 	}
 	if o.Over != "" {
 		parent, ok := st.Tunnel(o.Over)
@@ -706,6 +774,12 @@ func portUser(st *config.State, port uint16) string {
 func FreePort(st *config.State, kind config.Kind, peer string) uint16 {
 	ki, _ := config.LookupKind(kind)
 	to := config.Tunnel{Sides: [2]config.Side{{Node: peer}}}
+	if ki.Stream {
+		// A connection tunnel's port is random, like its fallback ports.
+		if ps := st.NewRelayPorts(to, 1); len(ps) == 1 {
+			return ps[0]
+		}
+	}
 	start := uint16(51820)
 	switch kind {
 	case config.KindObfs:
@@ -880,6 +954,8 @@ type Limits struct {
 	Disabled bool    `json:"disabled"`
 	RateMbit int     `json:"rate_mbit"`
 	QuotaGB  float64 `json:"quota_gb"`
+	// QueueMbit is the smart queue's rate (0 = off); see config.Tunnel.
+	QueueMbit int `json:"queue_mbit"`
 }
 
 // SetLimits turns a tunnel on or off and sets its speed limit and monthly
@@ -890,6 +966,9 @@ func SetLimits(name string, l Limits) (Change, error) {
 	}
 	if l.QuotaGB < 0 || l.QuotaGB > 1_000_000 {
 		return Change{}, fmt.Errorf("quota must be 0 (none) to 1000000 GB")
+	}
+	if l.QueueMbit < 0 || l.QueueMbit > 100_000 {
+		return Change{}, fmt.Errorf("smart queue rate must be 0 (off) to 100000 Mbit/s")
 	}
 	st, err := Node()
 	if err != nil {
@@ -905,6 +984,7 @@ func SetLimits(name string, l Limits) (Change, error) {
 			return fmt.Errorf("tunnel %q changed meanwhile", name)
 		}
 		top.Disabled, top.RateMbit, top.QuotaGB = l.Disabled, l.RateMbit, l.QuotaGB
+		top.QueueMbit = l.QueueMbit
 		return nil
 	})
 	if err == nil {
@@ -915,7 +995,7 @@ func SetLimits(name string, l Limits) (Change, error) {
 			}
 			events.Add(events.Event{Tunnel: name, Kind: kind})
 		}
-		if t.RateMbit != l.RateMbit || t.QuotaGB != l.QuotaGB {
+		if t.RateMbit != l.RateMbit || t.QuotaGB != l.QuotaGB || t.QueueMbit != l.QueueMbit {
 			events.Add(events.Event{Tunnel: name, Kind: events.Changed, Detail: "limits"})
 		}
 	}
@@ -924,7 +1004,7 @@ func SetLimits(name string, l Limits) (Change, error) {
 
 // LimitsOf returns a tunnel's switch and caps.
 func LimitsOf(t config.Tunnel) Limits {
-	return Limits{Disabled: t.Disabled, RateMbit: t.RateMbit, QuotaGB: t.QuotaGB}
+	return Limits{Disabled: t.Disabled, RateMbit: t.RateMbit, QuotaGB: t.QuotaGB, QueueMbit: t.QueueMbit}
 }
 
 // profileOf stores balanced as "".
@@ -1046,4 +1126,17 @@ func FixClashes(peer string) ([]string, Change, error) {
 		return nil
 	})
 	return moved, ch, err
+}
+
+// validSNI accepts a domain name: letters, digits, hyphens and dots.
+func validSNI(s string) bool {
+	if len(s) > 253 || strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") || !strings.Contains(s, ".") {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
 }

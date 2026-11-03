@@ -18,12 +18,32 @@ func gre(name string) config.Tunnel {
 		Sides: [2]config.Side{{Node: "hub", Endpoint: "198.51.100.1"}, {Node: "edge", Endpoint: "198.51.100.2"}}}
 }
 
+func withAES(t *testing.T, on bool) {
+	was := hasAES
+	hasAES = func() bool { return on }
+	t.Cleanup(func() { hasAES = was })
+}
+
 func TestCryptoRungs(t *testing.T) {
+	withAES(t, true)
 	st := &config.State{Self: "hub", Tunnels: []config.Tunnel{gre("t1")}}
 	want := []string{"", "aes-gcm-128", "aes-gcm-256", "chacha20-poly1305", config.RungObfs}
 	if got := CryptoRungs(st, "t1"); !slices.Equal(got, want) {
 		t.Fatalf("got %v", got)
 	}
+	// Without AES instructions at either end, ChaCha20 comes first.
+	no := false
+	st.Peers = []config.Peer{{Name: "edge", AESNI: &no}}
+	chacha := []string{"", "chacha20-poly1305", "aes-gcm-128", "aes-gcm-256", config.RungObfs}
+	if got := CryptoRungs(st, "t1"); !slices.Equal(got, chacha) {
+		t.Fatalf("far end without AES: got %v", got)
+	}
+	st.Peers = nil
+	withAES(t, false)
+	if got := CryptoRungs(st, "t1"); !slices.Equal(got, chacha) {
+		t.Fatalf("this end without AES: got %v", got)
+	}
+	withAES(t, true)
 	// No room for "-o" in the name, and no NeoObfs under TCP.
 	st.Tunnels = []config.Tunnel{gre("name-of-10")}
 	if got := CryptoRungs(st, "name-of-10"); got[len(got)-1] == config.RungObfs {
@@ -40,6 +60,7 @@ func TestCryptoRungs(t *testing.T) {
 // Every step of the ladder is a configuration both ends can render, and the
 // NeoObfs layer leaves no trace once it is gone.
 func TestLadderRenders(t *testing.T) {
+	withAES(t, true)
 	st := &config.State{Self: "hub", ULA48: "fd00:1:2::/48", Tunnels: []config.Tunnel{gre("t1")}}
 	far := func(n string) bool { return n == "edge" }
 	before := st.Tunnels[0]
@@ -102,6 +123,51 @@ func TestLadderOnA6to4Stack(t *testing.T) {
 	}
 	if b, _ := st.Tunnel("t1-6"); b.Over != "" || b.Sides[1].Endpoint != "198.51.100.2" || b.Encrypt != "" {
 		t.Fatalf("bottom after the layer: %+v", b)
+	}
+}
+
+func TestObfsAESNeedsBothEnds(t *testing.T) {
+	yes, no := true, false
+	st := &config.State{Self: "hub", Peers: []config.Peer{
+		{Name: "ok", AESNI: &yes, ObfsAES: true},
+		{Name: "old", AESNI: &yes},
+		{Name: "noaes", AESNI: &no, ObfsAES: true},
+		{Name: "unknown", ObfsAES: true},
+	}}
+	withAES(t, true)
+	for name, want := range map[string]bool{"ok": true, "old": false, "noaes": false, "unknown": false, "stranger": false} {
+		if got := obfsAES(st, name); got != want {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+	withAES(t, false)
+	if obfsAES(st, "ok") {
+		t.Error("this server has no AES instructions")
+	}
+}
+
+// After the far server was upgraded, its old NeoObfs tunnels move to AES; others
+// stay as they are.
+func TestObfsTunnelsMoveToAES(t *testing.T) {
+	yes := true
+	ends := [2]config.Side{{Node: "hub"}, {Node: "edge"}}
+	st := &config.State{Self: "hub", Peers: []config.Peer{{Name: "edge", AESNI: &yes}}, Tunnels: []config.Tunnel{
+		{Name: "o1", Kind: config.KindObfs, Sides: ends},
+		{Name: "o2", Kind: config.KindObfs, Sides: ends, ObfsAES: true},
+		{Name: "g1", Kind: config.KindGRE, Sides: ends},
+		{Name: "o3", Kind: config.KindObfs, Sides: [2]config.Side{{Node: "hub"}, {Node: "other"}}},
+	}}
+	withAES(t, true)
+	if got := obfsToAES(st, "edge"); len(got) != 0 {
+		t.Fatalf("moved before edge said it can: %v", got)
+	}
+	st.Peers[0].ObfsAES = true
+	if got := obfsToAES(st, "edge"); !slices.Equal(got, []int{0}) {
+		t.Fatalf("got %v", got)
+	}
+	withAES(t, false)
+	if got := obfsToAES(st, "edge"); len(got) != 0 {
+		t.Fatalf("moved without AES instructions here: %v", got)
 	}
 }
 

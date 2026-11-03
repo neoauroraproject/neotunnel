@@ -41,6 +41,7 @@ type Server struct {
 	jobs     *jobs
 	checking sync.Mutex // one quick check at a time
 	up       updater    // this server's own updates (update.go)
+	tok      tokens     // API tokens (tokens.go)
 }
 
 type failure struct {
@@ -209,6 +210,16 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 			s.mu.Unlock()
 		}
 		if !ok {
+			// A program with an API token: no cookie, so no cross-site
+			// request to guard against, only what its token allows.
+			if k, ok := s.tok.check(r); ok {
+				if !tokenAllows(k.Scope, r.Pattern) {
+					fail(w, http.StatusForbidden, "this token may not do that")
+					return
+				}
+				h(w, r)
+				return
+			}
 			fail(w, http.StatusUnauthorized, "لطفاً وارد شوید")
 			return
 		}

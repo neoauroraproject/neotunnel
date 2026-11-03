@@ -15,8 +15,10 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/events"
 	"neotunnel/internal/failover"
+	"neotunnel/internal/forward"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
+	"neotunnel/internal/transport"
 )
 
 const (
@@ -63,11 +65,32 @@ func pingRound(ctx context.Context, addr string) (sent, got int, rtt time.Durati
 	return sent, got, rtt
 }
 
+// streamRound pings a connection tunnel's far end roundSize times over its
+// sessions, like pingRound.
+func streamRound(hub *transport.Hub, name string) (sent, got int, rtt time.Duration) {
+	var sum time.Duration
+	for i := range roundSize {
+		if i > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		d, err := hub.Ping(name, time.Second)
+		if err != nil {
+			continue
+		}
+		got++
+		sum += d
+	}
+	if got > 0 {
+		rtt = sum / time.Duration(got)
+	}
+	return roundSize, got, rtt
+}
+
 // monitorHealth pings the far inner address of every tunnel and records the
 // result, so the panel knows whether traffic really passes, then moves
 // forwards with a backup tunnel to whichever of their tunnels works
 // (reconcile applies the move).
-func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracker, reconcile func()) {
+func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracker, hub *transport.Hub, reconcile func()) {
 	rec := newRecovery()
 	auto := newAutoCrypt()
 	classes := map[string]string{} // last logged health class, by tunnel
@@ -80,6 +103,17 @@ func monitorHealth(ctx context.Context, id *identity.Identity, tr *health.Tracke
 			keep := map[string]bool{}
 			var wg sync.WaitGroup
 			for _, tn := range ts {
+				if tn.IsStream() {
+					// No inner address: the round goes over a session.
+					keep[tn.Name] = true
+					wg.Add(1)
+					go func(name string) {
+						defer wg.Done()
+						sent, got, rtt := streamRound(hub, name)
+						tr.RecordRound(name, sent, got, rtt)
+					}(tn.Name)
+					continue
+				}
 				far, ok := farInner(st, tn)
 				if !ok {
 					continue
@@ -126,6 +160,13 @@ func failoverStep(st *config.State, hs map[string]health.State) bool {
 	made := failover.Step(ps, fs, hs, time.Now())
 	for k, s := range made {
 		log.Printf("forward %s: now through %s (%s)", k, s.To, s.Reason)
+		if s.Better {
+			for _, f := range fs {
+				if failover.Key(f) == k {
+					forward.KeepFlows(f.PortKey())
+				}
+			}
+		}
 		ports := k[strings.IndexByte(k, ' ')+1:]
 		for _, t := range []string{s.From, s.To} {
 			events.Add(events.Event{Tunnel: t, Kind: events.Failover, From: s.From, To: s.To, Detail: ports + "|" + s.Reason, Auto: true})

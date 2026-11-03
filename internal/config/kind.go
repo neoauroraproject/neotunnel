@@ -20,6 +20,10 @@ const (
 	KindObfs      Kind = "obfs"      // L3, encrypted and obfuscated UDP (user space)
 	KindTCP       Kind = "tcp"       // L3 over a TCP connection (user space), optionally encrypted
 	KindEoIP      Kind = "eoip"      // L2, MikroTik EoIP / EoIPv6 (user space)
+	// Connection tunnels carry each user connection on its own stream over
+	// a few long-lived sessions (see internal/transport), not packets.
+	KindStreamTCP Kind = "stream-tcp" // sessions over plain TCP, multiplexed
+	KindStreamTLS Kind = "stream-tls" // the same inside TLS with a browser's fingerprint
 )
 
 // KindInfo describes what a tunnel kind carries and costs.
@@ -51,6 +55,9 @@ type KindInfo struct {
 	// Managed kinds need NeoTunnel on both ends (keys are derived from the
 	// tunnel's shared secret).
 	NeedsPeer bool
+	// Stream kinds are connection tunnels: no interface and no inner
+	// addresses; their forwards are relays over the tunnel's sessions.
+	Stream bool
 }
 
 var kinds = []KindInfo{
@@ -69,6 +76,8 @@ var kinds = []KindInfo{
 	{Kind: KindEoIP, Title: "EoIP / EoIPv6 (MikroTik Ethernet over IP)", Layer: 2, UnderAny: true, Carry4: true, Carry6: true, Overhead: 42, IPProto: 47, PortEncap: true, Userspace: true},
 	{Kind: KindObfs, Title: "NeoObfs (encrypted, obfuscated UDP)", Layer: 3, UnderAny: true, Carry4: true, Carry6: true, Overhead: ObfsOverhead, UDP: true, Encrypted: true, Userspace: true, NeedsPeer: true},
 	{Kind: KindTCP, Title: "TCP (packets over a TCP connection)", Layer: 3, UnderAny: true, Carry4: true, Carry6: true, Overhead: TCPOverhead, TCP: true, Userspace: true, NeedsPeer: true},
+	{Kind: KindStreamTCP, Title: "TCP + mux (connection tunnel)", UnderAny: true, TCP: true, Userspace: true, NeedsPeer: true, Stream: true},
+	{Kind: KindStreamTLS, Title: "TLS + mux (connection tunnel)", UnderAny: true, TCP: true, Encrypted: true, Userspace: true, NeedsPeer: true, Stream: true},
 }
 
 // ObfsOverhead is NeoObfs' per-packet cost over IPv4 without padding:

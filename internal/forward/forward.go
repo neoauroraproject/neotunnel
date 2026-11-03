@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/relay"
@@ -75,8 +76,60 @@ type Ruleset struct {
 	// Protect lists encrypted tunnels, whose packets are dropped when they
 	// arrive without IPsec.
 	Protect []Protect
+	// Carriers are the outer packets of the kernel tunnels, which connection
+	// tracking skips (see CarrierScript).
+	Carriers []Protect
 	// Fetch redirects this server's own downloads (nil = off).
 	Fetch *FetchRedirect
+	// Accounts are the forwards whose clients' traffic is counted, in every
+	// mode, Plans the sold ones' limits (see config.PortPlan).
+	Accounts []Account
+	Plans    []Plan
+}
+
+// Account is a forward's ports, counted under Key ("tcp/443").
+type Account struct {
+	Key   string
+	Proto []string
+	Ports string // nft set body
+}
+
+// Plan is what the kernel enforces of a sold port: a speed cap each way,
+// open connections, client addresses, or the port closed.
+type Plan struct {
+	Account
+	RateMbit int
+	MaxConns int
+	MaxIPs   int
+	// Closed is why the port takes no traffic ("" = open).
+	Closed string
+}
+
+// Why a sold port is closed.
+const (
+	ClosedPaused  = "paused"
+	ClosedExpired = "expired"
+	ClosedQuota   = "quota"
+)
+
+var (
+	closedMu sync.Mutex
+	closed   = map[string]string{}
+)
+
+// SetClosed sets the sold ports that are closed now, by forward key, with
+// why; the daemon decides it from the plans, the clock and the traffic.
+func SetClosed(m map[string]string) {
+	closedMu.Lock()
+	defer closedMu.Unlock()
+	closed = m
+}
+
+// Closed says why a forward's port is closed ("" = open).
+func Closed(key string) string {
+	closedMu.Lock()
+	defer closedMu.Unlock()
+	return closed[key]
 }
 
 // FetchRedirect is the downloads redirect: All takes every program's

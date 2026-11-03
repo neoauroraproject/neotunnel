@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -228,23 +227,7 @@ func tail(path string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-var tagRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
+func validTag(t string) bool { return version.Release(t) }
 
-func validTag(t string) bool { return tagRe.MatchString(t) }
-
-// newer reports whether release a is newer than b ("v0.8.4" > "v0.8.3"). A
-// build that isn't a release ("dev") is never offered an update.
-func newer(a, b string) bool {
-	pa, pb := tagRe.FindStringSubmatch(a), tagRe.FindStringSubmatch(b)
-	if pa == nil || pb == nil {
-		return false
-	}
-	for i := 1; i <= 3; i++ {
-		x, _ := strconv.Atoi(pa[i])
-		y, _ := strconv.Atoi(pb[i])
-		if x != y {
-			return x > y
-		}
-	}
-	return false
-}
+// newer reports whether release a is newer than b (see version.Newer).
+func newer(a, b string) bool { return version.Newer(a, b) }

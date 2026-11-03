@@ -7,7 +7,9 @@ package relay
 // its own congestion control, instead of TCP inside a tunnel's TCP stream
 // or packets: on a long, lossy path one user's losses slow only that user.
 //
-// The exit listens on RelayPort. Each connection starts with a short plain
+// The exit listens on the tunnel's relay ports (config.Tunnel.RelayPorts:
+// random ones, tried in order; RelayPort for tunnels from before them).
+// Each connection starts with a short plain
 // preamble naming the tunnel and cipher, then the TCP transport's mutual
 // challenge-response (internal/tcptun) under keys derived from the tunnel's
 // secret, so only the tunnel's other end can use it. With a cipher, the rest
@@ -19,7 +21,14 @@ package relay
 //	request   port(2) proxy_version(1) [src ip(16) port(2) dst ip(16) port(2)]
 //	          or, for a proxy: port(2) 0xff len(1) host, answered by status(1)
 //
-// then the user's bytes both ways. The exit only connects to its own
+// then the user's bytes both ways. On a connection tunnel (Via.Session) the
+// same request opens a stream on one of the tunnel's sessions instead (see
+// internal/transport), with no preamble or handshake of its own.
+//
+// The same listeners take the connection tunnels' sessions ("NTS", or a TLS
+// handshake) and answer anything else like a web server.
+//
+// The exit only connects to its own
 // loopback address, on the ports the tunnel's relay forwards name; for a
 // proxy (Exit.Egress) to host:port on the internet, never to its own
 // loopback or private networks. status is a SOCKS5 reply code (0 = ok).
@@ -37,11 +46,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"neotunnel/internal/config"
 	"neotunnel/internal/tcptun"
+	"neotunnel/internal/transport"
 )
 
-// RelayPort is where every node accepts relay connections from its peers.
-const RelayPort = 7712
+// RelayPort is where nodes accepted relay connections before each tunnel
+// had ports of its own.
+const RelayPort = config.LegacyRelayPort
 
 const (
 	streamVersion = 1
@@ -67,8 +79,39 @@ type Via struct {
 	// tunnel: used when the public one can't be reached (a port filtered
 	// between the servers).
 	Inside netip.AddrPort
+	// Ports, when set, are the ports to try on each of those addresses in
+	// turn instead of theirs.
+	Ports  [config.MaxRelayPorts]uint16
 	Cipher string // "" = authenticated, not encrypted
 	Pool   int    // connections kept ready
+	// Session names a connection tunnel here: each user connection is a
+	// stream on its sessions instead of a connection of its own.
+	Session string
+}
+
+// candidates are the addresses to dial, in order: the public address on
+// each port, then the inside one.
+func (v Via) candidates() []netip.AddrPort {
+	var ports []uint16
+	for _, p := range v.Ports {
+		if p != 0 {
+			ports = append(ports, p)
+		}
+	}
+	var out []netip.AddrPort
+	for _, a := range []netip.AddrPort{v.Exit, v.Inside} {
+		if !a.IsValid() {
+			continue
+		}
+		if len(ports) == 0 {
+			out = append(out, a)
+			continue
+		}
+		for _, p := range ports {
+			out = append(out, netip.AddrPortFrom(a.Addr(), p))
+		}
+	}
+	return out
 }
 
 // Exit is a tunnel whose relay forwards end on this node.
@@ -83,6 +126,11 @@ type Exit struct {
 	// From are the far node's addresses: when two tunnels here have the same
 	// name (from two main servers), a connection is matched by its source.
 	From []netip.Addr
+	// Listen are the ports the far node's relay connections come to (none
+	// = RelayPort). Session: the tunnel is a connection tunnel, whose
+	// relays come over its sessions instead.
+	Listen  []uint16
+	Session bool
 }
 
 func purpose(cipher string) string {
@@ -105,12 +153,12 @@ type pool struct {
 	via  Via
 	keys *tcptun.StreamKeys
 
-	mu     sync.Mutex
-	idle   []*pooled
-	inside atomic.Bool // the public listener failed; use the tunnel's
-	wake   chan struct{}
-	stop   chan struct{}
-	once   sync.Once
+	mu   sync.Mutex
+	idle []*pooled
+	last atomic.Int32 // the candidate that connected last, tried first
+	wake chan struct{}
+	stop chan struct{}
+	once sync.Once
 }
 
 func newPool(v Via) (*pool, error) {
@@ -204,23 +252,23 @@ func (p *pool) fill() {
 }
 
 func (p *pool) dial() (net.Conn, *net.TCPConn, error) {
-	// The way that worked last goes first; the other is the fallback.
-	ways := []netip.AddrPort{p.via.Exit, p.via.Inside}
-	if p.inside.Load() {
-		ways[0], ways[1] = ways[1], ways[0]
+	// The way that worked last goes first; the others, in order, are the
+	// fallbacks (a port filtered between the servers, the public address).
+	ways := p.via.candidates()
+	if len(ways) == 0 {
+		return nil, nil, errors.New("the far end has no relay address")
 	}
+	start := int(p.last.Load()) % len(ways)
 	var c net.Conn
 	var err error
-	for i, to := range ways {
-		if !to.IsValid() {
-			continue
-		}
+	for k := range ways {
+		i := (start + k) % len(ways)
 		d := net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
-		if i == 0 && ways[1].IsValid() {
+		if k < len(ways)-1 {
 			d.Timeout = 3 * time.Second
 		}
-		if c, err = d.Dial("tcp", to.String()); err == nil {
-			p.inside.Store(to == p.via.Inside)
+		if c, err = d.Dial("tcp", ways[i].String()); err == nil {
+			p.last.Store(int32(i))
 			break
 		}
 	}
@@ -336,8 +384,11 @@ func (m *Manager) handleStream(s Spec, p *pool, c *net.TCPConn) {
 	m.Conns.Add(1)
 	defer m.Conns.Add(-1)
 	defer c.Close()
-	up, err := p.get()
+	up, err := m.upstream(s.Via, p)
 	if err != nil {
+		if s.Via.Session != "" {
+			transport.Note(s.Via.Session, "a user connection on port %d found no session: %v", s.Port, err)
+		}
 		return
 	}
 	defer up.Close()
@@ -347,31 +398,45 @@ func (m *Manager) handleStream(s Spec, p *pool, c *net.TCPConn) {
 		q.dst = c.LocalAddr().(*net.TCPAddr).AddrPort()
 	}
 	if _, err := up.Write(q.marshal()); err != nil {
+		if s.Via.Session != "" {
+			transport.Note(s.Via.Session, "sending a user connection's request: %v", err)
+		}
 		return
 	}
 	pipe(c, up.(halfConn))
 }
 
+// upstream is a connection to the exit for one user: a ready one from the
+// pool, or a stream on a connection tunnel's session.
+func (m *Manager) upstream(v Via, p *pool) (net.Conn, error) {
+	if v.Session != "" {
+		h := m.hub.Load()
+		if h == nil {
+			return nil, errors.New("connection tunnels are not running")
+		}
+		return h.Open(v.Session)
+	}
+	return p.get()
+}
+
 // ---------- exit ----------
 
+// exitServer holds the tunnels whose relay forwards end here.
 type exitServer struct {
-	port    int
-	ln      net.Listener
 	exits   atomic.Pointer[map[string]Exit]
 	waiting atomic.Int32
 }
 
-// SyncExits serves the tunnels whose relay forwards end here (none: stop).
+func newExitServer() *exitServer {
+	x := &exitServer{}
+	x.exits.Store(&map[string]Exit{})
+	return x
+}
+
+// SyncExits serves the tunnels whose relay forwards end here.
 func (m *Manager) SyncExits(exits []Exit) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(exits) == 0 {
-		if m.exit != nil {
-			m.exit.ln.Close()
-			m.exit = nil
-		}
-		return nil
-	}
 	// Tunnels of two main servers may share a name; their secrets differ.
 	byName := map[string]Exit{}
 	for _, e := range exits {
@@ -380,24 +445,76 @@ func (m *Manager) SyncExits(exits []Exit) error {
 			e.Ports = append(append([]uint16(nil), cur.Ports...), e.Ports...)
 			e.Egress = e.Egress || cur.Egress
 			e.From = append(append([]netip.Addr(nil), cur.From...), e.From...)
+			e.Listen = append(append([]uint16(nil), cur.Listen...), e.Listen...)
 		}
 		byName[k] = e
 	}
-	if m.exit == nil {
-		ln, err := net.ListenTCP("tcp", &net.TCPAddr{Port: m.exitPort})
-		if err != nil {
-			return fmt.Errorf("relay listener on TCP %d: %w", m.exitPort, err)
-		}
-		x := &exitServer{port: m.exitPort, ln: ln}
-		x.exits.Store(&byName) // before the first connection is accepted
-		m.exit = x
-		go m.acceptExits(x, ln)
-	}
 	m.exit.exits.Store(&byName)
-	return nil
+	return m.syncListen()
 }
 
-func (m *Manager) acceptExits(x *exitServer, ln *net.TCPListener) {
+// SyncListen opens the listeners the exits and the listening connection
+// tunnels need now, and closes the others.
+func (m *Manager) SyncListen() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.syncListen()
+}
+
+func (m *Manager) syncListen() error {
+	want := map[uint16]bool{}
+	for _, e := range *m.exit.exits.Load() {
+		if e.Session {
+			continue
+		}
+		if len(e.Listen) == 0 {
+			want[uint16(m.exitPort)] = true
+		}
+		for _, p := range e.Listen {
+			want[p] = true
+		}
+	}
+	if h := m.hub.Load(); h != nil {
+		for _, p := range h.ListenPorts() {
+			want[p] = true
+		}
+	}
+	var errs []error
+	for p := range want {
+		if m.listen[p] != nil {
+			continue
+		}
+		ln, err := net.ListenTCP("tcp", &net.TCPAddr{Port: int(p)})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("relay listener on TCP %d: %w", p, err))
+			continue
+		}
+		m.listen[p] = ln
+		go m.acceptExits(ln)
+	}
+	for p, ln := range m.listen {
+		if !want[p] {
+			ln.Close()
+			delete(m.listen, p)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// ListenPorts are the relay listeners open now.
+func (m *Manager) ListenPorts() []uint16 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]uint16, 0, len(m.listen))
+	for p := range m.listen {
+		out = append(out, p)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (m *Manager) acceptExits(ln *net.TCPListener) {
+	x := m.exit
 	for {
 		c, err := ln.AcceptTCP()
 		if err != nil {
@@ -412,11 +529,14 @@ func (m *Manager) acceptExits(x *exitServer, ln *net.TCPListener) {
 			c.Close()
 			continue
 		}
-		go m.handleExit(x, c)
+		go m.handleConn(x, c)
 	}
 }
 
-func (m *Manager) handleExit(x *exitServer, c *net.TCPConn) {
+// handleConn tells what came in by its first bytes: a relay connection, a
+// connection tunnel's session (plain or TLS), or anything else, which gets
+// the web server.
+func (m *Manager) handleConn(x *exitServer, c *net.TCPConn) {
 	waiting := true
 	done := func() {
 		if waiting {
@@ -425,9 +545,38 @@ func (m *Manager) handleExit(x *exitServer, c *net.TCPConn) {
 		}
 	}
 	defer done()
+	c.SetDeadline(time.Now().Add(dialTimeout))
+	var b [3]byte
+	if _, err := io.ReadFull(c, b[:1]); err != nil {
+		c.Close()
+		return
+	}
+	h := m.hub.Load()
+	if b[0] == 0x16 && h != nil { // a TLS handshake record
+		done()
+		h.ServeTLS(c, []byte{b[0]})
+		return
+	}
+	if _, err := io.ReadFull(c, b[1:]); err != nil {
+		c.Close()
+		return
+	}
+	switch {
+	case string(b[:]) == "NTR":
+		m.handleExit(x, c, done)
+	case string(b[:]) == "NTS" && h != nil:
+		done()
+		h.ServePlain(c)
+	default:
+		m.BadHandshakes.Add(1)
+		transport.Decoy(c)
+		c.Close()
+	}
+}
+
+func (m *Manager) handleExit(x *exitServer, c *net.TCPConn, done func()) {
 	defer c.Close()
 	tcptun.Tune(c, notSentLowat)
-	c.SetDeadline(time.Now().Add(dialTimeout))
 	e, cipher, err := readPreamble(c, *x.exits.Load())
 	if err != nil {
 		m.BadHandshakes.Add(1)
@@ -448,8 +597,13 @@ func (m *Manager) handleExit(x *exitServer, c *net.TCPConn) {
 	if err != nil {
 		return
 	}
-	c.SetReadDeadline(time.Time{})
+	c.SetDeadline(time.Time{})
 	done()
+	m.serveRequest(x, e, q, sc)
+}
+
+// serveRequest carries one user connection that arrived at the exit.
+func (m *Manager) serveRequest(x *exitServer, e Exit, q request, sc net.Conn) {
 	if q.host != "" {
 		m.egress(x, e, q, sc)
 		return
@@ -473,15 +627,39 @@ func (m *Manager) handleExit(x *exitServer, c *net.TCPConn) {
 	pipe(sc.(halfConn), up)
 }
 
+// serveSession carries a relay stream the far end opened on a connection
+// tunnel's session (the hub's Handler).
+func (m *Manager) serveSession(s transport.Spec, c net.Conn) {
+	defer c.Close()
+	x := m.exit
+	e, ok := current(x, Exit{Tunnel: s.Tunnel, Secret: s.Secret})
+	if !ok {
+		transport.Note(s.Name, "a user connection came over the tunnel, but no forward here ends on it")
+		return
+	}
+	c.SetReadDeadline(time.Now().Add(dialTimeout))
+	q, err := readRequest(c)
+	if err != nil {
+		transport.Note(s.Name, "reading a user connection's request: %v", err)
+		return
+	}
+	if q.host == "" && !allowed(e.Ports, q.port) {
+		transport.Note(s.Name, "a user connection asked for port %d, which no forward here allows", q.port)
+	}
+	c.SetReadDeadline(time.Time{})
+	m.serveRequest(x, e, q, c)
+}
+
+// readPreamble reads a relay connection's preamble after "NTR".
 func readPreamble(c net.Conn, exits map[string]Exit) (Exit, string, error) {
-	var h [5]byte
+	var h [2]byte
 	if _, err := io.ReadFull(c, h[:]); err != nil {
 		return Exit{}, "", err
 	}
-	if string(h[:3]) != "NTR" || h[3] != streamVersion {
+	if h[0] != streamVersion {
 		return Exit{}, "", errors.New("not a relay connection")
 	}
-	name := make([]byte, h[4]+1) // the name, then the cipher's length
+	name := make([]byte, h[1]+1) // the name, then the cipher's length
 	if _, err := io.ReadFull(c, name); err != nil {
 		return Exit{}, "", err
 	}

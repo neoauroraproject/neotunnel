@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"math"
+	"runtime"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 // interface was re-created) only sets the baseline.
 type history struct {
 	ms   *metrics.Store
-	cpu  metrics.CPU
+	cpu  metrics.Sampler
 	last map[string]traffic.Pair
 	prev time.Time
 	now  time.Time
@@ -26,7 +27,7 @@ type history struct {
 
 func newHistory(ms *metrics.Store) *history {
 	h := &history{ms: ms, last: map[string]traffic.Pair{}}
-	h.cpu.Read()
+	h.cpu.Sample(runtime.NumCPU())
 	return h
 }
 
@@ -82,14 +83,17 @@ func (h *history) keep(names []string) {
 // end records the round's totals and the system readings.
 func (h *history) end() {
 	if h.dt <= 0 {
-		h.cpu.Read()
+		h.cpu.Sample(runtime.NumCPU())
 		return
 	}
 	if h.any {
 		h.ms.Record("all", h.now, h.dt, h.sum[0], h.sum[1])
 	}
-	if total, hot, ok := h.cpu.Read(); ok {
-		h.ms.Record("cpu", h.now, h.dt, total, hot)
+	if p, ok := h.cpu.Sample(runtime.NumCPU()); ok {
+		h.ms.SetPressure(p)
+		h.ms.Record("cpu", h.now, h.dt, p.Usage.Total, p.Usage.Hottest)
+		h.ms.Record("softirq", h.now, h.dt, p.Usage.Softirq, p.Usage.SoftirqHot)
+		h.ms.Record("softnet", h.now, h.dt, p.Drops, p.Squeezes)
 	}
 	if mem, swap, ok := metrics.Memory(); ok {
 		h.ms.Record("mem", h.now, h.dt, mem, swap)

@@ -24,6 +24,32 @@ type Conn struct {
 	hdrs  []mmsghdr
 	iovs  []unix.Iovec
 	names []unix.RawSockaddrInet6 // big enough for either family
+	oob   []byte                  // control data per message, with EnableGRO
+	segs  []int                   // each message's segment size, with EnableGRO
+}
+
+// oobSize holds one UDP_GRO control message (a 16-bit segment size).
+const oobSize = 32
+
+// EnableGRO lets the kernel hand this Conn's reads several datagrams of a flow
+// merged into one, so a burst takes one trip up the network stack. Segment
+// then tells where each message's datagrams end. False when the kernel can't.
+func (c *Conn) EnableGRO() bool {
+	ok := false
+	c.rc.Control(func(fd uintptr) { ok = unix.SetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_GRO, 1) == nil })
+	if ok {
+		c.oob, c.segs = make([]byte, len(c.hdrs)*oobSize), make([]int, len(c.hdrs))
+	}
+	return ok
+}
+
+// Segment is the size of the datagrams merged in message i of the last Read,
+// 0 when it is a single one.
+func (c *Conn) Segment(i int) int {
+	if c.segs == nil {
+		return 0
+	}
+	return c.segs[i]
 }
 
 // New wraps a socket for batches of up to n datagrams.
@@ -47,6 +73,10 @@ func (c *Conn) Read(bufs [][]byte, sizes []int, from []netip.AddrPort) (int, err
 		*h = unix.Msghdr{Iov: &c.iovs[i], Iovlen: 1}
 		h.Name = (*byte)(unsafe.Pointer(&c.names[i]))
 		h.Namelen = uint32(unsafe.Sizeof(c.names[i]))
+		if c.oob != nil {
+			h.Control = &c.oob[i*oobSize]
+			h.SetControllen(oobSize)
+		}
 	}
 	var got int
 	var errno syscall.Errno
@@ -71,6 +101,15 @@ func (c *Conn) Read(bufs [][]byte, sizes []int, from []netip.AddrPort) (int, err
 		}
 		if from != nil {
 			from[i] = addrOf(&c.names[i])
+		}
+		if c.oob != nil {
+			c.segs[i] = 0
+			if h := &c.hdrs[i].hdr; h.Controllen >= uint64(unix.CmsgLen(2)) {
+				cm := (*unix.Cmsghdr)(unsafe.Pointer(h.Control))
+				if cm.Level == unix.SOL_UDP && cm.Type == unix.UDP_GRO {
+					c.segs[i] = int(*(*uint16)(unsafe.Pointer(&c.oob[i*oobSize+unix.CmsgLen(0)])))
+				}
+			}
 		}
 	}
 	return got, nil

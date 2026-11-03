@@ -6,6 +6,7 @@ import (
 
 	"neotunnel/internal/config"
 	"neotunnel/internal/health"
+	"neotunnel/internal/manage"
 )
 
 var (
@@ -27,8 +28,10 @@ func TestAutoCryptWalksTheLadder(t *testing.T) {
 	st := autoState("")
 	tn := st.Tunnels[0]
 
+	// The order depends on this machine's AES instructions (see CryptoRungs).
+	rungs := manage.CryptoRungs(st, "t1")
 	to, ok := a.next(st, tn, nil, hs, now)
-	if !ok || to != "aes-gcm-128" {
+	if !ok || to != rungs[1] {
 		t.Fatalf("first step %q %v", to, ok)
 	}
 	a.changed["t1"] = now
@@ -36,9 +39,9 @@ func TestAutoCryptWalksTheLadder(t *testing.T) {
 	if _, ok := a.next(st, tn, nil, hs, now.Add(autoWait-time.Second)); ok {
 		t.Fatal("moved on before the wait was over")
 	}
-	st = autoState("aes-gcm-128")
+	st = autoState(rungs[1])
 	tn = st.Tunnels[0]
-	if to, ok := a.next(st, tn, nil, hs, now.Add(autoWait)); !ok || to != "aes-gcm-256" {
+	if to, ok := a.next(st, tn, nil, hs, now.Add(autoWait)); !ok || to != rungs[2] {
 		t.Fatalf("next step %q %v", to, ok)
 	}
 	// The settings set the wait.
@@ -92,7 +95,8 @@ func TestAutoCryptRestsAfterAFullRound(t *testing.T) {
 	if _, ok := a.next(st, st.Tunnels[0], nil, hs, now); !ok {
 		t.Fatal("first step")
 	}
-	last := autoState("chacha20-poly1305") // the last cipher: NeoObfs is next
+	rungs := manage.CryptoRungs(st, "t1")
+	last := autoState(rungs[len(rungs)-2]) // the last cipher: NeoObfs is next
 	if to, ok := a.next(last, last.Tunnels[0], nil, hs, now); !ok || to != config.RungObfs {
 		t.Fatalf("got %q %v", to, ok)
 	}

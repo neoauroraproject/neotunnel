@@ -31,6 +31,9 @@ func settingsFlags(f *pflag.FlagSet, s *manage.Settings) {
 	f.StringVar(&s.PeerKey, "peer-key", "", "WireGuard: the far end's public key, when it doesn't run NeoTunnel")
 	f.StringVar(&s.Profile, "profile", "", "speed profile: lean (low latency, light traffic), balanced (default) or max (heavy traffic, uses every CPU core)")
 	f.IntVar(&s.Lanes, "lanes", 0, fmt.Sprintf("GRE/GRETAP to a NeoTunnel server: run on this many parallel tunnels (1-%d), each flow on one, to use more CPU cores", config.MaxLanes))
+	f.BoolVar(&s.Reverse, "reverse", false, "connection tunnels (tcpmux, tlsmux): this server listens and the far one connects to it, like FRP, for a path that only lets connections in")
+	f.StringVar(&s.SNI, "sni", "", "tlsmux: the server name its TLS sends (default: none, as for an IP address)")
+	f.IntVar(&s.Conns, "conns", 0, fmt.Sprintf("connection tunnels: sessions kept open at once, 1-%d (default: 2, 4 or 8 by profile)", config.MaxStreamConns))
 	f.Var(tunnelID{&s.TunnelID}, "tunnel-id", "EoIP: the tunnel id, same as the MikroTik's tunnel-id (0-65535, 0-4095 on EoIPv6 without a port; default: from the name)")
 }
 
@@ -213,6 +216,9 @@ func forwardSetCmd() *cobra.Command {
 					if !f.Changed("backup") {
 						r.Backups = fw.Backups()
 					}
+					if !f.Changed("best") {
+						r.Best = fw.Best
+					}
 				}
 			}
 			ch, err := manage.UpdateForward(r)
@@ -235,6 +241,7 @@ func forwardModeFlags(f *pflag.FlagSet, r *manage.ForwardRequest) {
 	f.IntVar(&r.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --mode proxy: 2 (default, TCP+UDP) or 1 (TCP); with --mode relay: 0 (no header, default), 1 or 2")
 	f.StringVar(&r.Listen, "listen", "", "with --mode socks: the address the proxy listens on (default 127.0.0.1, only this server; any other needs --auth)")
 	f.StringVar(&r.Auth, "auth", "", "with --mode socks: user:password the proxy asks for")
+	f.BoolVar(&r.Best, "best", false, "with backups: run on whichever of the tunnels has the best loss and ping, not only the first that works (open connections stay where they are when it moves)")
 	f.StringVar(&r.Backup, "backup", "", "other tunnels to the same far server, separated by commas, first choice first: the forward moves to the first that works while its tunnel stops passing traffic, and back once it has worked again for about a minute (set \"\" to remove)")
 }
 
@@ -375,14 +382,15 @@ func limitsOf(name string) (manage.Limits, error) {
 }
 
 func tunnelLimitCmd() *cobra.Command {
-	var rate int
+	var rate, queue int
 	var quota float64
 	cmd := &cobra.Command{
 		Use:   "limit <name>",
-		Short: "Set a tunnel's speed limit and monthly traffic quota (0 = none)",
+		Short: "Set a tunnel's speed limit, monthly traffic quota and smart queue (0 = none)",
 		Example: `  neotunnel tunnel limit t1 --rate 100        # 100 Mbit/s each way
   neotunnel tunnel limit t1 --quota 500       # 500 GB a month, then down until next month
-  neotunnel tunnel limit t1 --rate 0 --quota 0`,
+  neotunnel tunnel limit t1 --queue 180       # low ping under load on a ~200 Mbit/s path
+  neotunnel tunnel limit t1 --rate 0 --quota 0 --queue 0`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			l, err := limitsOf(args[0])
@@ -395,18 +403,23 @@ func tunnelLimitCmd() *cobra.Command {
 			if cmd.Flags().Changed("quota") {
 				l.QuotaGB = quota
 			}
+			if cmd.Flags().Changed("queue") {
+				l.QueueMbit = queue
+			}
 			ch, err := manage.SetLimits(args[0], l)
 			if err != nil {
 				return err
 			}
 			printChange(ch)
-			success("%s: speed limit %s, monthly quota %s", args[0],
-				orNone(l.RateMbit > 0, fmt.Sprintf("%d Mbit/s", l.RateMbit)), orNone(l.QuotaGB > 0, fmt.Sprintf("%g GB", l.QuotaGB)))
+			success("%s: speed limit %s, monthly quota %s, smart queue %s", args[0],
+				orNone(l.RateMbit > 0, fmt.Sprintf("%d Mbit/s", l.RateMbit)), orNone(l.QuotaGB > 0, fmt.Sprintf("%g GB", l.QuotaGB)),
+				orNone(l.QueueMbit > 0, fmt.Sprintf("%d Mbit/s", l.QueueMbit)))
 			return nil
 		},
 	}
 	cmd.Flags().IntVar(&rate, "rate", 0, "speed limit in Mbit/s, applied on both ends (0 = none)")
 	cmd.Flags().Float64Var(&quota, "quota", 0, "monthly traffic in GB, download + upload (0 = none)")
+	cmd.Flags().IntVar(&queue, "queue", 0, "smart queue (CAKE) at this rate in Mbit/s, about 90% of the tunnel's real speed, so ping stays low under load (0 = off)")
 	return cmd
 }
 

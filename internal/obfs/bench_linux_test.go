@@ -18,6 +18,7 @@ func TestBenchEnd(t *testing.T) {
 	}
 	side, _ := strconv.Atoi(sideS)
 	port, _ := strconv.Atoi(os.Getenv("NT_BENCH_PORT"))
+	useGRO = os.Getenv("NT_BENCH_NOGRO") == ""
 	l, err := Start(Config{
 		Name:   os.Getenv("NT_BENCH_DEV"),
 		Tunnel: "bench",
@@ -25,6 +26,7 @@ func TestBenchEnd(t *testing.T) {
 		Side:   side,
 		Remote: netip.MustParseAddrPort(os.Getenv("NT_BENCH_REMOTE")),
 		Port:   uint16(port),
+		AES:    os.Getenv("NT_BENCH_AES") != "",
 	})
 	if err != nil {
 		t.Fatal(err)

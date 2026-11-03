@@ -128,7 +128,17 @@ func printTunnel(st *config.State, t config.Tunnel) {
 	if t.Over != "" {
 		extra += dim(" over " + t.Over)
 	}
-	if t.Port != 0 {
+	if t.IsStream() {
+		ports := make([]string, 0, 3)
+		for _, p := range t.StreamPorts() {
+			ports = append(ports, fmt.Sprint(p))
+		}
+		dir := "connects to it"
+		if me == t.Listener() {
+			dir = "listens"
+		}
+		extra += dim(fmt.Sprintf(" tcp/%s, this server %s", strings.Join(ports, ","), dir))
+	} else if t.Port != 0 {
 		extra += dim(fmt.Sprintf(" udp/%d", t.Port))
 	}
 	if n := t.LaneCount(); n > 1 {
@@ -241,7 +251,7 @@ func forwardCmd() *cobra.Command {
 				proto = "tcp" // relay mode and proxies carry TCP only
 			}
 			ch, err := manage.AddForward(manage.ForwardRequest{Tunnel: args[0], Ports: args[1], Proto: proto, To: to,
-				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion, Backup: mode.Backup, Listen: mode.Listen, Auth: mode.Auth})
+				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion, Backup: mode.Backup, Best: mode.Best, Listen: mode.Listen, Auth: mode.Auth})
 			if err != nil {
 				return err
 			}
@@ -288,6 +298,9 @@ func forwardCmd() *cobra.Command {
 					to = " (proxy on " + proxyAddr(f.Listen, f.Ports) + ")"
 				}
 				fmt.Printf("  %d. %-5s %-20s → %s%s%s\n", i+1, f.Proto, f.Ports, f.Tunnel, to, backup)
+				if f.Plan != nil {
+					fmt.Printf("     sold%s: %s\n", forWhom(f.Plan.Customer), planText(*f.Plan))
+				}
 			}
 			return nil
 		},
@@ -306,6 +319,6 @@ func forwardCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(add, forwardSetCmd(), list, rm)
+	cmd.AddCommand(add, forwardSetCmd(), forwardSellCmd(), forwardRenewCmd(), list, rm)
 	return cmd
 }

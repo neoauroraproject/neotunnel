@@ -84,3 +84,36 @@ func TestSubtractMovesTestTraffic(t *testing.T) {
 		t.Errorf("tests %+v, last bucket %+v", sum.Tests, sum.Series[Buckets-1])
 	}
 }
+
+// A sold port's period counts from its start, a new start zeroes it, and a
+// reset of the panel's numbers leaves it alone.
+func TestPeriod(t *testing.T) {
+	s := store()
+	t0 := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	p := Port + "tcp/443"
+	s.Sample(p, Pair{}, t0)
+	s.Sample(p, Pair{Rx: 100, Tx: 10}, t0.Add(time.Minute)) // before the plan
+	s.StartPeriod(p, t0.Add(time.Minute).Unix(), t0)
+	s.Sample(p, Pair{Rx: 300, Tx: 20}, t0.Add(2*time.Minute))
+	s.Reset(p, t0.Add(2*time.Minute))
+	s.Sample(p, Pair{Rx: 350, Tx: 20}, t0.Add(3*time.Minute))
+	sum := s.Summaries(t0.Add(3 * time.Minute))[p]
+	if sum.Period.Rx != 250 || sum.Period.Tx != 10 || sum.Total.Rx != 50 {
+		t.Fatalf("period %+v total %+v", sum.Period, sum.Total)
+	}
+	s.StartPeriod(p, t0.Add(3*time.Minute).Unix(), t0)
+	if s.Tunnels[p].Period.Rx != 0 {
+		t.Error("a new period kept the old one's traffic")
+	}
+	// Next month, October is last month.
+	nov := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	s.Sample(p, Pair{Rx: 360, Tx: 20}, nov)
+	sum = s.Summaries(nov)[p]
+	if sum.LastMonth.Rx != 50 || sum.Month.Rx != 10 { // the reset cleared the days before it
+		t.Errorf("last month %+v this month %+v", sum.LastMonth, sum.Month)
+	}
+	_, days, ok := s.History(p, nov)
+	if !ok || len(days) != 3 || days[0].Date != "2026-10-31" || days[2].Rx != 10 {
+		t.Errorf("history %+v", days)
+	}
+}

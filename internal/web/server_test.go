@@ -2,12 +2,14 @@ package web_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"neotunnel/internal/bench"
+	"neotunnel/internal/clients"
 	"neotunnel/internal/config"
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/manage"
@@ -38,6 +40,15 @@ func (stub) MikroTik(string) (string, error)             { return "", nil }
 
 func (stub) SetLimits(string, manage.Limits) (manage.Change, error) { return manage.Change{}, nil }
 func (stub) SetLabel(string, string, string) (manage.Change, error) { return manage.Change{}, nil }
+func (stub) SetPortPlan(string, string, *config.PortPlan, bool) (manage.Change, error) {
+	return manage.Change{}, nil
+}
+func (stub) RenewPort(string, string, int, bool) (manage.Change, error) { return manage.Change{}, nil }
+func (stub) PortHistory(string) (web.PortHistory, error)                { return web.PortHistory{}, nil }
+func (stub) PortClients(string) (clients.Report, error)                 { return clients.Report{}, nil }
+func (stub) MTR(context.Context, string, int) (manage.MTRReport, error) {
+	return manage.MTRReport{}, nil
+}
 
 func (stub) Check(context.Context, manage.TunnelRequest, bool, *web.SpeedOptions) ([]bench.Result, error) {
 	return nil, nil
@@ -168,5 +179,35 @@ func TestCookieFlags(t *testing.T) {
 	c := login(t, newPanel(t))[0]
 	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != "/secret/" {
 		t.Errorf("weak session cookie: %+v", c)
+	}
+}
+
+// A program with an API token uses the API without a session or the
+// panel's header, within its token's scope.
+func TestAPIToken(t *testing.T) {
+	defer func(d string) { config.Dir = d }(config.Dir)
+	config.Dir = t.TempDir()
+	config.Update(func(s *config.State) error { s.Panel = &config.Panel{User: "admin"}; return nil })
+	h := newPanel(t)
+	c := login(t, h)
+	rec := do(h, "POST", "/secret/api/tokens", `{"name":"bot","scope":"ports"}`, c, map[string]string{"X-NeoTunnel": "1"})
+	var made struct{ Token string }
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &made) != nil || made.Token == "" {
+		t.Fatalf("make token: %d %s", rec.Code, rec.Body)
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + made.Token}
+	if rec := do(h, "GET", "/secret/api/overview", "", nil, bearer); rec.Code != 200 {
+		t.Errorf("overview with a token: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "POST", "/secret/api/forwards/renew", `{"tunnel":"t1","ports":"443","days":30}`, nil, bearer); rec.Code != 200 {
+		t.Errorf("renew with a ports token: %d %s", rec.Code, rec.Body)
+	}
+	for _, r := range [][2]string{{"POST", "/secret/api/tunnels"}, {"GET", "/secret/api/backup"}, {"POST", "/secret/api/tokens"}, {"POST", "/secret/api/settings/password"}} {
+		if rec := do(h, r[0], r[1], `{}`, nil, bearer); rec.Code != 403 {
+			t.Errorf("%s %s with a ports token: %d", r[0], r[1], rec.Code)
+		}
+	}
+	if rec := do(h, "GET", "/secret/api/overview", "", nil, map[string]string{"Authorization": "Bearer nt_wrong"}); rec.Code != 401 {
+		t.Errorf("wrong token: %d", rec.Code)
 	}
 }

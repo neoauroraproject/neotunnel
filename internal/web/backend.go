@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"neotunnel/internal/bench"
+	"neotunnel/internal/clients"
 	"neotunnel/internal/config"
 	"neotunnel/internal/failover"
 	"neotunnel/internal/fleet"
@@ -36,6 +37,15 @@ type Backend interface {
 	AddForward(req manage.ForwardRequest) (manage.Change, error)
 	UpdateForward(req manage.ForwardRequest) (manage.Change, error)
 	RemoveForward(tunnel, ports string) (manage.Change, error)
+	// SetPortPlan sells a port (see config.PortPlan; nil stops selling it),
+	// RenewPort moves its end on (and with reset, starts a new period), and
+	// PortHistory is its traffic day by day, as far back as kept.
+	SetPortPlan(tunnel, ports string, p *config.PortPlan, restart bool) (manage.Change, error)
+	RenewPort(tunnel, ports string, days int, reset bool) (manage.Change, error)
+	PortHistory(key string) (PortHistory, error)
+	// PortClients is who uses a port: addresses with connections open now
+	// and those of the last day (see package clients).
+	PortClients(key string) (clients.Report, error)
 	SetNode(name, address string) error
 	// SetLabel changes a display name: of a "tunnel", a "server" (peer) or
 	// "self" (this server; name is ignored). IDs stay as they are.
@@ -47,6 +57,8 @@ type Backend interface {
 	// traffic passes (all: every kind at once).
 	// With speed set it also measures bandwidth, the way the speed test does.
 	Check(ctx context.Context, req manage.TunnelRequest, all bool, speed *SpeedOptions) ([]bench.Result, error)
+	// MTR traces the path under a tunnel from both of its servers.
+	MTR(ctx context.Context, name string, rounds int) (manage.MTRReport, error)
 	// ProbeMTU measures the path MTU under a tunnel and remembers it.
 	ProbeMTU(ctx context.Context, name string) (MTUReport, error)
 	Traffic() map[string]traffic.Summary
@@ -174,6 +186,9 @@ type NodeInfo struct {
 	NIC      string       `json:"nic,omitempty"`
 	NICToday traffic.Pair `json:"nic_today"`
 	NICMonth traffic.Pair `json:"nic_month"`
+	// Pressure is where the CPU went in the daemon's last round: packet
+	// work, packets dropped for lack of CPU, and the busiest programs.
+	Pressure *metrics.Pressure `json:"pressure,omitempty"`
 }
 
 // PoolView is an address pool in the panel.
@@ -220,15 +235,20 @@ type TunnelView struct {
 	Obfs     bool            `json:"obfs,omitempty"`
 	Encrypt  string          `json:"encrypt,omitempty"` // IPsec or the kind's own encryption
 	// AutoEncrypt: the daemon picks Encrypt by what passes (see Settings.Encrypt).
-	AutoEncrypt bool         `json:"auto_encrypt,omitempty"`
-	PathMTU     int          `json:"path_mtu,omitempty"` // measured, when probing
-	WGKey       string       `json:"wg_key,omitempty"`   // our WireGuard public key
-	VNI         uint32       `json:"vni,omitempty"`
-	Total       traffic.Pair `json:"total"`
-	Today       traffic.Pair `json:"today"`
-	Month       traffic.Pair `json:"month"`
-	Tests       traffic.Pair `json:"tests"`      // speed tests, not in the totals
-	Wire        uint64       `json:"wire_today"` // today's bytes on the network, overhead included
+	AutoEncrypt bool   `json:"auto_encrypt,omitempty"`
+	PathMTU     int    `json:"path_mtu,omitempty"` // measured, when probing
+	WGKey       string `json:"wg_key,omitempty"`   // our WireGuard public key
+	VNI         uint32 `json:"vni,omitempty"`
+	// RelayPorts are the ports the tunnel's relay forwards reach the far
+	// server on, tried in order (none: the fixed 7712 of older versions).
+	RelayPorts []uint16 `json:"relay_ports,omitempty"`
+	// Stream is a connection tunnel's live state (nil for other tunnels).
+	Stream *StreamView  `json:"stream,omitempty"`
+	Total  traffic.Pair `json:"total"`
+	Today  traffic.Pair `json:"today"`
+	Month  traffic.Pair `json:"month"`
+	Tests  traffic.Pair `json:"tests"`      // speed tests, not in the totals
+	Wire   uint64       `json:"wire_today"` // today's bytes on the network, overhead included
 	// Limits are the on/off switch, speed limit and monthly quota; Blocked
 	// means the quota ran out and the tunnel is down until next month.
 	Limits   manage.Limits `json:"limits"`
@@ -311,9 +331,29 @@ type ForwardView struct {
 	// its recent moves, oldest first.
 	Backup   string            `json:"backup,omitempty"`
 	Backups  []string          `json:"backups,omitempty"`
+	Best     bool              `json:"best,omitempty"`
 	Active   string            `json:"active"`
 	Since    int64             `json:"since,omitempty"`
 	Switches []failover.Switch `json:"switches,omitempty"`
+	// LastMonth is the calendar month before this one.
+	LastMonth traffic.Pair `json:"last_month"`
+	// Plan is the port's sale (nil = not sold); Closed why it takes no
+	// traffic now ("" = open), and Period its traffic since PeriodFrom,
+	// the start of the plan's period, which ends at PeriodEnd (0 = with
+	// the plan).
+	Plan       *config.PortPlan `json:"plan,omitempty"`
+	Closed     string           `json:"closed,omitempty"`
+	Period     traffic.Pair     `json:"period"`
+	PeriodFrom int64            `json:"period_from,omitempty"`
+	PeriodEnd  int64            `json:"period_end,omitempty"`
+}
+
+// PortHistory is a port's traffic day by day (local dates, oldest first),
+// with its summary.
+type PortHistory struct {
+	Key     string          `json:"key"`
+	Summary traffic.Summary `json:"summary"`
+	Days    []traffic.Day   `json:"days"`
 }
 
 type PanelInfo struct {
@@ -351,4 +391,15 @@ type HealthView struct {
 	// ActionAt (unix).
 	Action   string `json:"action,omitempty"`
 	ActionAt int64  `json:"action_at,omitempty"`
+}
+
+// StreamView is a connection tunnel's side: who listens, on which ports,
+// and its sessions and open user connections now.
+type StreamView struct {
+	Listens  bool     `json:"listens"` // this server listens; the far one connects
+	Ports    []uint16 `json:"ports"`
+	Sessions int      `json:"sessions"`
+	Conns    int      `json:"conns"`
+	Want     int      `json:"want"` // sessions it keeps open
+	SNI      string   `json:"sni,omitempty"`
 }

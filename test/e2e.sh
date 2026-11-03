@@ -25,6 +25,11 @@ in_hub()   { ip netns exec $HUB   env NEOTUNNEL_DIR=$WORK/hub   NO_COLOR=1 "$BIN
 in_edge() { ip netns exec $EDGE env NEOTUNNEL_DIR=$WORK/edge NO_COLOR=1 "$BIN" "$@"; }
 start_edge() { ip netns exec $EDGE env NEOTUNNEL_DIR=$WORK/edge "$BIN" daemon >>"$WORK/edge.log" 2>&1 & echo $! > "$WORK/edge.pid"; sleep 1; }
 http_code() { ip netns exec $CLIENT curl -s -o /dev/null -m 5 -w '%{http_code}' "$1" || true; }
+wait_for() { # seconds, command...: poll until the command succeeds
+  local n=$1; shift
+  for _ in $(seq 1 "$n"); do "$@" && return 0; sleep 1; done
+  return 1
+}
 
 cleanup() {
   set +e
@@ -237,6 +242,33 @@ hup 3
 ip -n $HUB link show nt-o1 >/dev/null 2>&1 || fail "obfs interface missing on hub"
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-o1)" >/dev/null || fail "ping through NeoObfs"
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-q2)" >/dev/null || fail "ping through ipip over NeoObfs"
+# Both namespaces share this CPU: with AES instructions, the tunnel runs on AES.
+# A tunnel from before (put back on XChaCha20 here, as an older version made
+# it) moves to AES by itself at the next peer watch, on both servers.
+o1enc() { api "$base/api/overview" | python3 -c "import json,sys; print([t for t in json.load(sys.stdin)['tunnels'] if t['name']=='o1'][0].get('encrypt'))"; }
+if grep -qw aes /proc/cpuinfo; then
+  [ "$(o1enc)" = aes-gcm-128 ] || fail "NeoObfs not on AES-GCM between two servers with AES instructions"
+  o1aes() { [ "$(o1enc)" = aes-gcm-128 ]; }
+  moved() { grep -q "NeoObfs tunnels \[o1\] to edge now run on AES-GCM" "$WORK/hub.log"; }
+  # The daemon writes state.json too (each peer refresh); an edit it wrote
+  # over never happened, so it is made again.
+  for try in 1 2 3; do
+    python3 - "$WORK/hub/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p))
+for t in s["tunnels"]:
+    if t["name"] == "o1": t.pop("obfs_aes", None)
+json.dump(s, open(p, "w"), indent=2)
+PY
+    hup 2
+    for i in $(seq 1 30); do moved && break; sleep 1; done
+    moved && break
+  done
+  o1aes || { tail -20 "$WORK/hub.log"; fail "an old NeoObfs tunnel did not move to AES-GCM by itself"; }
+  moved || { tail -20 "$WORK/hub.log"; fail "the move to AES-GCM was not logged"; }
+  for i in $(seq 1 15); do ip netns exec $HUB ping -c 1 -W 2 "$(inner $EDGE nt-o1)" >/dev/null && break; sleep 1; done
+  ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-o1)" >/dev/null || fail "ping through NeoObfs after it moved to AES-GCM"
+fi
 pass "NeoObfs carries traffic, and kernel tunnels stack on it"
 
 # 12b. TCP transport (user space): plain and with a stream cipher, a speed
@@ -416,8 +448,23 @@ hup 3
 [ "$(http_code http://198.18.0.1:8090/)" = 200 ] || fail "relay forward 8090 -> edge 8080"
 [ "$(http_code http://198.18.0.1:8091/)" = 200 ] || fail "encrypted relay forward 8091 -> edge 8080"
 ip netns exec $CLIENT curl -s -m 5 http://198.18.0.1:8090/ | grep -q hello-from-edge || fail "relay forward content"
-ip netns exec $EDGE ss -Htn state established "( sport = :7712 )" | grep -q "$HUB_IP" || fail "no relay connections from hub on edge:7712"
-ip netns exec $HUB nft list table inet neotunnel | grep -q "8090" && fail "relay forward must not be a DNAT rule"
+# Each tunnel's relay has random ports of its own (7712 only before the
+# far server's version reports it can listen on them).
+relay_ports() {
+  python3 - "$WORK/hub/state.json" "$@" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1]))
+ps = []
+for t in st.get("tunnels", []):
+    if t["name"] in sys.argv[2:]:
+        ps += t.get("relay_ports") or [7712]
+print(" or ".join("sport = :%d" % p for p in sorted(set(ps))))
+PY
+}
+rp=$(relay_ports t1 e1)
+echo "$rp" | grep -q 7712 && echo "  (relay ports not assigned yet; on 7712)"
+ip netns exec $EDGE ss -Htn state established "( $rp )" | grep -q "$HUB_IP" || fail "no relay connections from hub on edge's relay ports ($rp)"
+ip netns exec $HUB nft list chain inet neotunnel prerouting | grep -q "8090" && fail "relay forward must not be a DNAT rule"
 ip netns exec $CLIENT bash -c 'exec 3<>/dev/tcp/198.18.0.1/9103; printf hello >&3; exec 3>&-' || fail "connect to relay forward 9103"
 sleep 1
 grep -q "^PROXY TCP4 198.18.0.2 198.18.0.1 [0-9]* 9103" "$WORK/relay-proxy.txt" || { cat "$WORK/relay-proxy.txt"; fail "no PROXY header through the relay"; }
@@ -449,7 +496,7 @@ who() { ip netns exec "$1" curl -s -m 8 "${@:2}" http://$EDGE_IP:8095/ || true; 
 [ -z "$(who $CLIENT -x http://u1:wrong@198.18.0.1:1082)" ] || fail "proxy accepted a wrong password"
 [ -z "$(who $CLIENT --socks5 198.18.0.1:1080)" ] || fail "loopback-only proxy reachable from the client"
 ip netns exec $HUB curl -s -m 5 --socks5-hostname 127.0.0.1:1080 http://127.0.0.1:8080/ >/dev/null && fail "proxy reached edge's loopback"
-ip netns exec $EDGE ss -Htn state established "( sport = :7712 )" | grep -vq "$HUB_IP" || fail "proxy connections did not come through the tunnel"
+ip netns exec $EDGE ss -Htn state established "( $(relay_ports t1 e1) )" | grep -vq "$HUB_IP" || fail "proxy connections did not come through the tunnel"
 in_hub forward list | grep -q "proxy on 127.0.0.1:1080" || fail "forward list shows the proxy"
 in_hub forward remove t1 1080 >/dev/null && in_hub forward remove e1 1082 >/dev/null || fail "remove proxies"
 pass "proxy: SOCKS5 and HTTP on one port leave from edge through the tunnel; loopback refused; password enforced"
@@ -548,6 +595,98 @@ fi
 ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-e1)" >/dev/null || fail "ping after switching to AES-256"
 pass "panel: traffic totals, MTU probe and live settings change"
 
+# 16a. Smart queue: CAKE (or fq_codel under a token bucket where the kernel
+#      has no CAKE) at the given rate on both ends, gone again at 0.
+in_hub tunnel limit t1 --queue 50 >/dev/null || fail "set smart queue"
+hup 3
+for ns in $HUB $EDGE; do
+  ip netns exec $ns tc qdisc show dev nt-t1 | grep -qE "qdisc (cake|tbf) 7a7a: root" || { ip netns exec $ns tc qdisc show dev nt-t1; fail "no smart queue on nt-t1 in $ns"; }
+done
+ip netns exec $HUB tc qdisc show dev nt-t1 | grep -q "cake" || echo "NOTE no CAKE in this kernel: tbf + fq_codel"
+[ "$(http_code http://198.18.0.1:8080/)" = 200 ] || fail "forward 8080 through t1 under the smart queue"
+in_hub tunnel limit t1 --queue 0 >/dev/null || fail "remove smart queue"
+hup 3
+ip netns exec $HUB tc qdisc show dev nt-t1 | grep -q "7a7a:" && fail "smart queue left on nt-t1"
+pass "smart queue on and off on both ends"
+
+# 16a2. Sold ports: the speed cap, connections and addresses at once, the
+#       quota closing the port and a renewal opening it; relays are counted.
+dd if=/dev/urandom of="$WORK/www/big" bs=1M count=24 status=none
+dd if=/dev/urandom of="$WORK/www/mid" bs=1M count=2 status=none
+in_hub forward add t1 8095 --to 8080 --proto tcp >/dev/null || fail "add port to sell"
+in_hub forward sell t1 8095 --customer e2e --rate 4 --conns 1 --ips 1 >/dev/null || fail "sell port"
+hup 3
+ip netns exec $HUB nft list chain inet neotunnel_plans plan_in | grep -q "8095 : jump" || { ip netns exec $HUB nft list table inet neotunnel_plans; fail "no plan chain for 8095"; }
+# Connections to a port the kernel still counts as open, or open now.
+# Clients only: the hub's own connections to that port elsewhere don't count.
+# The hub's connection table: /proc/net/nf_conntrack where the kernel has
+# it, else the conntrack tool (same lines, over netlink).
+ct_list() { if [ -r /proc/net/nf_conntrack ]; then ip netns exec $HUB cat /proc/net/nf_conntrack; else ip netns exec $HUB conntrack -L 2>/dev/null; fi; }
+open_conns() { ct_list | grep -E "ESTABLISHED|FIN_WAIT|CLOSE_WAIT|LAST_ACK|SYN_SENT|SYN_RECV" | grep -cE "src=198.18.0.[0-9]+ dst=198.18.0.1 sport=[0-9]+ dport=$1 " || true; }
+none_open() { [ "$(open_conns "$1")" = 0 ]; }
+one_open() { [ "$(open_conns "$1")" = 1 ]; }
+# A whole download, so its connection closes cleanly.
+spd=$(ip netns exec $CLIENT curl -s -o /dev/null -m 40 -w '%{speed_download}' http://198.18.0.1:8095/mid || true)
+awk "BEGIN{exit !($spd > 150000 && $spd < 1100000)}" || fail "4 Mbit/s cap: downloaded at $spd B/s"
+wait_for 60 none_open 8095 || { ct_list | grep -E "ESTABLISHED|FIN_WAIT|CLOSE_WAIT|LAST_ACK|SYN_SENT|SYN_RECV" | grep 198.18.0; ip netns exec $CLIENT ss -tnp; ps aux | grep -c curl; fail "the speed test's connection stays open"; }
+# A slow whole download (about 20 s), open through the checks below.
+ip netns exec $CLIENT curl -s -o /dev/null --limit-rate 100k -m 60 http://198.18.0.1:8095/mid & slow=$!
+wait_for 5 one_open 8095 || fail "the slow download did not connect"
+# The clients report: who is connected now, and who was in the last day.
+api "$base/api/forwards/clients?key=tcp/8095" > "$WORK/clients.json"
+python3 - "$WORK/clients.json" <<'EOF' || { cat "$WORK/clients.json"; fail "clients report of 8095"; }
+import json, sys
+r = json.load(open(sys.argv[1]))
+c = [x for x in r["clients"] if x["ip"] == "198.18.0.2"]
+assert c and c[0]["conns"] == 1 and c[0]["last"] > 0, r
+assert r["day"] >= 1 and r["conns"] == 1, r
+EOF
+[ "$(ip netns exec $CLIENT curl -s -o /dev/null -m 3 -w '%{http_code}' http://198.18.0.1:8095/ || true)" = 000 ] || fail "a second connection passed a 1-connection port"
+# A reload of the forwards (any change on the server) keeps the count.
+in_hub forward add t1 8096 --to 8080 --proto tcp >/dev/null || fail "add another forward"
+hup 3
+[ "$(ip netns exec $CLIENT curl -s -o /dev/null -m 3 -w '%{http_code}' http://198.18.0.1:8095/ || true)" = 000 ] || fail "after a reload a second connection passed a 1-connection port"
+in_hub forward remove t1 8096 >/dev/null
+wait $slow 2>/dev/null || true
+wait_for 60 none_open 8095 || { ct_list | grep 8095; fail "the slow download stays open"; }
+ip -n $CLIENT addr add 198.18.0.3/24 dev veth-c
+[ "$(ip netns exec $CLIENT curl -s -o /dev/null -m 3 --interface 198.18.0.3 -w '%{http_code}' http://198.18.0.1:8095/ || true)" = 000 ] || fail "a second address passed a 1-address port"
+[ "$(http_code http://198.18.0.1:8095/)" = 200 ] || fail "the port's own client refused"
+in_hub forward sell t1 8095 --rate 0 --conns 0 --ips 0 --quota 0.01 >/dev/null || fail "give the port a 10 MB quota"
+hup 3
+ip netns exec $CLIENT curl -s -o /dev/null -m 10 --interface 198.18.0.3 http://198.18.0.1:8095/big || fail "download through the sold port"
+wait_for 25 grep -q "port tcp/8095 closed: quota" "$WORK/hub.log" || { tail -20 "$WORK/hub.log"; fail "the quota did not close the port"; }
+sleep 1
+[ "$(http_code http://198.18.0.1:8095/)" = 000 ] || fail "a port out of quota still answers"
+in_hub forward renew t1 8095 --days 30 >/dev/null || fail "renew"
+sleep 12
+grep -q "port tcp/8095 open again" "$WORK/hub.log" && fail "a renewal without reset gave the used quota back"
+in_hub forward renew t1 8095 --days 0 --reset >/dev/null || fail "renew with reset"
+wait_for 25 grep -q "port tcp/8095 open again" "$WORK/hub.log" || fail "renewal did not open the port"
+port_ok() { [ "$(http_code "http://198.18.0.1:$1/")" = 200 ]; }
+wait_for 10 port_ok 8095 || fail "renewed port does not answer"
+in_hub forward list | grep -q "sold to e2e: 0.01 GB" || { in_hub forward list; fail "forward list shows no plan"; }
+[ "$(http_code http://198.18.0.1:8090/)" = 200 ] || fail "relay forward 8090 after the sold port"
+c=$(ip netns exec $HUB nft list chain inet neotunnel account_in | grep -o '8090 : "nt[0-9a-f]*u"' | grep -o 'nt[0-9a-f]*u')
+[ -n "$c" ] || fail "relay port 8090 not counted"
+ip netns exec $HUB nft list counter inet neotunnel "$c" | grep -qE 'bytes [1-9]' || fail "relay port 8090 counted nothing"
+bytes_of() { ip netns exec $HUB nft list counter inet neotunnel "$1" | grep -o "bytes [0-9]*" | cut -d" " -f2; }
+b1=$(bytes_of "$c")
+in_hub forward remove t1 8095 >/dev/null
+hup 3
+b2=$(bytes_of "$c")
+[ "${b2:-0}" -ge "$b1" ] || fail "reloading the forwards zeroed port 8090's counter ($b1 -> $b2)"
+ip -n $CLIENT addr del 198.18.0.3/24 dev veth-c
+pass "sold port: speed cap, 1 connection, 1 address, quota closes it, only a reset gives it back; relays counted, counters survive reloads"
+
+# 16a3. MTR both ways under t1 (6to4: hub and edge face each other directly),
+#       and the history of changes with what each did.
+in_hub mtr t1 --rounds 2 > "$WORK/mtr.txt" 2>&1 || { cat "$WORK/mtr.txt"; fail "mtr"; }
+grep -q "Far end → this server" "$WORK/mtr.txt" && grep -q "1. $EDGE_IP" "$WORK/mtr.txt" && grep -q "1. $HUB_IP" "$WORK/mtr.txt" || { cat "$WORK/mtr.txt"; fail "mtr lacks a direction"; }
+in_hub history > "$WORK/history.txt"
+grep -q "port tcp/8095 removed" "$WORK/history.txt" && grep -q "port tcp/8095 added" "$WORK/history.txt" || { cat "$WORK/history.txt"; fail "history"; }
+pass "MTR both ways; the history lists each change"
+
 # 16b. Backup tunnel: port 8083 goes through g1 (plain GRE) with u1 (IPIP in
 #      UDP 3001) as its backup. Edge drops 95% of GRE: g1 is still "up" and a
 #      ping gets through now and then, which the old one-reply rule took for
@@ -555,11 +694,6 @@ pass "panel: traffic totals, MTU probe and live settings change"
 #      keeps working, and the hub restarts g1 on both servers behind it; once
 #      GRE passes again for a while the forward comes back to g1.
 mtu_of() { ip -n "$1" -o link show "$2" | grep -o 'mtu [0-9]*' | cut -d' ' -f2; }
-wait_for() { # seconds, command...: poll until the command succeeds
-  local n=$1; shift
-  for _ in $(seq 1 "$n"); do "$@" && return 0; sleep 1; done
-  return 1
-}
 fwd_on() { in_hub forward list | grep -q "8083 .*now through $1"; }
 mtu_is() { [ "$(mtu_of "$1" "$2")" = "$3" ]; }
 # ov <python expression on the overview, as o>: true when it holds.

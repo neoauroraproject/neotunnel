@@ -81,6 +81,9 @@ func (s *State) usedPorts() map[int]bool {
 	ts, _ := s.Effective()
 	for _, t := range ts {
 		used[int(t.Port)] = true
+		for _, p := range t.RelayPorts {
+			used[int(p)] = true
+		}
 	}
 	for _, f := range s.Forwards {
 		for _, part := range strings.Split(f.Ports, ",") {

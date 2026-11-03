@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"neotunnel/internal/transport"
 )
 
 // Spec is one port a proxy-mode forward listens on.
@@ -51,7 +53,9 @@ type Manager struct {
 	run      map[string]*server
 	pools    map[Via]*pool
 	exit     *exitServer
-	exitPort int
+	exitPort int // where exits without ports of their own listen
+	listen   map[uint16]*net.TCPListener
+	hub      atomic.Pointer[transport.Hub]
 
 	Conns         atomic.Int64  // open TCP connections and UDP sessions
 	BadHandshakes atomic.Uint64 // relay connections that failed to authenticate
@@ -60,7 +64,16 @@ type Manager struct {
 func NewManager() *Manager { return newManager(RelayPort) }
 
 func newManager(exitPort int) *Manager {
-	return &Manager{run: map[string]*server{}, pools: map[Via]*pool{}, exitPort: exitPort}
+	return &Manager{run: map[string]*server{}, pools: map[Via]*pool{}, exitPort: exitPort,
+		exit: newExitServer(), listen: map[uint16]*net.TCPListener{}}
+}
+
+// SetHub has the relays use h's connection tunnels: forwards over them
+// open streams on h's sessions, the streams the far ends open reach the
+// exits here, and the relay listeners take h's sessions.
+func (m *Manager) SetHub(h *transport.Hub) {
+	m.hub.Store(h)
+	h.SetHandler(m.serveSession)
 }
 
 type server struct {
@@ -77,7 +90,7 @@ func (m *Manager) Sync(specs []Spec) []error {
 	// Relay-mode forwards share one pool of ready connections per far end.
 	vias := map[Via]bool{}
 	for _, s := range specs {
-		if s.Via.Tunnel != "" {
+		if s.Via.Tunnel != "" && s.Via.Session == "" {
 			vias[s.Via] = true
 		}
 	}
@@ -141,7 +154,7 @@ func (m *Manager) serveTCP(s Spec) (*server, error) {
 // serveStream serves a relay-mode forward (see stream.go).
 func (m *Manager) serveStream(s Spec) (*server, error) {
 	p := m.pools[s.Via]
-	if p == nil {
+	if p == nil && s.Via.Session == "" {
 		var err error
 		if p, err = newPool(s.Via); err != nil {
 			return nil, err

@@ -59,6 +59,21 @@ type Store struct {
 	series map[string]*Series
 	path   string
 	dirty  bool
+	now    Pressure // the latest reading, not part of the history
+}
+
+// SetPressure keeps the latest reading of where the CPU goes.
+func (s *Store) SetPressure(p Pressure) {
+	s.mu.Lock()
+	s.now = p
+	s.mu.Unlock()
+}
+
+// Pressure is the latest reading (zero before the first).
+func (s *Store) Pressure() Pressure {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.now
 }
 
 func path() string { return filepath.Join(config.Dir, "metrics.gob.gz") }
@@ -197,6 +212,8 @@ var ranges = map[string]struct {
 	tier int
 	span time.Duration
 }{
+	"10m": {0, 10 * time.Minute},
+	"30m": {0, 30 * time.Minute},
 	"1h":  {0, time.Hour},
 	"6h":  {1, 6 * time.Hour},
 	"24h": {1, 24 * time.Hour},

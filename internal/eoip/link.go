@@ -48,8 +48,11 @@ func (c Config) mac() net.HardwareAddr {
 }
 
 const (
-	batch   = 64  // packets per receive
-	maxSegs = 128 // frames one super-frame is cut into, at most
+	batch = 64 // packets per receive
+	// groBatch is the receives in a batch when the kernel merges datagrams:
+	// each can hold a full 64 KB burst, so fewer are needed.
+	groBatch = 16
+	maxSegs  = 128 // frames one super-frame is cut into, at most
 	// maxPacket is the largest packet received: a jumbo frame (the
 	// largest MTU is 9000), its EoIP header and an outer IP header.
 	maxPacket = 9216 + 64
@@ -63,6 +66,10 @@ type carrier interface {
 	// readBatch receives up to len(bufs) packets and sets pkts[i] to the
 	// EoIP packet in bufs[i], or nil for one to ignore.
 	readBatch(bufs, pkts [][]byte) (int, error)
+	// enableGRO lets the kernel merge a burst into one receive, when it can;
+	// segment then tells the size of the packets merged in pkts[i].
+	enableGRO() bool
+	segment(i int) int
 	writeBatch(ps [][]byte) error
 	write(p []byte) error
 	Close() error
@@ -120,6 +127,9 @@ func (r *rawCarrier) readBatch(bufs, pkts [][]byte) (int, error) {
 	return n, err
 }
 
+func (r *rawCarrier) enableGRO() bool { return false }
+func (r *rawCarrier) segment(int) int { return 0 }
+
 // The socket is connected: no destination.
 func (r *rawCarrier) writeBatch(ps [][]byte) error { return r.w.Write(ps, netip.AddrPort{}, !r.v4) }
 func (r *rawCarrier) write(p []byte) error         { _, err := r.conn.Write(p); return err }
@@ -165,6 +175,9 @@ func (u *udpCarrier) readBatch(bufs, pkts [][]byte) (int, error) {
 	}
 	return n, err
 }
+
+func (u *udpCarrier) enableGRO() bool   { return u.r.EnableGRO() }
+func (u *udpCarrier) segment(i int) int { return u.r.Segment(i) }
 
 // writeBatch sends with UDP GSO when the packets are the same size (the
 // pieces of one super-frame), else with one sendmmsg.
@@ -223,6 +236,14 @@ func Start(c Config) (*Link, error) {
 	)
 	if c.Port == 0 {
 		car, err = dialRaw(c)
+		if err == nil && c.framing() == framingGRE {
+			// Kernel GRE tunnels to the same server share this socket's
+			// traffic: without this, each of their packets is copied up here.
+			// Only a cost saved; inbound still checks every packet.
+			if ferr := filterGRE(car.(*rawCarrier).conn, c.ID); ferr != nil {
+				log.Printf("eoip %s: socket filter: %v", c.Name, ferr)
+			}
+		}
 	} else {
 		car, err = listenUDP(c)
 	}
@@ -343,9 +364,13 @@ func (l *Link) outbound() {
 // one super-frame.
 func (l *Link) inbound() {
 	defer l.wg.Done()
-	full, bufs, pkts := make([][]byte, batch), make([][]byte, batch), make([][]byte, batch)
+	n, size := batch, maxPacket
+	if l.car.enableGRO() {
+		n, size = groBatch, 65535
+	}
+	full, bufs, pkts := make([][]byte, n), make([][]byte, n), make([][]byte, n)
 	for i := range full {
-		full[i] = make([]byte, headroom+maxPacket)
+		full[i] = make([]byte, headroom+size)
 		bufs[i] = full[i][headroom:]
 	}
 	// Merged segments are not checked again by the kernel, and EoIP has no
@@ -365,21 +390,30 @@ func (l *Link) inbound() {
 				l.BadPackets.Add(1)
 				continue
 			}
-			id, frame, err := l.fr.parse(pkts[i])
-			if err != nil || id != l.cfg.ID {
-				// Other GRE traffic (kernel tunnels, other EoIP ids) shares the socket.
-				l.BadPackets.Add(1)
-				continue
+			seg := l.car.segment(i)
+			if seg == 0 {
+				seg = max(len(pkts[i]), 1)
 			}
-			if len(frame) == 0 {
-				continue
+			for p := 0; p < max(len(pkts[i]), 1); p += seg {
+				id, frame, err := l.fr.parse(pkts[i][p:min(p+seg, len(pkts[i]))])
+				if err != nil || id != l.cfg.ID {
+					// Other GRE traffic (kernel tunnels, other EoIP ids) shares the socket.
+					l.BadPackets.Add(1)
+					continue
+				}
+				if len(frame) == 0 {
+					continue
+				}
+				if !l.vnet {
+					l.tap.Write(frame)
+					continue
+				}
+				// The header goes in the space in front of the frame: its own
+				// EoIP header and, in a merged burst, the end of the packet
+				// before it, which has gone out by then.
+				off := cap(full[i]) - cap(frame) // where frame starts in full[i]
+				gro.Add(full[i][off-offload.HdrLen : off+len(frame)])
 			}
-			if !l.vnet {
-				l.tap.Write(frame)
-				continue
-			}
-			off := cap(full[i]) - cap(frame) // where frame starts in full[i]
-			gro.Add(full[i][off-offload.HdrLen : off+len(frame)])
 		}
 		if l.vnet {
 			gro.Flush(write)

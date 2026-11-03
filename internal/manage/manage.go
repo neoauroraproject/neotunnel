@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/netip"
 	"os"
 	"regexp"
@@ -22,6 +23,7 @@ import (
 	"neotunnel/internal/forward"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/service"
+	"neotunnel/internal/traffic"
 )
 
 // PeerSync is the outcome of pushing a change to one peer.
@@ -43,6 +45,14 @@ type Change struct {
 // Commit saves fn's change (bumping the revision), applies it here and pushes
 // it to peers.
 func Commit(peers []string, fn func(*config.State) error) (*config.State, Change, error) {
+	return commit(peers, fn, "")
+}
+
+// commit is Commit; rollback names the history entry a rollback goes back
+// to ("" = not a rollback).
+func commit(peers []string, fn func(*config.State) error, rollback string) (*config.State, Change, error) {
+	var was config.Network
+	var diffs []config.Diff
 	st, err := config.Update(func(s *config.State) error {
 		// Peers whose own configuration this change leaves alone stay in
 		// sync: the revision is global, but they have nothing new to apply.
@@ -52,9 +62,14 @@ func Commit(peers []string, fn func(*config.State) error) (*config.State, Change
 				before[p.Name] = peerConfig(s, p.Name)
 			}
 		}
+		// What the network was, for the history; a copy, since fn may
+		// change the slices in place.
+		b, _ := json.Marshal(config.NetworkOf(s))
+		json.Unmarshal(b, &was)
 		if err := fn(s); err != nil {
 			return err
 		}
+		diffs = config.Diffs(was, config.NetworkOf(s))
 		s.Revision++
 		for i := range s.Peers {
 			p := &s.Peers[i]
@@ -66,6 +81,9 @@ func Commit(peers []string, fn func(*config.State) error) (*config.State, Change
 	})
 	if err != nil {
 		return nil, Change{}, err
+	}
+	if _, err := config.Record(was, st.Revision, diffs, rollback); err != nil {
+		log.Printf("history: %v", err)
 	}
 	var ch Change
 	for _, e := range engine.Apply(st).Errors {
@@ -260,6 +278,9 @@ type ForwardRequest struct {
 	// a list, separated by commas, for callers that don't give Backups.
 	Backups []string `json:"backups,omitempty"`
 	Backup  string   `json:"backup,omitempty"`
+	// Best runs the forward on whichever of its tunnels has the best loss
+	// and ping (see config.Forward).
+	Best bool `json:"best,omitempty"`
 	// Listen and Auth are a socks forward's address ("" = 127.0.0.1) and
 	// "user:password" ("" = none; required off loopback).
 	Listen string `json:"listen,omitempty"`
@@ -297,6 +318,9 @@ func (r *ForwardRequest) check(st *config.State) error {
 	if !ok {
 		return fmt.Errorf("unknown tunnel %q", r.Tunnel)
 	}
+	if t.IsStream() && r.Mode != config.ForwardRelay && r.Mode != config.ForwardSocks {
+		return fmt.Errorf("%s is a connection tunnel: it carries relay and proxy forwards only (no inner address for nat)", t.Name)
+	}
 	if r.Mode == config.ForwardTransparent && t.Sides[1].Node == "" {
 		return fmt.Errorf("transparent forwarding needs NeoTunnel on the far end to route replies back")
 	}
@@ -323,6 +347,9 @@ func (r *ForwardRequest) check(st *config.State) error {
 		}
 		if err := checkBackup(st, *t, r.Backups[i]); err != nil {
 			return err
+		}
+		if b, _ := st.Tunnel(r.Backups[i]); b.IsStream() && r.Mode != config.ForwardRelay && r.Mode != config.ForwardSocks {
+			return fmt.Errorf("backup %s is a connection tunnel: it carries relay and proxy forwards only", r.Backups[i])
 		}
 	}
 	return nil
@@ -402,17 +429,17 @@ func AddForward(r ForwardRequest) (Change, error) {
 		if !ok {
 			return fmt.Errorf("unknown tunnel %q", r.Tunnel)
 		}
-		relaySecret(t, r.Mode)
+		relaySecret(s, t, r.Mode)
 		for _, n := range r.Backups {
 			if b, ok := s.Tunnel(n); ok {
-				relaySecret(b, r.Mode)
+				relaySecret(s, b, r.Mode)
 			}
 		}
 		if err := portsFree(s, r.Ports, r.Proto, ""); err != nil {
 			return err
 		}
 		f := config.Forward{Node: s.Self, Tunnel: r.Tunnel, Proto: r.Proto, Ports: r.Ports,
-			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Listen: r.Listen, Auth: r.Auth}
+			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Listen: r.Listen, Auth: r.Auth, Best: r.Best}
 		f.SetBackups(r.Backups)
 		s.Forwards = append(s.Forwards, f)
 		return nil
@@ -448,23 +475,26 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 			}
 		}
 	}
+	var wasKey, nowKey string
 	_, ch, err := Commit(peers, func(s *config.State) error {
 		for i, f := range s.Forwards {
 			if f.Node == s.Self && f.Tunnel == r.WasTunnel && f.Ports == r.WasPorts {
 				if t, ok := s.Tunnel(r.Tunnel); ok {
-					relaySecret(t, r.Mode)
+					relaySecret(s, t, r.Mode)
 				}
 				for _, n := range r.Backups {
 					if b, ok := s.Tunnel(n); ok {
-						relaySecret(b, r.Mode)
+						relaySecret(s, b, r.Mode)
 					}
 				}
 				was := f.PortKey()
+				wasKey = was
 				f.Tunnel, f.Ports = r.Tunnel, r.Ports
 				f.Proto, f.To, f.Mode, f.ProxyVersion = r.Proto, r.To, r.Mode, r.ProxyVersion
 				f.SetBackups(r.Backups)
-				f.Listen, f.Auth = r.Listen, r.Auth
+				f.Listen, f.Auth, f.Best = r.Listen, r.Auth, r.Best
 				s.Forwards[i] = f
+				nowKey = f.PortKey()
 				// The port keeps its place in the list under its new key.
 				if at := slices.Index(s.PortOrder, was); at >= 0 {
 					s.PortOrder[at] = f.PortKey()
@@ -474,15 +504,89 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 		}
 		return fmt.Errorf("no forward of %s on %s", r.WasPorts, r.WasTunnel)
 	})
+	if err == nil && wasKey != "" && wasKey != nowKey {
+		// The port's traffic, and a buyer's quota period, go with it.
+		if err := traffic.RequestRename(traffic.Port+wasKey, traffic.Port+nowKey); err != nil {
+			log.Printf("keep the traffic of port %s: %v", wasKey, err)
+		}
+	}
 	return ch, err
 }
 
 // relaySecret gives a tunnel the secret its relay forwards' keys come from
 // (tunnels that encrypt nothing have none).
-func relaySecret(t *config.Tunnel, mode string) {
-	if (mode == config.ForwardRelay || mode == config.ForwardSocks) && t.Secret == "" {
+// It also gives the tunnel relay ports of its own when the far server's
+// version takes them, so its relay doesn't go to the fixed 7712.
+func relaySecret(s *config.State, t *config.Tunnel, mode string) {
+	if mode != config.ForwardRelay && mode != config.ForwardSocks {
+		return
+	}
+	if t.Secret == "" {
 		t.Secret = config.NewSecret()
 	}
+	if !t.IsStream() && takesRelayPorts(s, *t) {
+		s.EnsureRelayPorts(t)
+	}
+}
+
+// takesRelayPorts reports whether t's far server listens on a tunnel's own
+// relay ports (a version that has them).
+func takesRelayPorts(s *config.State, t config.Tunnel) bool {
+	me, ok := t.SideOf(s.Self)
+	if !ok {
+		return false
+	}
+	p, ok := s.Peer(t.Sides[1-me].Node)
+	return ok && p.StreamTunnels
+}
+
+// EnsureRelayPorts moves the relays of this server's tunnels off the fixed
+// port 7712: each tunnel whose relay or proxy forwards use it, and whose
+// far server's version can, gets random ports of its own. It returns the
+// tunnels it changed (none: nothing was saved).
+func EnsureRelayPorts() ([]string, Change, error) {
+	st, err := Node()
+	if err != nil {
+		return nil, Change{}, err
+	}
+	need := func(s *config.State) []int {
+		used := map[string]bool{}
+		for _, f := range s.Forwards {
+			if f.Node == s.Self && (f.ModeOf() == config.ForwardRelay || f.ModeOf() == config.ForwardSocks) {
+				for _, n := range f.Paths() {
+					used[n] = true
+				}
+			}
+		}
+		if f, ok := s.FetchActive(); ok {
+			used[f.Tunnel] = true
+		}
+		var out []int
+		for i, t := range s.Tunnels {
+			if used[t.Name] && !t.IsStream() && t.Secret != "" && len(t.RelayPorts) == 0 && takesRelayPorts(s, t) {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
+	idx := need(st)
+	if len(idx) == 0 {
+		return nil, Change{}, nil
+	}
+	var peers, names []string
+	for _, i := range idx {
+		peers = append(peers, st.PeersOf(st.Tunnels[i])...)
+	}
+	_, ch, err := Commit(peers, func(s *config.State) error {
+		names = nil
+		for _, i := range need(s) {
+			if s.EnsureRelayPorts(&s.Tunnels[i]) {
+				names = append(names, s.Tunnels[i].Name)
+			}
+		}
+		return nil
+	})
+	return names, ch, err
 }
 
 // portsFreeExcept checks forward i against the others on this node.

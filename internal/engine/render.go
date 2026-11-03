@@ -62,12 +62,15 @@ type LinkSpec struct {
 	Encrypt   string `json:"encrypt,omitempty"` // IPsec cipher on the outer packets
 	Cipher    string `json:"cipher,omitempty"`  // user-space stream cipher (TCP)
 	Padding   int    `json:"padding,omitempty"`
+	ObfsAES   bool   `json:"obfs_aes,omitempty"`
 	Keepalive int    `json:"keepalive,omitempty"`
 	PeerKey   string `json:"peer_key,omitempty"`
 	Userspace bool   `json:"userspace,omitempty"`
 	// RateMbit shapes what this side sends (0 = no limit). It is applied
 	// in place, so it is not part of Hash.
 	RateMbit int `json:"rate_mbit,omitempty"`
+	// QueueMbit is the smart queue's rate (0 = none); applied in place.
+	QueueMbit int `json:"queue_mbit,omitempty"`
 	// Profile is the stack's speed profile (see config.ProfileMax); applied
 	// in place, so not part of Hash.
 	Profile string `json:"profile,omitempty"`
@@ -230,6 +233,14 @@ func Active(ts []config.Tunnel) []config.Tunnel {
 }
 
 func RenderTunnels(isSelf func(string) bool, ts []config.Tunnel, resolve Resolver) (specs []LinkSpec, errs []error) {
+	// Connection tunnels have no link (see StreamSpecs).
+	var links []config.Tunnel
+	for _, t := range ts {
+		if !t.IsStream() {
+			links = append(links, t)
+		}
+	}
+	ts = links
 	byName := map[string]config.Tunnel{}
 	for _, t := range ts {
 		if _, dup := byName[t.Name]; dup {
@@ -375,10 +386,12 @@ func renderOne(isSelf func(string) bool, t config.Tunnel, byName map[string]conf
 		Side:      me,
 		Secret:    t.Secret,
 		Padding:   t.Padding,
+		ObfsAES:   t.ObfsAES,
 		Keepalive: t.Keepalive,
 		PeerKey:   t.PeerKey,
 		Userspace: ki.Userspace,
 		RateMbit:  t.RateMbit,
+		QueueMbit: t.QueueMbit,
 	}
 	if parent != nil {
 		s.Parent = parent.Name
@@ -511,6 +524,9 @@ func setLanes(s *LinkSpec, t config.Tunnel, n int, keyless bool) error {
 		// Each lane shapes its own share of the cap.
 		s.RateMbit = (s.RateMbit + n - 1) / n
 	}
+	if s.QueueMbit > 0 {
+		s.QueueMbit = (s.QueueMbit + n - 1) / n
+	}
 	for i, p := range s.Addrs {
 		far, _ := config.Inner(p.Masked().String(), 1-s.Side)
 		s.Far = append(s.Far, far.Addr())
@@ -560,6 +576,9 @@ func activeForwards(ts []config.Tunnel, fs []config.Forward) []config.Forward {
 // TunnelState is a tunnel's live state with the counters of all its lanes
 // added up (lane 0's state and MTU otherwise).
 func TunnelState(tunnel string) LinkState {
+	if s, ok := StreamState(tunnel); ok {
+		return s
+	}
 	s := State(Ifname(tunnel))
 	for i := 1; i < config.MaxLanes && s.Exists; i++ {
 		l := State(LaneName(tunnel, i))

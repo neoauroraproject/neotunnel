@@ -56,8 +56,9 @@ func TestLoopbackFrames(t *testing.T) {
 			t.Errorf("over %s: no frame reached the far TAP", lo)
 		}
 		// On loopback c also hears itself, so check that it turned the
-		// others' packets away rather than that its TAP stayed silent.
-		if other.BadPackets.Load() == 0 {
+		// others' packets away rather than that its TAP stayed silent. Over
+		// IPv4 a filter on the socket does that before they get here.
+		if addr.Is6() && other.BadPackets.Load() == 0 {
 			t.Errorf("over %s: a link with another tunnel id took the others' packets", lo)
 		}
 		if a.cfg.framing() != map[bool]framing{true: framingEtherIP, false: framingGRE}[addr.Is6()] {

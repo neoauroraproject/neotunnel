@@ -27,15 +27,26 @@ type Config struct {
 	Port      uint16         // where this end listens
 	Padding   int
 	Keepalive time.Duration // 0 = off
+	// AES uses AES-128-GCM instead of XChaCha20: both ends have AES
+	// instructions, and both must say the same (see package doc).
+	AES bool
 }
 
 const (
-	batch   = 64  // datagrams per receive
-	maxSegs = 128 // packets one super-packet is cut into, at most
+	batch = 64 // datagrams per receive
+	// groBatch is the receives in a batch when the kernel merges datagrams:
+	// each can hold a full 64 KB burst, so fewer are needed.
+	groBatch = 16
+	maxSegs  = 128 // packets one super-packet is cut into, at most
 	// maxDatagram is the largest datagram received (the largest inner MTU
 	// is 9000).
 	maxDatagram = 9216 + Overhead + 255
 )
+
+// useGRO lets the kernel merge a burst of datagrams into one receive, which
+// costs far less than one trip up its network stack each. A variable for the
+// benchmark (see TestBenchEnd).
+var useGRO = true
 
 // openTUN opens the interface with a virtio-net header and offload, so it
 // hands out and takes TCP super-packets (see package offload); plain when
@@ -86,6 +97,16 @@ func Start(c Config) (*Link, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.AES {
+		s, err1 := config.DeriveKey(c.Secret, c.Tunnel, fmt.Sprintf("obfs-aes %d>%d", c.Side, 1-c.Side), 32)
+		r, err2 := config.DeriveKey(c.Secret, c.Tunnel, fmt.Sprintf("obfs-aes %d>%d", 1-c.Side, c.Side), 32)
+		if err := errors.Join(err1, err2); err != nil {
+			return nil, err
+		}
+		if err := cd.useAES(s, r); err != nil {
+			return nil, err
+		}
+	}
 	network := "udp4"
 	if c.Remote.Addr().Is6() {
 		network = "udp6"
@@ -94,8 +115,7 @@ func Start(c Config) (*Link, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on UDP %d: %w", c.Port, err)
 	}
-	conn.SetReadBuffer(4 << 20)
-	conn.SetWriteBuffer(4 << 20)
+	mmsg.SetBuffers(conn, mmsg.SocketBuffer)
 	r, err1 := mmsg.New(conn, batch)
 	w, err2 := mmsg.New(conn, maxSegs)
 	if err := errors.Join(err1, err2); err != nil {
@@ -237,9 +257,13 @@ func sameSize(b [][]byte) bool {
 // far end, so a NAT rebinding doesn't break us.
 func (l *Link) inbound() {
 	defer l.wg.Done()
-	bufs, sizes, from := make([][]byte, batch), make([]int, batch), make([]netip.AddrPort, batch)
+	n, size := batch, maxDatagram
+	if useGRO && l.r.EnableGRO() {
+		n, size = groBatch, 65535
+	}
+	bufs, sizes, from := make([][]byte, n), make([]int, n), make([]netip.AddrPort, n)
 	for i := range bufs {
-		bufs[i] = make([]byte, maxDatagram)
+		bufs[i] = make([]byte, size)
 	}
 	off := nonceLen + headerLen
 	var gro offload.Coalescer
@@ -258,19 +282,26 @@ func (l *Link) inbound() {
 				l.BadDatagrams.Add(1)
 				continue
 			}
-			typ, pkt, err := l.codec.open(bufs[i][:sizes[i]])
-			if err != nil {
-				l.BadDatagrams.Add(1)
-				continue
+			seg := l.r.Segment(i)
+			if seg == 0 {
+				seg = sizes[i]
 			}
-			peer = from[i]
-			if typ != typeData || len(pkt) == 0 {
-				continue
-			}
-			if l.vnet {
-				gro.Add(bufs[i][off-offload.HdrLen : off+len(pkt)])
-			} else {
-				l.tun.Write(pkt)
+			for p := 0; p < sizes[i]; p += seg {
+				d := bufs[i][p:min(p+seg, sizes[i])]
+				typ, pkt, err := l.codec.open(d)
+				if err != nil {
+					l.BadDatagrams.Add(1)
+					continue
+				}
+				peer = from[i]
+				if typ != typeData || len(pkt) == 0 {
+					continue
+				}
+				if l.vnet {
+					gro.Add(d[off-offload.HdrLen : off+len(pkt)])
+				} else {
+					l.tun.Write(pkt)
+				}
 			}
 		}
 		if l.vnet {

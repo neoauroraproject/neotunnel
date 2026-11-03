@@ -9,6 +9,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"neotunnel/internal/mmsg"
 	"neotunnel/internal/tun"
 )
 
@@ -57,6 +58,33 @@ func openTAPFlags(name string, mac net.HardwareAddr, flags uint16) (*os.File, er
 	return os.NewFile(uintptr(fd), name), nil
 }
 
+// filterGRE lets the kernel hand a raw IPv4 GRE socket only EoIP packets of
+// this tunnel id, from the IP header on.
+func filterGRE(conn syscall.Conn, id uint16) error {
+	rc, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	le := uint32(id>>8) | uint32(id&0xff)<<8 // the id goes little-endian in the header
+	prog := []unix.SockFilter{
+		{Code: unix.BPF_LDX | unix.BPF_B | unix.BPF_MSH, K: 0}, // X = IP header length
+		{Code: unix.BPF_LD | unix.BPF_H | unix.BPF_IND, K: 2},  // GRE protocol
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 2, K: greProto},
+		{Code: unix.BPF_LD | unix.BPF_H | unix.BPF_IND, K: 6}, // tunnel id
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: le},
+		{Code: unix.BPF_RET | unix.BPF_K, K: 0},          // drop
+		{Code: unix.BPF_RET | unix.BPF_K, K: 0xffffffff}, // keep
+	}
+	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
+	var serr error
+	if err := rc.Control(func(fd uintptr) {
+		serr = unix.SetsockoptSockFprog(int(fd), unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &fprog)
+	}); err != nil {
+		return err
+	}
+	return serr
+}
+
 // tune sets the outer packets' TTL, DSCP and Don't-Fragment behavior.
 func tune(car carrier, c Config) error {
 	var sc syscall.Conn
@@ -86,6 +114,7 @@ func tune(car carrier, c Config) error {
 	if c.NoDF {
 		pmtu = unix.IP_PMTUDISC_DONT
 	}
+	mmsg.SetBuffers(sc, mmsg.SocketBuffer)
 	err = rc.Control(func(fd uintptr) {
 		if c.Remote.Is6() {
 			set(fd, unix.IPPROTO_IPV6, unix.IPV6_UNICAST_HOPS, ttl)
@@ -96,8 +125,6 @@ func tune(car carrier, c Config) error {
 			set(fd, unix.IPPROTO_IP, unix.IP_TOS, tos)
 			set(fd, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, pmtu)
 		}
-		unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, 4<<20)
-		unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, 4<<20)
 	})
 	if err != nil {
 		return err

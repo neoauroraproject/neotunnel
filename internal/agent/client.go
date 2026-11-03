@@ -20,6 +20,7 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
+	"neotunnel/internal/mtr"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/version"
 )
@@ -327,6 +328,14 @@ func (c *Client) ExcludeTraffic(ctx context.Context, tunnel string, d traffic.Pa
 // this call answer 404.
 func (c *Client) Restart(ctx context.Context, tunnels []string) error {
 	return c.do(ctx, "POST", "/v1/restart", RestartRequest{Tunnels: tunnels}, nil, nil)
+}
+
+// MTR asks the peer to trace the path to target. Peers older than this
+// call answer ErrUnsupported.
+func (c *Client) MTR(ctx context.Context, target string, rounds int) (mtr.Result, error) {
+	var r mtr.Result
+	err := c.do(ctx, "POST", "/v1/mtr", MTRRequest{Target: target, Rounds: rounds}, &r, nil)
+	return r, err
 }
 
 // ErrUnsupported is returned for calls the peer's version doesn't have.

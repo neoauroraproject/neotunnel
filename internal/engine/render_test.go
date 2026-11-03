@@ -343,7 +343,7 @@ func TestProfileCoversStack(t *testing.T) {
 
 func TestLanes(t *testing.T) {
 	st := &config.State{Self: "hub"}
-	g := config.Tunnel{Name: "g1", Kind: config.KindGRE, Lanes: 4, Port: 5000, RateMbit: 100, Sides: [2]config.Side{
+	g := config.Tunnel{Name: "g1", Kind: config.KindGRE, Lanes: 4, Port: 5000, RateMbit: 100, QueueMbit: 90, Sides: [2]config.Side{
 		{Node: "hub", Endpoint: "198.51.100.1"}, {Node: "edge", Endpoint: "203.0.113.10"}}}
 	if err := st.Allocate(&g); err != nil {
 		t.Fatal(err)
@@ -361,8 +361,8 @@ func TestLanes(t *testing.T) {
 		if s.Name != LaneName("g1", i) || s.Lane != i || s.Lanes != 4 || s.Tunnel != "g1" {
 			t.Errorf("lane %d: %s lane %d/%d", i, s.Name, s.Lane, s.Lanes)
 		}
-		if !s.FOU || s.Port != 5000 || s.RateMbit != 25 {
-			t.Errorf("lane %d: fou %v port %d rate %d", i, s.FOU, s.Port, s.RateMbit)
+		if !s.FOU || s.Port != 5000 || s.RateMbit != 25 || s.QueueMbit != 23 {
+			t.Errorf("lane %d: fou %v port %d rate %d queue %d", i, s.FOU, s.Port, s.RateMbit, s.QueueMbit)
 		}
 		keys[s.Key] = true
 		if len(s.Addrs) != 2 || s.Addrs[0].String() != "10.77.0.1/32" || s.Addrs[1].Bits() != 128 {

@@ -86,7 +86,7 @@ func SetFetch(f config.Fetch) (Change, error) {
 	}
 	_, ch, err := Commit(peers, func(s *config.State) error {
 		if t, ok := s.Tunnel(f.Tunnel); ok && f.On {
-			relaySecret(t, config.ForwardSocks)
+			relaySecret(s, t, config.ForwardSocks)
 		}
 		s.Fetch = &f
 		return nil

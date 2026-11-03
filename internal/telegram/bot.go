@@ -318,6 +318,10 @@ func alertKind(e events.Event) string {
 		return "cipher"
 	case events.Quota:
 		return "quota"
+	case events.Port:
+		return "port"
+	case events.Upgrade:
+		return "upgrade"
 	case events.Guard:
 		return "guard"
 	}
@@ -415,6 +419,29 @@ func alertText(st *config.State, e events.Event) string {
 			return "📦 حجم ماهانه‌ی " + t + " تمام شد؛ تا ماه بعد خاموش است." + where
 		}
 		return "📦 حجم " + t + " آزاد شد و دوباره روشن است." + where
+	case events.Upgrade:
+		peer := "<b>" + esc(e.From) + "</b>"
+		switch {
+		case e.Detail == "ok":
+			return "⬆️ " + peer + " خودکار به " + esc(e.To) + " ارتقا یافت." + where
+		case e.Detail == "rolled back":
+			return "↩️ " + peer + " با " + esc(e.To) + " به سرور اصلی جواب نداد و خودش به نسخه‌ی قبلی برگشت." + where
+		}
+		return "⚠️ ارتقای خودکار " + peer + " به " + esc(e.To) + " نشد: " + esc(strings.TrimPrefix(e.Detail, "failed: ")) + "\nسرورهای دیگر تا نسخه‌ی بعد ارتقا نمی‌گیرند." + where
+	case events.Port:
+		port := "<code>" + esc(e.Detail) + "</code>"
+		if c := portCustomer(st, e.Tunnel, e.Detail); c != "" {
+			port += " (" + esc(c) + ")"
+		}
+		switch e.To {
+		case "open":
+			return "🟢 پورت فروخته‌ی " + port + " دوباره باز شد." + where
+		case "quota":
+			return "📦 حجم پورت " + port + " تمام شد؛ پورت بسته شد تا تمدید." + where
+		case "expired":
+			return "⏰ مدت پورت " + port + " تمام شد؛ پورت بسته شد تا تمدید." + where
+		}
+		return "⏸ پورت " + port + " متوقف شد." + where
 	case events.Guard:
 		return "🛡 فایروال خودش خاموش شد: بعد از روشن شدن، پنل تأیید نکرد که هنوز به سرور می‌رسد." + where
 	}
@@ -491,6 +518,53 @@ func forwardsOn(st *config.State, port int) []config.Forward {
 
 func fkey(f config.Forward) string { return f.Proto + "/" + f.Ports }
 
+// portCustomer is whom the forward of ports on tunnel is sold to.
+func portCustomer(st *config.State, tunnel, ports string) string {
+	for _, f := range st.Forwards {
+		if f.Tunnel == tunnel && f.Ports == ports && f.Plan != nil {
+			return f.Plan.Customer
+		}
+	}
+	return ""
+}
+
+// planText is what a sold port's buyer has left: its traffic this period,
+// out of the quota, and its days.
+func planText(f config.Forward, s traffic.Summary, now time.Time) string {
+	p := f.Plan
+	var sb strings.Builder
+	from := p.PeriodStart(now.Unix())
+	var used traffic.Pair
+	if s.PeriodFrom == from {
+		used = s.Period
+	}
+	n := float64(used.Rx + used.Tx)
+	if p.QuotaGB > 0 {
+		q := p.QuotaGB * (1 << 30)
+		fmt.Fprintf(&sb, "\nحجم: %s از %s · مانده %s", fmtBytes(n), fmtBytes(q), fmtBytes(max(0, q-n)))
+		if end := p.PeriodEnd(now.Unix()); end > 0 {
+			fmt.Fprintf(&sb, "\n<i>حجم از %s دوباره کامل می‌شود</i>", tehran(time.Unix(end, 0)).Format("2006-01-02"))
+		}
+	} else {
+		fmt.Fprintf(&sb, "\nمصرف این دوره: %s", fmtBytes(n))
+	}
+	if p.Expires > 0 {
+		left := time.Until(time.Unix(p.Expires, 0))
+		if left > 0 {
+			fmt.Fprintf(&sb, "\nاعتبار: %d روز مانده (تا %s)", int(left.Hours()/24)+1, tehran(time.Unix(p.Expires, 0)).Format("2006-01-02"))
+		} else {
+			sb.WriteString("\nاعتبار: تمام شده")
+		}
+	}
+	if p.RateMbit > 0 {
+		fmt.Fprintf(&sb, "\nسقف سرعت: %d Mbps", p.RateMbit)
+	}
+	if p.Paused {
+		sb.WriteString("\n⏸ متوقف است")
+	}
+	return sb.String()
+}
+
 // sums adds up the bytes of the metrics series keys over rng.
 func (b *bot) sums(rng string, keys []string) (rx, tx float64) {
 	v := b.deps.Metrics(rng, keys)
@@ -559,6 +633,11 @@ func (b *bot) portText(st *config.State, port int) string {
 	fmt.Fprintf(&sb, "از ابتدا: %s", pairText(float64(total.Rx), float64(total.Tx)))
 	if since > 0 {
 		fmt.Fprintf(&sb, "\n<i>شمارش از %s</i>", tehran(time.Unix(since, 0)).Format("2006-01-02"))
+	}
+	for _, f := range fs {
+		if f.Plan != nil {
+			fmt.Fprintf(&sb, "\n\n🏷 <b>اشتراک</b>%s", planText(f, sums[traffic.Port+fkey(f)], time.Now()))
+		}
 	}
 	return sb.String()
 }

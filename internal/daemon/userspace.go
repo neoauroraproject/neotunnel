@@ -20,15 +20,17 @@ import (
 	"neotunnel/internal/relay"
 	"neotunnel/internal/tcptun"
 	"neotunnel/internal/traffic"
+	"neotunnel/internal/transport"
 )
 
-// dataPlane is the daemon's engine.Userspace: NeoObfs, TCP and EoIP tunnels
-// and PROXY protocol relays.
+// dataPlane is the daemon's engine.Userspace: NeoObfs, TCP and EoIP tunnels,
+// connection tunnels and PROXY protocol relays.
 type dataPlane struct {
 	obfs  *obfs.Manager
 	tcp   *tcptun.Manager
 	eoip  *eoip.Manager
 	relay *relay.Manager
+	hub   *transport.Hub
 
 	benchMu sync.Mutex
 	bench   map[string]closer // temporary tunnels of speed tests
@@ -37,7 +39,10 @@ type dataPlane struct {
 type closer interface{ Close() }
 
 func newDataPlane() *dataPlane {
-	return &dataPlane{obfs: obfs.NewManager(), tcp: tcptun.NewManager(), eoip: eoip.NewManager(), relay: relay.NewManager(), bench: map[string]closer{}}
+	d := &dataPlane{obfs: obfs.NewManager(), tcp: tcptun.NewManager(), eoip: eoip.NewManager(), relay: relay.NewManager(),
+		hub: transport.NewHub(), bench: map[string]closer{}}
+	d.relay.SetHub(d.hub)
+	return d
 }
 
 // keepalive turns a spec's setting (0 default, -1 off) into a duration.
@@ -55,7 +60,7 @@ func obfsConfig(s engine.LinkSpec) obfs.Config {
 	return obfs.Config{
 		Name: s.Name, Tunnel: keyName(s), Secret: s.Secret, Side: s.Side,
 		Remote: netip.AddrPortFrom(s.Remote, s.Port), Port: s.Port,
-		Padding: s.Padding, Keepalive: keepalive(s, 25*time.Second),
+		Padding: s.Padding, Keepalive: keepalive(s, 25*time.Second), AES: s.ObfsAES,
 	}
 }
 
@@ -148,7 +153,20 @@ func (d *dataPlane) SyncRelays(specs []relay.Spec, exits []relay.Exit) []error {
 	return errs
 }
 
+func (d *dataPlane) SyncStreams(specs []transport.Spec) []error {
+	errs := d.hub.Sync(specs)
+	if err := d.relay.SyncListen(); err != nil {
+		errs = append(errs, err)
+	}
+	return errs
+}
+
+func (d *dataPlane) StreamState(tunnel string) (transport.State, bool) {
+	return d.hub.State(tunnel)
+}
+
 func (d *dataPlane) Close() {
+	d.hub.Close()
 	d.relay.Close()
 	d.eoip.Close()
 	d.obfs.Close()
@@ -178,6 +196,9 @@ func account(ctx context.Context, store *traffic.Store, ms *metrics.Store, tr *h
 		now := time.Now()
 		if name, ok := traffic.TakeResetRequest(); ok {
 			store.Reset(name, now)
+		}
+		for _, r := range traffic.TakeRenames() {
+			store.Rename(r[0], r[1])
 		}
 		h.begin(now)
 		// Speed tests leave the totals. Their requests are written after the
@@ -219,6 +240,7 @@ func account(ctx context.Context, store *traffic.Store, ms *metrics.Store, tr *h
 			store.Keep(names, now)
 			h.keep(names)
 			enforceQuotas(ts, store, now, changed)
+			enforcePlans(fs, store, now, changed)
 		}
 		if nic := engine.PublicIface(); nic != "" {
 			if ls := engine.State(nic); ls.Exists {

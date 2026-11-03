@@ -32,6 +32,7 @@ import (
 	"neotunnel/internal/telegram"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/web"
+	"neotunnel/internal/webhook"
 )
 
 const reconcileEvery = 15 * time.Second
@@ -97,7 +98,7 @@ func Run(ctx context.Context) error {
 	defer dp.Close()
 
 	tracker := health.New()
-	go monitorHealth(ctx, id, tracker, poke)
+	go monitorHealth(ctx, id, tracker, dp.hub, poke)
 
 	store := traffic.Open()
 	history := metrics.Open()
@@ -111,6 +112,8 @@ func Run(ctx context.Context) error {
 	go watchPeers(ctx, id)
 	go watchGuard(ctx)
 	go watchNet(ctx, poke)
+	webhook.Watch()
+	go nightly(ctx, id)
 	go telegram.Watch(ctx, telegram.Deps{
 		Summaries: func() map[string]traffic.Summary { return store.Summaries(time.Now()) },
 		Metrics:   func(rng string, keys []string) metrics.View { return history.Query(rng, keys, time.Now()) },
@@ -243,6 +246,39 @@ func fixClashes() {
 	}
 }
 
+// useObfsAES moves NeoObfs tunnels to AES-128-GCM on the first watch after a
+// peer was upgraded to a version that has it (see manage.UseObfsAES).
+func useObfsAES() {
+	st, err := config.Load()
+	if err != nil {
+		return
+	}
+	for _, p := range st.Peers {
+		if !p.Paired() || !p.ObfsAES {
+			continue
+		}
+		moved, ch, err := manage.UseObfsAES(p.Name)
+		switch {
+		case err != nil:
+			log.Printf("NeoObfs tunnels to %s: %v", p.Name, err)
+		case len(moved) > 0:
+			log.Printf("NeoObfs tunnels %v to %s now run on AES-GCM (%d error(s))", moved, p.Name, len(ch.Errors))
+		}
+	}
+}
+
+// useRelayPorts moves tunnels' relays off the fixed port 7712 once their
+// far servers' versions listen on a tunnel's own random ports.
+func useRelayPorts() {
+	moved, ch, err := manage.EnsureRelayPorts()
+	switch {
+	case err != nil:
+		log.Printf("relay ports: %v", err)
+	case len(moved) > 0:
+		log.Printf("tunnels %v: relays now on ports of their own instead of 7712 (%d error(s))", moved, len(ch.Errors))
+	}
+}
+
 // watchPeers keeps each peer's version and last contact current, so the
 // panel can tell which servers are reachable and which need an upgrade.
 func watchPeers(ctx context.Context, id *identity.Identity) {
@@ -256,6 +292,9 @@ func watchPeers(ctx context.Context, id *identity.Identity) {
 	for {
 		fleet.RefreshAll(ctx, id)
 		fixClashes()
+		useObfsAES()
+		useRelayPorts()
+		autoUpgrade(ctx, id)
 		select {
 		case <-ctx.Done():
 			return
