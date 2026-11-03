@@ -7,17 +7,21 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"neotunnel/internal/bench"
+	"neotunnel/internal/clients"
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
 	"neotunnel/internal/events"
 	"neotunnel/internal/failover"
 	"neotunnel/internal/firewall"
 	"neotunnel/internal/fleet"
+	"neotunnel/internal/forward"
+	"neotunnel/internal/guard"
 	"neotunnel/internal/health"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/manage"
@@ -120,6 +124,11 @@ func (l *Live) Overview() (Overview, error) {
 		Time:     time.Now().UnixMilli(),
 	}
 	readSystem(&ov.Node)
+	if l.History != nil {
+		if p := l.History.Pressure(); p.At > 0 {
+			ov.Node.Pressure = &p
+		}
+	}
 	if cc, _ := sysctl.Get("net.ipv4.tcp_congestion_control"); cc == "bbr" {
 		ov.Node.BBR = true
 	}
@@ -187,7 +196,7 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 			if !ok {
 				continue
 			}
-			ls := engine.State(engine.Ifname(n))
+			ls := engine.TunnelState(n)
 			v.Stack = append(v.Stack, LayerView{Name: n, Kind: string(bt.Kind), MTU: ls.MTU, Up: ls.Up})
 			if bt.Kind == config.KindObfs {
 				v.Obfs = true
@@ -202,6 +211,9 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 					v.Encrypt = "wireguard"
 				case bt.Kind == config.KindObfs:
 					v.Encrypt = "xchacha20-poly1305"
+					if bt.ObfsAES {
+						v.Encrypt = "aes-gcm-128"
+					}
 				}
 				if bt.MTUProbe {
 					if a, err := netip.ParseAddr(v.FarIP); err == nil {
@@ -215,6 +227,15 @@ func tunnelViews(st *config.State, sums map[string]traffic.Summary, hs map[strin
 		}
 		if t.Kind == config.KindVXLAN || t.Kind == config.KindGENEVE {
 			v.VNI = t.VNI
+		}
+		if t.IsStream() {
+			sv := &StreamView{Listens: me == t.Listener(), Ports: t.StreamPorts(), Want: t.StreamConns(), SNI: t.SNI}
+			if d, ok := engine.StreamDetail(t.Name); ok {
+				sv.Sessions, sv.Conns = d.Sessions, d.Streams
+			}
+			v.Stream = sv
+		} else {
+			v.RelayPorts = t.RelayPorts
 		}
 		if t.MasterName != "" {
 			v.Managed = true
@@ -311,15 +332,24 @@ func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardVi
 	out := []ForwardView{}
 	for _, f := range st.SortForwards(fs) {
 		v := ForwardView{Tunnel: f.Tunnel, Proto: f.Proto, Ports: f.Ports, To: f.To, Public: st.Address,
-			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Listen: f.Listen, Auth: f.Auth, Backup: f.Backup, Backups: f.Backups(), Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
+			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Listen: f.Listen, Auth: f.Auth, Backup: f.Backup, Backups: f.Backups(), Best: f.Best, Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
 		if p := paths[failover.Key(f)]; p != nil && f.Backup != "" {
 			v.Since, v.Switches = p.Since, p.Switches
 		}
 		if v.Mode == config.ForwardProxy && v.ProxyV == 0 {
 			v.ProxyV = 2
 		}
-		if s, ok := sums[traffic.Port+f.Proto+"/"+f.Ports]; ok {
-			v.Rx, v.Tx, v.Today, v.Month, v.Counted = s.Total.Rx, s.Total.Tx, s.Today, s.Month, s.Since
+		s, counted := sums[traffic.Port+f.Proto+"/"+f.Ports]
+		if counted {
+			v.Rx, v.Tx, v.Today, v.Month, v.Counted, v.LastMonth = s.Total.Rx, s.Total.Tx, s.Today, s.Month, s.Since, s.LastMonth
+		}
+		if p := f.Plan; p != nil {
+			now := time.Now().Unix()
+			v.Plan, v.Closed = p, forward.Closed(f.PortKey())
+			v.PeriodFrom, v.PeriodEnd = p.PeriodStart(now), p.PeriodEnd(now)
+			if counted && s.PeriodFrom == v.PeriodFrom {
+				v.Period = s.Period
+			}
 		}
 		if t, ok := tunnelByName(ts, f.Tunnel); ok {
 			me := 0
@@ -417,7 +447,13 @@ func (l *Live) UpgradePeer(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fleet.Upgrade(ctx, l.ID, st, name)
+	v, err := fleet.Upgrade(ctx, l.ID, st, name)
+	if err == nil {
+		// Right away rather than at the next watch: what the new version can
+		// do (NeoObfs on AES) is known from the status the upgrade just read.
+		manage.UseObfsAES(name)
+	}
+	return v, err
 }
 
 func (l *Live) CreateTunnel(req manage.TunnelRequest) (manage.Change, error) {
@@ -452,6 +488,59 @@ func (l *Live) UpdateForward(req manage.ForwardRequest) (manage.Change, error) {
 
 func (l *Live) RemoveForward(tunnel, ports string) (manage.Change, error) {
 	return manage.RemoveForward(tunnel, ports)
+}
+
+func (l *Live) SetPortPlan(tunnel, ports string, p *config.PortPlan, restart bool) (manage.Change, error) {
+	ch, err := manage.SetPortPlan(tunnel, ports, p, restart)
+	if err == nil && l.Reconcile != nil {
+		l.Reconcile() // the daemon opens or closes the port at once
+	}
+	return ch, err
+}
+
+func (l *Live) RenewPort(tunnel, ports string, days int, reset bool) (manage.Change, error) {
+	ch, err := manage.RenewPort(tunnel, ports, days, reset)
+	if err == nil && l.Reconcile != nil {
+		l.Reconcile()
+	}
+	return ch, err
+}
+
+func (l *Live) MTR(ctx context.Context, name string, rounds int) (manage.MTRReport, error) {
+	return manage.MTR(ctx, l.ID, name, rounds)
+}
+
+func (l *Live) PortClients(key string) (clients.Report, error) {
+	st, err := config.Load()
+	if err != nil {
+		return clients.Report{}, err
+	}
+	_, fs := st.Effective()
+	for _, f := range fs {
+		if f.PortKey() == key {
+			r := clients.Of(map[string]clients.Port{key: clients.PortOf(f.Proto, f.Ports, forward.Expand)})[key]
+			ir, _ := guard.IR()
+			for i, c := range r.Clients {
+				if a, err := netip.ParseAddr(c.IP); err == nil {
+					r.Clients[i].IR = slices.ContainsFunc(ir, func(p netip.Prefix) bool { return p.Contains(a) })
+				}
+			}
+			return r, nil
+		}
+	}
+	return clients.Report{}, fmt.Errorf("no forward of %s on this server", key)
+}
+
+func (l *Live) PortHistory(key string) (PortHistory, error) {
+	if l.Store == nil {
+		return PortHistory{}, fmt.Errorf("traffic accounting runs in the service")
+	}
+	sum, days, ok := l.Store.History(traffic.Port+key, time.Now())
+	if !ok {
+		return PortHistory{}, fmt.Errorf("no traffic recorded for port %s yet", key)
+	}
+	sum.Series = nil // the graphs have it
+	return PortHistory{Key: key, Summary: sum, Days: days}, nil
 }
 
 func (l *Live) SetNode(name, address string) error { return manage.SetNode(name, address) }
@@ -754,6 +843,11 @@ func (l *Live) Check(ctx context.Context, req manage.TunnelRequest, all bool, sp
 		// NeoObfs runs in the daemon, not as a temporary kernel tunnel.
 		return []bench.Result{{Name: "check", Mode: req.Mode, Status: "skipped",
 			Err: "NeoObfs is checked once created: use the tunnel's speed test"}}, nil
+	}
+	if m, err := manage.LookupMode(req.Mode); err == nil && m.Stream {
+		// Connection tunnels run in the daemon too, and carry no packets.
+		return []bench.Result{{Name: "check", Mode: req.Mode, Status: "skipped",
+			Err: "connection tunnels are checked once created: watch the tunnel's health"}}, nil
 	}
 	req.Name, req.Forward = "nwz", ""
 	_, defs, err := manage.PlanTunnel(st, req)

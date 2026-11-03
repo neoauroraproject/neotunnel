@@ -60,11 +60,18 @@ type Status struct {
 	Name     string `json:"name"`
 	Address6 string `json:"address6,omitempty"`
 	// AESNI: the CPU has AES instructions (nil from peers too old to say).
-	AESNI    *bool  `json:"aes_ni,omitempty"`
-	Version  string `json:"version"`
-	Arch     string `json:"arch"`
-	Revision uint64 `json:"revision"`
-	Uptime   int64  `json:"uptime_s"`
+	AESNI *bool `json:"aes_ni,omitempty"`
+	// ObfsAES: this version can run NeoObfs on AES-128-GCM.
+	ObfsAES bool `json:"obfs_aes,omitempty"`
+	// StreamTunnels: this version runs connection tunnels and relay ports.
+	StreamTunnels bool `json:"stream_tunnels,omitempty"`
+	// RolledBack is the last version an upgrade went back from, because
+	// it didn't answer its main server in time (see package upgrade).
+	RolledBack string `json:"rolled_back,omitempty"`
+	Version    string `json:"version"`
+	Arch       string `json:"arch"`
+	Revision   uint64 `json:"revision"`
+	Uptime     int64  `json:"uptime_s"`
 	// AgentPort is where this node's agent listens (older nodes: 7710, and
 	// they don't say); the master dials it from then on.
 	AgentPort int            `json:"agent_port,omitempty"`
@@ -100,6 +107,12 @@ type BenchDownRequest struct {
 type ExcludeRequest struct {
 	Tunnel string       `json:"tunnel"`
 	Bytes  traffic.Pair `json:"bytes"`
+}
+
+// MTRRequest asks a peer to trace the path to Target (see package mtr).
+type MTRRequest struct {
+	Target string `json:"target"`
+	Rounds int    `json:"rounds"`
 }
 
 // RestartRequest names the tunnels a peer takes down and up again.

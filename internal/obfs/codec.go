@@ -11,9 +11,19 @@
 // growing across restarts; the receiver rejects replays with a sliding
 // window. time (unix seconds) lets a freshly started receiver refuse
 // recorded old traffic.
+//
+// Tunnels between two servers with AES instructions use AES-128-GCM instead,
+// about three times as fast, in a datagram of the same size and just as random
+// to look at. GCM's nonce must never repeat, so it can't be random like
+// XChaCha20's at this many packets: it is seq and 32 random bits, and the first
+// 16 bytes of the datagram are those with 32 more random bits under a second
+// key, which the receiver takes them back out of:
+//
+//	AES(key2, seq(8) random(8)) | random(8) | GCM( type padlen seq time | packet | padding )
 package obfs
 
 import (
+	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
@@ -47,10 +57,12 @@ var errAuth = errors.New("not a datagram for this tunnel")
 // codec seals outgoing and opens incoming datagrams of one tunnel end.
 type codec struct {
 	send, recv cipher.AEAD
-	padding    int
-	seq        uint64
-	win        window
-	now        func() time.Time
+	// maskSend and maskRecv hide the nonces of AES-GCM (nil on XChaCha20).
+	maskSend, maskRecv cipher.Block
+	padding            int
+	seq                uint64
+	win                window
+	now                func() time.Time
 
 	// Nonces and padding sizes come from a ChaCha8 generator seeded from
 	// the system, not a system call per datagram.
@@ -81,6 +93,30 @@ func newCodec(sendKey, recvKey []byte, padding int) (*codec, error) {
 	return &codec{send: s, recv: r, padding: padding, seq: uint64(time.Now().UnixNano()), now: time.Now, rng: mrand.NewChaCha8(seed)}, nil
 }
 
+// useAES switches a codec to AES-128-GCM, with 32 bytes of key material for
+// each direction: the cipher's key, then the mask's.
+func (c *codec) useAES(sendKey, recvKey []byte) error {
+	var err error
+	if c.send, c.maskSend, err = aesKeys(sendKey); err != nil {
+		return err
+	}
+	c.recv, c.maskRecv, err = aesKeys(recvKey)
+	return err
+}
+
+func aesKeys(k []byte) (cipher.AEAD, cipher.Block, error) {
+	b, err := aes.NewCipher(k[:16])
+	if err != nil {
+		return nil, nil, err
+	}
+	gcm, err := cipher.NewGCM(b)
+	if err != nil {
+		return nil, nil, err
+	}
+	mask, err := aes.NewCipher(k[16:32])
+	return gcm, mask, err
+}
+
 // room is the buffer size seal needs for a packet of n bytes.
 func (c *codec) room(n int) int { return n + Overhead + c.padding }
 
@@ -96,11 +132,20 @@ func (c *codec) seal(dst []byte, typ byte, pkt []byte, ts uint32) []byte {
 	nonce := dst[:nonceLen]
 	c.random(nonce)
 	plain := dst[nonceLen : nonceLen+headerLen+len(pkt)+pad]
+	seq := atomic.AddUint64(&c.seq, 1)
 	plain[0], plain[1] = typ, byte(pad)
-	binary.BigEndian.PutUint64(plain[2:], atomic.AddUint64(&c.seq, 1))
+	binary.BigEndian.PutUint64(plain[2:], seq)
 	binary.BigEndian.PutUint32(plain[10:], ts)
 	copy(plain[headerLen:], pkt)
 	clear(plain[headerLen+len(pkt):])
+	if c.maskSend != nil {
+		binary.BigEndian.PutUint64(nonce, seq)
+		var gn [12]byte
+		copy(gn[:], nonce[:12])
+		c.maskSend.Encrypt(nonce[:16], nonce[:16])
+		out := c.send.Seal(plain[:0], gn[:], plain, nil)
+		return dst[:nonceLen+len(out)]
+	}
 	out := c.send.Seal(plain[:0], nonce, plain, nil)
 	return dst[:nonceLen+len(out)]
 }
@@ -111,7 +156,13 @@ func (c *codec) open(d []byte) (byte, []byte, error) {
 	if len(d) < Overhead {
 		return 0, nil, errAuth
 	}
-	plain, err := c.recv.Open(d[nonceLen:nonceLen], d[:nonceLen], d[nonceLen:], nil)
+	nonce := d[:nonceLen]
+	var block [16]byte
+	if c.maskRecv != nil {
+		c.maskRecv.Decrypt(block[:], d[:16])
+		nonce = block[:12]
+	}
+	plain, err := c.recv.Open(d[nonceLen:nonceLen], nonce, d[nonceLen:], nil)
 	if err != nil {
 		return 0, nil, errAuth
 	}

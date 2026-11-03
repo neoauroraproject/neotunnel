@@ -18,19 +18,24 @@ func streamRelays(st *config.State, f config.Forward, t config.Tunnel, byName ma
 		return nil, errors.New("the tunnel has no secret for relay mode; save the forward again")
 	}
 	me := sideOf(st, t)
-	exit, cipher, err := relayPeer(st, t, byName)
-	if err != nil {
-		return nil, err
-	}
 	ports := Expand(f.Ports)
 	if len(ports) > MaxRelayPorts {
 		return nil, fmt.Errorf("relay mode supports up to %d ports per forward", MaxRelayPorts)
 	}
-	via := relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Exit: netip.AddrPortFrom(exit, relay.RelayPort), Cipher: cipher, Pool: poolSize(t)}
-	for _, n := range []string{t.Net4, t.Net6} {
-		if far, ok := config.Inner(n, 1-me); ok && n != "" {
-			via.Inside = netip.AddrPortFrom(far.Addr(), relay.RelayPort)
-			break
+	var via relay.Via
+	if t.IsStream() {
+		// A connection tunnel carries each user on a stream of its sessions.
+		via = relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Session: t.Name}
+	} else {
+		exit, cipher, err := relayPeer(st, t, byName)
+		if err != nil {
+			return nil, err
+		}
+		rp := t.RelayPortsOf()
+		via = relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Exit: netip.AddrPortFrom(exit, rp[0]), Cipher: cipher, Pool: poolSize(t)}
+		copy(via.Ports[:], t.RelayPorts) // none: just RelayPort, as before
+		if far, ok := insideAddr(st, t, byName); ok {
+			via.Inside = netip.AddrPortFrom(far, rp[0])
 		}
 	}
 	var out []relay.Spec
@@ -53,15 +58,19 @@ func socksRelay(st *config.State, f config.Forward, t config.Tunnel, byName map[
 		return relay.Spec{}, errors.New("the tunnel has no secret for the proxy; save it again")
 	}
 	me := sideOf(st, t)
-	via := relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Cipher: tunnelCipher(t, byName), Pool: poolSize(t)}
-	for _, n := range []string{t.Net4, t.Net6} {
-		if far, ok := config.Inner(n, 1-me); ok && n != "" {
-			via.Exit = netip.AddrPortFrom(far.Addr(), relay.RelayPort)
-			break
+	var via relay.Via
+	if t.IsStream() {
+		via = relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Session: t.Name}
+	} else {
+		rp := t.RelayPortsOf()
+		via = relay.Via{Tunnel: t.KeyName(), Secret: t.Secret, Side: me, Cipher: tunnelCipher(t, byName), Pool: poolSize(t)}
+		copy(via.Ports[:], t.RelayPorts) // none: just RelayPort, as before
+		if far, ok := insideAddr(st, t, byName); ok {
+			via.Exit = netip.AddrPortFrom(far, rp[0])
 		}
-	}
-	if !via.Exit.IsValid() {
-		return relay.Spec{}, errors.New("the tunnel has no inner address")
+		if !via.Exit.IsValid() {
+			return relay.Spec{}, errors.New("the tunnel has no inner address")
+		}
 	}
 	listen := netip.AddrFrom4([4]byte{127, 0, 0, 1})
 	if f.Listen != "" {
@@ -127,7 +136,7 @@ func tunnelCipher(t config.Tunnel, byName map[string]config.Tunnel) string {
 
 // farAddrs are the addresses a tunnel's far node connects from: its public
 // one and its inner ones.
-func farAddrs(st *config.State, t config.Tunnel) []netip.Addr {
+func farAddrs(st *config.State, t config.Tunnel, byName map[string]config.Tunnel) []netip.Addr {
 	me := sideOf(st, t)
 	var out []netip.Addr
 	if a, err := netip.ParseAddr(t.Sides[1-me].Endpoint); err == nil {
@@ -138,7 +147,41 @@ func farAddrs(st *config.State, t config.Tunnel) []netip.Addr {
 			out = append(out, p.Addr())
 		}
 	}
+	if c, ok := sitCarrier(t, byName); ok {
+		if p, ok := config.Inner(c.Net6, 1-sideOf(st, c)); ok {
+			out = append(out, p.Addr())
+		}
+	}
 	return out
+}
+
+// insideAddr is the far node's address inside the tunnel for relay and
+// proxy connections. On 6to4 (IPv4 in IPv6 over a SIT carrier) it is the
+// carrier's IPv6 address: the connections still travel as protocol 41, but
+// inside one layer instead of two, which the kernel handles several times
+// faster (it can't batch packets through two tunnel layers, on sending or
+// receiving).
+func insideAddr(st *config.State, t config.Tunnel, byName map[string]config.Tunnel) (netip.Addr, bool) {
+	if c, ok := sitCarrier(t, byName); ok {
+		if p, ok := config.Inner(c.Net6, 1-sideOf(st, c)); ok {
+			return p.Addr(), true
+		}
+	}
+	for _, n := range []string{t.Net4, t.Net6} {
+		if far, ok := config.Inner(n, 1-sideOf(st, t)); ok && n != "" {
+			return far.Addr(), true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+// sitCarrier is the SIT tunnel right under t, with its IPv6 network.
+func sitCarrier(t config.Tunnel, byName map[string]config.Tunnel) (config.Tunnel, bool) {
+	c, ok := byName[t.Over]
+	if t.Over == "" || !ok || c.Kind != config.KindSIT || c.Net6 == "" {
+		return config.Tunnel{}, false
+	}
+	return c, true
 }
 
 func sideOf(st *config.State, t config.Tunnel) int {
@@ -189,7 +232,8 @@ func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit 
 			if !ok || t.Disabled || t.Secret == "" || t.Sides[1-sideOf(st, t)].Node != f.Node {
 				continue
 			}
-			e := relay.Exit{Tunnel: t.KeyName(), Secret: t.Secret, Side: sideOf(st, t), From: farAddrs(st, t)}
+			e := relay.Exit{Tunnel: t.KeyName(), Secret: t.Secret, Side: sideOf(st, t), From: farAddrs(st, t, byName),
+				Listen: t.RelayPorts, Session: t.IsStream()}
 			if f.ModeOf() == config.ForwardSocks {
 				e.Egress = true
 			} else if f.To != 0 {

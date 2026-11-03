@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"neotunnel/internal/relay"
+	"neotunnel/internal/transport"
 )
 
 // Userspace is the daemon's own data plane for what the kernel can't do:
@@ -17,6 +18,10 @@ type Userspace interface {
 	// interfaces, which Apply then configures like any other link).
 	SyncLinks(specs []LinkSpec) []error
 	SyncRelays(specs []relay.Spec, exits []relay.Exit) []error
+	// SyncStreams runs exactly these connection tunnels; StreamState
+	// reports one.
+	SyncStreams(specs []transport.Spec) []error
+	StreamState(tunnel string) (transport.State, bool)
 	// StartBench runs a temporary tunnel for a speed test until expiry or
 	// StopBench, whichever comes first.
 	StartBench(spec LinkSpec, expiry time.Time) error

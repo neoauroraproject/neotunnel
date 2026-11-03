@@ -140,6 +140,12 @@ type Defaults struct {
 	// AutoWait is how many minutes a tunnel on automatic encryption gets on
 	// each step before the next one (0 = 5); see daemon/autocrypt.go.
 	AutoWait int `json:"auto_wait,omitempty"`
+	// NoNightly turns off the light speed test of every tunnel each night
+	// (see daemon/nightly.go).
+	NoNightly bool `json:"no_nightly,omitempty"`
+	// NoAutoUpgrade keeps paired servers on their version when this one
+	// is upgraded (see daemon/autoupgrade.go).
+	NoAutoUpgrade bool `json:"no_auto_upgrade,omitempty"`
 }
 
 // D returns the defaults, never nil.
@@ -161,7 +167,37 @@ type Panel struct {
 	// "custom" (pasted in the panel) or "" (self-signed, opened by IP).
 	Domain string `json:"domain,omitempty"`
 	Cert   string `json:"cert,omitempty"`
+	// Tokens let programs use the panel's API without the password.
+	Tokens []APIToken `json:"tokens,omitempty"`
+	// Webhook is where the daemon posts its events (nil = nowhere).
+	Webhook *Webhook `json:"webhook,omitempty"`
 }
+
+// Webhook posts each event as JSON to URL, signed with Secret (HMAC-SHA256
+// of the body, in the X-NeoTunnel-Signature header as "sha256=<hex>").
+type Webhook struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
+}
+
+// APIToken lets a program call the panel's API ("Authorization: Bearer
+// <token>"). Only the token's hash is kept; the token is shown once.
+type APIToken struct {
+	ID      string `json:"id"` // public, the token's first characters
+	Name    string `json:"name"`
+	Hash    string `json:"hash"` // SHA-256 of the token, hex
+	Scope   string `json:"scope"`
+	Created int64  `json:"created"`
+}
+
+// What an API token may do: read (look only), ports (look, and manage
+// forwards and sold ports) or full (everything a token may: never the
+// panel's own settings, backups, tokens or secrets).
+const (
+	ScopeRead  = "read"
+	ScopePorts = "ports"
+	ScopeFull  = "full"
+)
 
 // Panel certificate sources.
 const (
@@ -207,7 +243,15 @@ type Peer struct {
 	// an IPv6 underlay.
 	Address6 string `json:"address6,omitempty"`
 	// AESNI is whether the peer's CPU has AES instructions, as it reports.
-	AESNI           *bool     `json:"aes_ni,omitempty"`
+	AESNI *bool `json:"aes_ni,omitempty"`
+	// ObfsAES: the peer's version can run NeoObfs on AES-128-GCM.
+	ObfsAES bool `json:"obfs_aes,omitempty"`
+	// StreamTunnels: the peer's version runs connection tunnels and takes
+	// relay connections on each tunnel's own ports (RelayPorts).
+	StreamTunnels bool `json:"stream_tunnels,omitempty"`
+	// RolledBack is the last version an upgrade of the peer went back from
+	// (it didn't answer in time); automatic upgrades skip it.
+	RolledBack      string    `json:"rolled_back,omitempty"`
 	AppliedRevision uint64    `json:"applied_revision,omitempty"`
 	LastSeen        time.Time `json:"last_seen,omitempty"`
 	// Busy and BusyPorts are what the peer reports taken there by tunnels
@@ -282,6 +326,9 @@ type Tunnel struct {
 	// of the bottom tunnel, or is a NeoObfs layer marked AutoLayer.
 	AutoEncrypt bool `json:"auto_encrypt,omitempty"`
 	AutoLayer   bool `json:"auto_layer,omitempty"`
+	// ObfsAES runs a NeoObfs tunnel on AES-128-GCM, chosen when both servers
+	// have AES instructions and the far one understands it.
+	ObfsAES bool `json:"obfs_aes,omitempty"`
 	// Padding adds up to this many random bytes to NeoObfs packets so their
 	// sizes don't reveal the traffic inside.
 	Padding int `json:"padding,omitempty"`
@@ -304,6 +351,10 @@ type Tunnel struct {
 	// side has counted this much this month, it takes the tunnel down until
 	// the month ends or the quota is raised.
 	QuotaGB float64 `json:"quota_gb,omitempty"`
+	// QueueMbit runs a smart queue (CAKE) at this rate on what each side
+	// sends, a little under the path's real speed, so ping stays low under
+	// load (0 = off).
+	QueueMbit int `json:"queue_mbit,omitempty"`
 	// Profile tunes the tunnel for its traffic: ProfileLean, ProfileMax, or
 	// "" for balanced. Set on the user-facing tunnel; it applies to every
 	// layer of its stack.
@@ -312,7 +363,83 @@ type Tunnel struct {
 	// same two servers (0 or 1 = one), each inner flow pinned to one lane,
 	// so the work spreads over CPU cores; see LaneKinds.
 	Lanes int `json:"lanes,omitempty"`
+
+	// RelayPorts are the TCP ports the far end accepts the tunnel's relay
+	// connections on, tried in order until one connects (none = 7712, as
+	// older versions do). On a connection tunnel they follow Port as the
+	// ports its listening side serves the tunnel's sessions on.
+	RelayPorts []uint16 `json:"relay_ports,omitempty"`
+	// Reverse makes a connection tunnel's side 0 (the server it was made
+	// on) listen and the far server connect to it, like FRP: for a path
+	// that only lets connections in toward side 0.
+	Reverse bool `json:"reverse,omitempty"`
+	// SNI is the server name a TLS connection tunnel sends ("" = none, as a
+	// browser does for an IP address).
+	SNI string `json:"sni,omitempty"`
+	// Conns is how many sessions a connection tunnel keeps open at once
+	// (0 = by profile); each user connection rides one of them.
+	Conns int `json:"conns,omitempty"`
 }
+
+// MaxRelayPorts is how many ports a tunnel's relay (or a connection
+// tunnel's listener) is tried on.
+const MaxRelayPorts = 3
+
+// LegacyRelayPort is the fixed relay port of versions before RelayPorts.
+const LegacyRelayPort = 7712
+
+// IsStream reports whether the tunnel is a connection tunnel.
+func (t Tunnel) IsStream() bool {
+	ki, err := LookupKind(t.Kind)
+	return err == nil && ki.Stream
+}
+
+// RelayPortsOf are the ports the tunnel's relay listener is tried on, in
+// order.
+func (t Tunnel) RelayPortsOf() []uint16 {
+	if len(t.RelayPorts) == 0 {
+		return []uint16{LegacyRelayPort}
+	}
+	return t.RelayPorts
+}
+
+// StreamPorts are the ports a connection tunnel's listening side serves
+// its sessions on, in the order the other side tries them: Port, then
+// RelayPorts, at most MaxRelayPorts.
+func (t Tunnel) StreamPorts() []uint16 {
+	var out []uint16
+	for _, p := range append([]uint16{t.Port}, t.RelayPorts...) {
+		if p != 0 && !slices.Contains(out, p) && len(out) < MaxRelayPorts {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Listener is the side of a connection tunnel that listens.
+func (t Tunnel) Listener() int {
+	if t.Reverse {
+		return 0
+	}
+	return 1
+}
+
+// StreamConns is how many sessions a connection tunnel keeps open.
+func (t Tunnel) StreamConns() int {
+	if t.Conns > 0 {
+		return min(t.Conns, MaxStreamConns)
+	}
+	switch t.Profile {
+	case ProfileLean:
+		return 2
+	case ProfileMax:
+		return 8
+	}
+	return 4
+}
+
+// MaxStreamConns caps Conns.
+const MaxStreamConns = 16
 
 // MaxLanes is the most lanes a tunnel can have (lane interfaces are named
 // nt-<name>.<n>, which must fit 15 characters).
@@ -410,6 +537,53 @@ type Forward struct {
 	// Fetch marks the socks forward a main server sends its peer for its
 	// downloads through the tunnel (see Fetch); it has no listener there.
 	Fetch bool `json:"fetch,omitempty"`
+	// Best runs a forward with backups on whichever of its tunnels has the
+	// best loss and ping, not only on the first one that works (see package
+	// failover).
+	Best bool `json:"best,omitempty"`
+	// Plan sells the port as a product: caps on speed, traffic, time and
+	// clients, which the node it listens on enforces (nil = none).
+	Plan *PortPlan `json:"plan,omitempty"`
+}
+
+// PortPlan is what a port's buyer gets. Zero values are no limit.
+type PortPlan struct {
+	// Customer is whom the port is for, a note for the seller.
+	Customer string `json:"customer,omitempty"`
+	// RateMbit caps each direction, all of the port's clients together.
+	RateMbit int `json:"rate_mbit,omitempty"`
+	// QuotaGB is download + upload in a period, then the port closes.
+	QuotaGB float64 `json:"quota_gb,omitempty"`
+	// Start is when the plan's current period began (unix seconds); the
+	// quota counts from there. ResetDays starts a new period that many days
+	// after the last one (0 = one period for the whole plan).
+	Start     int64 `json:"start,omitempty"`
+	ResetDays int   `json:"reset_days,omitempty"`
+	// Expires closes the port at that time (unix seconds).
+	Expires int64 `json:"expires,omitempty"`
+	// MaxConns caps the port's open connections, MaxIPs the client
+	// addresses using it at once (each address family on its own).
+	MaxConns int `json:"max_conns,omitempty"`
+	MaxIPs   int `json:"max_ips,omitempty"`
+	// Paused closes the port until it is turned back on.
+	Paused bool `json:"paused,omitempty"`
+}
+
+// PeriodStart is when the plan's period that holds now began.
+func (p PortPlan) PeriodStart(now int64) int64 {
+	if p.ResetDays <= 0 || now <= p.Start {
+		return p.Start
+	}
+	step := int64(p.ResetDays) * 86400
+	return p.Start + (now-p.Start)/step*step
+}
+
+// PeriodEnd is when that period ends (0 = with the plan).
+func (p PortPlan) PeriodEnd(now int64) int64 {
+	if p.ResetDays <= 0 {
+		return 0
+	}
+	return p.PeriodStart(now) + int64(p.ResetDays)*86400
 }
 
 // Backups lists the forward's backup tunnels, first choice first.
@@ -530,7 +704,11 @@ func (s *State) ForPeer(peer string) ([]Tunnel, []Forward) {
 		// The far end of a transparent forward must know about it to route
 		// replies back through the tunnel, and of a relay forward to accept
 		// its connections (a socks one too).
-		if f.Node == peer || ((f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay || f.ModeOf() == ForwardSocks) && slices.ContainsFunc(f.Paths(), func(n string) bool { return touches[n] })) {
+		if f.Node == peer {
+			fs = append(fs, f)
+		} else if (f.ModeOf() == ForwardTransparent || f.ModeOf() == ForwardRelay || f.ModeOf() == ForwardSocks) && slices.ContainsFunc(f.Paths(), func(n string) bool { return touches[n] }) {
+			// A sold port's plan is for the node it listens on alone.
+			f.Plan = nil
 			fs = append(fs, f)
 		}
 	}

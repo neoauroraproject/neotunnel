@@ -2,16 +2,21 @@ package web
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"neotunnel/internal/bench"
 	"neotunnel/internal/config"
+	"neotunnel/internal/events"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/speedlog"
+	"neotunnel/internal/webhook"
 )
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -146,6 +151,20 @@ func (s *Server) routes(m *http.ServeMux) {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
 		rep, err := b.ProbeMTU(ctx, r.PathValue("name"))
+		reply(w, rep, err)
+	}))
+
+	m.HandleFunc("GET /api/tunnels/{name}/nightly", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		es := speedlog.Of(r.PathValue("name"))
+		if es == nil {
+			es = []speedlog.Entry{}
+		}
+		writeJSON(w, http.StatusOK, es)
+	}))
+	m.HandleFunc("POST /api/tunnels/{name}/mtr", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		rep, err := b.MTR(ctx, r.PathValue("name"), 10)
 		reply(w, rep, err)
 	}))
 
@@ -291,6 +310,148 @@ func (s *Server) routes(m *http.ServeMux) {
 			return
 		}
 		s.change(w, r, "forward "+req.Ports+" on "+req.Tunnel, func() (manage.Change, error) { return b.UpdateForward(req) })
+	}))
+	m.HandleFunc("POST /api/forwards/plan", s.changing(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Tunnel  string           `json:"tunnel"`
+			Ports   string           `json:"ports"`
+			Plan    *config.PortPlan `json:"plan"`
+			Restart bool             `json:"restart"`
+		}
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		ch, err := b.SetPortPlan(req.Tunnel, req.Ports, req.Plan, req.Restart)
+		reply(w, ch, err)
+	}))
+	m.HandleFunc("POST /api/forwards/renew", s.changing(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Tunnel string `json:"tunnel"`
+			Ports  string `json:"ports"`
+			Days   int    `json:"days"`
+			Reset  bool   `json:"reset"`
+		}
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		ch, err := b.RenewPort(req.Tunnel, req.Ports, req.Days, req.Reset)
+		reply(w, ch, err)
+	}))
+	// The webhook's address and secret (the secret is shown to the owner,
+	// who has to give it to the receiver).
+	m.HandleFunc("GET /api/settings/webhook", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		st, err := config.Load()
+		var wh config.Webhook
+		if err == nil && st.Panel != nil && st.Panel.Webhook != nil {
+			wh = *st.Panel.Webhook
+		}
+		reply(w, wh, err)
+	}))
+	m.HandleFunc("POST /api/settings/webhook", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req config.Webhook
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		req.URL = strings.TrimSpace(req.URL)
+		if err := webhook.Check(req); err != nil {
+			fail(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, err := config.Update(func(s *config.State) error {
+			if s.Panel == nil {
+				return errors.New("the panel isn't set up")
+			}
+			if req.URL == "" {
+				s.Panel.Webhook = nil
+			} else {
+				s.Panel.Webhook = &req
+			}
+			return nil
+		})
+		reply(w, map[string]bool{"ok": true}, err)
+	}))
+	m.HandleFunc("POST /api/settings/webhook/test", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req config.Webhook
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		if err := webhook.Check(req); err != nil || req.URL == "" {
+			fail(w, http.StatusBadRequest, "give the webhook's address and secret first")
+			return
+		}
+		st, _ := config.Load()
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		err := webhook.Post(ctx, req, webhook.Payload{Node: st.Self, Test: true, Event: events.Event{At: time.Now().Unix(), Kind: "test"}})
+		reply(w, map[string]bool{"ok": true}, err)
+	}))
+	// The network's history: each change, with a rollback to before it.
+	m.HandleFunc("GET /api/history", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		h := config.History()
+		if h == nil {
+			h = []config.Snapshot{}
+		}
+		writeJSON(w, http.StatusOK, h)
+	}))
+	m.HandleFunc("POST /api/history/rollback", s.changing(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ ID string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		s.change(w, r, "rollback", func() (manage.Change, error) { return manage.Rollback(req.ID) })
+	}))
+	m.HandleFunc("GET /api/tokens", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		v, err := s.tok.views()
+		reply(w, v, err)
+	}))
+	m.HandleFunc("POST /api/tokens", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Name, Scope string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		tok, v, err := s.tok.add(req.Name, req.Scope)
+		reply(w, struct {
+			TokenView
+			Token string `json:"token"`
+		}{v, tok}, err)
+	}))
+	m.HandleFunc("POST /api/tokens/remove", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ ID string }
+		if readJSON(r, &req) != nil {
+			fail(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		reply(w, map[string]bool{"ok": true}, s.tok.remove(req.ID))
+	}))
+	m.HandleFunc("GET /api/forwards/clients", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		rep, err := b.PortClients(r.URL.Query().Get("key"))
+		reply(w, rep, err)
+	}))
+	m.HandleFunc("GET /api/forwards/history", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		h, err := b.PortHistory(r.URL.Query().Get("key"))
+		if err != nil || r.URL.Query().Get("format") != "csv" {
+			reply(w, h, err)
+			return
+		}
+		// For a spreadsheet: one day a row, bytes and gigabytes (the
+		// panel's, 2^30).
+		name := strings.NewReplacer("/", "-", ",", "_", " ", "").Replace(h.Key)
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="port-`+name+`-`+time.Now().Format("2006-01-02")+`.csv"`)
+		w.Header().Set("Cache-Control", "no-store")
+		cw := csv.NewWriter(w)
+		cw.Write([]string{"date", "download_bytes", "upload_bytes", "total_bytes", "download_gb", "upload_gb", "total_gb"})
+		gb := func(n uint64) string { return strconv.FormatFloat(float64(n)/(1<<30), 'f', 3, 64) }
+		for _, d := range h.Days {
+			cw.Write([]string{d.Date, strconv.FormatUint(d.Rx, 10), strconv.FormatUint(d.Tx, 10), strconv.FormatUint(d.Rx+d.Tx, 10), gb(d.Rx), gb(d.Tx), gb(d.Rx + d.Tx)})
+		}
+		cw.Flush()
 	}))
 	m.HandleFunc("POST /api/forwards/order", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Keys []string }

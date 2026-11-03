@@ -99,11 +99,31 @@ func TestKeepDropsRemovedTunnels(t *testing.T) {
 func TestParseStat(t *testing.T) {
 	a := parseStat("cpu  100 0 100 800 0 0 0 0 0 0\ncpu0 50 0 50 400 0 0 0 0 0 0\ncpu1 50 0 50 400 0 0 0 0 0 0\n")
 	b := parseStat("cpu  200 0 150 850 0 0 50 0 0 0\ncpu0 150 0 50 400 0 0 50 0 0 0\ncpu1 50 0 100 450 0 0 0 0 0 0\n")
-	if a["cpu"] != [2]uint64{200, 1000} {
+	if a["cpu"] != (Jiffies{Busy: 200, Total: 1000}) {
 		t.Fatalf("total line %v", a["cpu"])
 	}
-	// cpu0 went from 100/500 busy to 250/650: 150 of 150 jiffies, 100%.
-	if b["cpu0"][0]-a["cpu0"][0] != 150 || b["cpu0"][1]-a["cpu0"][1] != 150 {
+	// cpu0 went from 100/500 busy to 250/650: 150 of 150 jiffies, 100%,
+	// a third of it softirq.
+	if b["cpu0"].Busy-a["cpu0"].Busy != 150 || b["cpu0"].Total-a["cpu0"].Total != 150 || b["cpu0"].Softirq != 50 {
 		t.Fatalf("cpu0 %v -> %v", a["cpu0"], b["cpu0"])
+	}
+	u, ok := Between(a, b)
+	if !ok || u.Hottest != 100 || u.Total != 80 || u.Softirq != 20 || u.SoftirqHot < 33 || u.SoftirqHot > 34 {
+		t.Fatalf("usage %+v", u)
+	}
+}
+
+func TestParsePressure(t *testing.T) {
+	n := parseSoftnet("0001a2b3 00000002 0000000a 00000000\n00000010 00000001 00000005 00000000\n")
+	if n.Dropped != 3 || n.Squeezed != 15 {
+		t.Errorf("softnet %+v", n)
+	}
+	f, ok := parseFrag("Ip: Forwarding DefaultTTL InReceives ReasmReqds ReasmOKs FragOKs FragCreates\nIp: 1 64 1000 7 3 2 9\nIcmp: InMsgs\nIcmp: 4\n")
+	if !ok || f.Reassembled != 7 || f.Created != 9 {
+		t.Errorf("frag %+v %v", f, ok)
+	}
+	p, ok := parseProcStat("1234 (xray worker) S 1 1234 1234 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 8 0")
+	if !ok || p.name != "xray worker" || p.ticks != 300 {
+		t.Errorf("proc %+v %v", p, ok)
 	}
 }

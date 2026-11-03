@@ -87,3 +87,45 @@ func TestSocksModeEntryAndExit(t *testing.T) {
 		t.Fatalf("exit: %v %+v", errs, rs.Exits)
 	}
 }
+
+// On 6to4 relay and proxy connections go inside the SIT carrier alone (its
+// IPv6), not through the IPv4-in-IPv6 layer on top of it; the exit knows
+// that address as the far end's.
+func TestRelayOn6to4RidesTheCarrier(t *testing.T) {
+	secret := config.NewSecret()
+	hub := &config.State{Self: "hub", Address: "198.51.100.1", Tunnels: []config.Tunnel{
+		{Name: "t1-6", Kind: config.KindSIT, Net6: "fd77:0:0:1::/64", Sides: [2]config.Side{{Node: "hub", Endpoint: "198.51.100.1"}, {Node: "edge", Endpoint: "203.0.113.9"}}},
+		{Name: "t1", Kind: config.KindIPIP6, Over: "t1-6", Net4: "10.77.0.0/30", Secret: secret, Sides: [2]config.Side{{Node: "hub"}, {Node: "edge"}}},
+	}, Forwards: []config.Forward{
+		{Node: "hub", Tunnel: "t1", Proto: "tcp", Ports: "443", Mode: config.ForwardRelay},
+		{Node: "hub", Tunnel: "t1", Proto: "tcp", Ports: "1080", Mode: config.ForwardSocks},
+	}}
+	_, own := hub.Effective()
+	rs, errs := Build(hub, own, nil)
+	if len(errs) > 0 || len(rs.Relays) != 2 {
+		t.Fatalf("%v, %d relays", errs, len(rs.Relays))
+	}
+	for _, r := range rs.Relays {
+		in := r.Via.Inside
+		if r.Socks {
+			in = r.Via.Exit
+		}
+		if in.Addr().String() != "fd77:0:0:1::2" {
+			t.Errorf("port %d goes through %v, not the SIT layer", r.Port, in)
+		}
+	}
+	ts, fs := hub.ForPeer("edge")
+	edge := &config.State{Self: "edge", Managed: &config.Managed{Self: "edge", Tunnels: ts, Forwards: fs}}
+	_, own = edge.Effective()
+	rs, _ = Build(edge, own, nil)
+	if len(rs.Exits) == 0 {
+		t.Fatal("no exit")
+	}
+	found := false
+	for _, a := range rs.Exits[0].From {
+		found = found || a.String() == "fd77:0:0:1::1"
+	}
+	if !found {
+		t.Errorf("exit doesn't know the carrier address: %v", rs.Exits[0].From)
+	}
+}

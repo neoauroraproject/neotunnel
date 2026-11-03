@@ -49,6 +49,33 @@ func outerProto(s LinkSpec) (proto int, port uint16) {
 	return ki.OuterProto(s.Remote.Is6()), 0
 }
 
+// carriers lists the outer packets of the kernel tunnels, once per far end,
+// protocol and port; IPsec's ESP as well for encrypted ones.
+func carriers(specs []LinkSpec) []forward.Protect {
+	var out []forward.Protect
+	seen := map[forward.Protect]bool{}
+	add := func(p forward.Protect) {
+		if p.Remote.IsValid() && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, s := range specs {
+		p, port := outerProto(s)
+		if p == 17 && port == 0 {
+			port = map[config.Kind]uint16{config.KindVXLAN: 4789, config.KindGENEVE: 6081}[s.Kind]
+		}
+		if p == 0 || p == 17 && port == 0 {
+			continue // all of the far end's UDP is not ours to skip
+		}
+		add(forward.Protect{Remote: s.Remote, Proto: p, Port: port})
+		if s.Encrypt != "" {
+			add(forward.Protect{Remote: s.Remote, Proto: 50})
+		}
+	}
+	return out
+}
+
 // protects lists the nftables matches that drop unencrypted packets of
 // encrypted tunnels.
 func protects(specs []LinkSpec) []forward.Protect {

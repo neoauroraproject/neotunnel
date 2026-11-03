@@ -37,6 +37,72 @@ func TestRoundTripAndPadding(t *testing.T) {
 	}
 }
 
+// aesPair is pair on AES-128-GCM.
+func aesPair(t *testing.T, padding int) (*codec, *codec) {
+	t.Helper()
+	a, b := pair(t, padding)
+	x, y := bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)
+	if err := a.useAES(x, y); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.useAES(y, x); err != nil {
+		t.Fatal(err)
+	}
+	return a, b
+}
+
+func TestAES(t *testing.T) {
+	a, b := aesPair(t, 16)
+	pkt := []byte("an IP packet")
+	first, seen := map[byte]bool{}, map[string]bool{}
+	var last []byte
+	for range 300 {
+		d := a.seal(make([]byte, a.room(len(pkt))), typeData, pkt, now())
+		first[d[0]] = true
+		if seen[string(d[:nonceLen])] {
+			t.Fatal("a datagram's first bytes repeat")
+		}
+		seen[string(d[:nonceLen])] = true
+		last = append([]byte(nil), d...)
+		typ, got, err := b.open(d)
+		if err != nil || typ != typeData || !bytes.Equal(got, pkt) {
+			t.Fatalf("round trip: %v %d %q", err, typ, got)
+		}
+	}
+	if len(first) < 100 {
+		t.Errorf("first byte looks fixed: %d distinct values", len(first))
+	}
+	if _, _, err := b.open(append([]byte(nil), last...)); err == nil {
+		t.Error("replayed datagram accepted")
+	}
+	d := a.seal(make([]byte, a.room(len(pkt))), typeData, pkt, now())
+	for _, at := range []int{0, 15, nonceLen, len(d) - 1} {
+		bad := append([]byte(nil), d...)
+		bad[at] ^= 1
+		if _, _, err := b.open(bad); err == nil {
+			t.Errorf("tampered byte %d accepted", at)
+		}
+	}
+	// Bytes 16-24 are random filler: the check is on the rest.
+	if _, _, err := b.open(d); err != nil {
+		t.Errorf("after the tampered copies: %v", err)
+	}
+}
+
+// The two ciphers don't understand each other: a tunnel's ends must agree.
+func TestCiphersDontMix(t *testing.T) {
+	a, _ := aesPair(t, 0)
+	_, c := pair(t, 0)
+	if _, _, err := c.open(a.seal(make([]byte, a.room(3)), typeData, []byte("abc"), now())); err == nil {
+		t.Error("XChaCha20 took an AES datagram")
+	}
+	p, _ := pair(t, 0)
+	_, y := aesPair(t, 0)
+	if _, _, err := y.open(p.seal(make([]byte, p.room(3)), typeData, []byte("abc"), now())); err == nil {
+		t.Error("AES took an XChaCha20 datagram")
+	}
+}
+
 func TestNoFixedBytes(t *testing.T) {
 	a, _ := pair(t, 0)
 	first := map[byte]bool{}

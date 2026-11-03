@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"neotunnel/internal/engine"
+	"neotunnel/internal/metrics"
 	"neotunnel/internal/sysctl"
 )
 
@@ -69,6 +72,39 @@ func doctorCmd() *cobra.Command {
 			} else {
 				warn++
 				bad("IP forwarding is off")
+			}
+
+			title("CPU for packets (2 seconds)")
+			var smp metrics.Sampler
+			smp.Sample(runtime.NumCPU())
+			time.Sleep(2 * time.Second)
+			if p, good := smp.Sample(runtime.NumCPU()); good {
+				u := p.Usage
+				info("CPU %.0f%%, busiest core %.0f%%, packet work (softirq) %.0f%% on its busiest core", u.Total, u.Hottest, u.SoftirqHot)
+				switch {
+				case p.Drops >= 1:
+					warn++
+					bad("the kernel dropped %.0f packets/s for lack of CPU: speed is limited by this server's CPU", p.Drops)
+				case u.SoftirqHot >= 80:
+					warn++
+					bad("one core spends %.0f%% on packets: near this server's speed limit (speed profile \"max\" spreads it)", u.SoftirqHot)
+				case p.Squeezes >= 1:
+					warn++
+					bad("the kernel's packet budget runs out (%.0f/s): near the CPU limit", p.Squeezes)
+				default:
+					success("CPU is not what limits speed right now")
+				}
+				if p.ConntrackMax > 0 && p.Conntrack*100 >= p.ConntrackMax*85 {
+					warn++
+					bad("connection tracking is %d of %d full: new connections are dropped when it fills (raise net.netfilter.nf_conntrack_max)", p.Conntrack, p.ConntrackMax)
+				}
+				if p.Frags >= 50 {
+					warn++
+					bad("%.0f IP fragments/s: a tunnel's MTU is probably too large", p.Frags)
+				}
+				for _, pr := range p.Procs {
+					info("  %-16s %5.1f%%", pr.Name, pr.CPU)
+				}
 			}
 
 			fmt.Println()

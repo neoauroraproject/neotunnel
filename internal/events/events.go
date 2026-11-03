@@ -34,8 +34,15 @@ const (
 	On      = "on"
 	Off     = "off"
 	Quota   = "quota" // To: "blocked" or "back"
+	// Port: a sold port (Detail: its ports) closed, To: why (paused,
+	// expired, quota), or "open" again.
+	Port = "port"
 	// Guard: the firewall turned itself off (Tunnel is empty).
 	Guard = "guard"
+	// Upgrade: this server upgraded the server From to version To
+	// automatically; Detail: ok, failed: why, or rolled back (it went back
+	// to its old version by itself). Tunnel is empty.
+	Upgrade = "upgrade"
 )
 
 // Event is one thing that happened to a tunnel.
@@ -58,13 +65,23 @@ const (
 
 var (
 	mu sync.Mutex
-	// hook, when set, hears every event added in this process (the daemon
-	// sends alerts from it).
-	hook atomic.Pointer[func(Event)]
+	// hooks hear every event added in this process (the daemon sends
+	// alerts and webhooks from them).
+	hooks   atomic.Pointer[[]func(Event)]
+	hooksMu sync.Mutex
 )
 
-// OnAdd sets the function that hears every event added in this process.
-func OnAdd(f func(Event)) { hook.Store(&f) }
+// OnAdd adds a function that hears every event added in this process.
+func OnAdd(f func(Event)) {
+	hooksMu.Lock()
+	defer hooksMu.Unlock()
+	var hs []func(Event)
+	if cur := hooks.Load(); cur != nil {
+		hs = append(hs, *cur...)
+	}
+	hs = append(hs, f)
+	hooks.Store(&hs)
+}
 
 func path() string { return filepath.Join(config.Dir, "events.log") }
 
@@ -85,8 +102,10 @@ func Add(e Event) {
 	}
 	f.Write(append(b, '\n'))
 	f.Close()
-	if h := hook.Load(); h != nil {
-		go (*h)(e)
+	if hs := hooks.Load(); hs != nil {
+		for _, h := range *hs {
+			go h(e)
+		}
 	}
 }
 

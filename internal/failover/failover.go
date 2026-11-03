@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"neotunnel/internal/config"
@@ -36,6 +37,11 @@ const (
 	Margin = 20.0
 	// MaxHistory is how many switches are kept per forward.
 	MaxHistory = 20
+	// BestAfter is how many rounds in a row (about five minutes) another
+	// tunnel must be clearly better before a forward on the best path
+	// moves to it, and BestStay the least time between two such moves.
+	BestAfter = 38
+	BestStay  = 30 * time.Minute
 )
 
 // Switch is one change of a forward's path.
@@ -44,6 +50,9 @@ type Switch struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Reason string `json:"reason"`
+	// Better marks a move to a better path while the old one still works:
+	// connections already open stay on it, only new ones move.
+	Better bool `json:"better,omitempty"`
 }
 
 // Path is the active tunnel of one forward and how it got there.
@@ -51,6 +60,9 @@ type Path struct {
 	Active   string   `json:"active"`
 	Since    int64    `json:"since,omitempty"` // unix seconds of the last switch
 	Switches []Switch `json:"switches,omitempty"`
+	// Ahead counts, for a forward on the best path, the rounds in a row
+	// each other tunnel was clearly better than the active one.
+	Ahead map[string]int `json:"ahead,omitempty"`
 }
 
 // Paths is every forward's path, by Key.
@@ -177,9 +189,100 @@ func better(a, b health.State) bool {
 	return Working(a) || a.Loss+Margin <= b.Loss
 }
 
-// Step runs Decide for every forward with a backup, records the switches in
-// ps and drops the paths of forwards that are gone. It returns the switches
-// made, keyed like ps.
+// Speeds are the tunnels' download speeds in the last night's test
+// (Mbit/s), to tell paths that ping and lose alike apart; nil = none.
+var (
+	speedsMu sync.Mutex
+	speeds   map[string]float64
+)
+
+// SetSpeeds records the night's speed test results.
+func SetSpeeds(m map[string]float64) {
+	speedsMu.Lock()
+	speeds = m
+	speedsMu.Unlock()
+}
+
+func speedOf(name string) float64 {
+	speedsMu.Lock()
+	defer speedsMu.Unlock()
+	return speeds[name]
+}
+
+// beats reports whether tunnel c is clearly better than a, both working: it
+// loses clearly less without answering much slower; or loses about as
+// little and answers clearly faster; or does as well in both and carried
+// clearly more in the night's speed test.
+func beats(c, a health.State, sc, sa float64) bool {
+	if !Working(c) || !Working(a) || c.AvgMs <= 0 || a.AvgMs <= 0 {
+		return false
+	}
+	switch {
+	case c.Loss+2 <= a.Loss && c.AvgMs <= a.AvgMs*1.3:
+		return true
+	case c.Loss > a.Loss+1:
+		return false
+	case c.AvgMs <= a.AvgMs*0.85 && a.AvgMs-c.AvgMs >= 10:
+		return true
+	case c.AvgMs <= a.AvgMs*1.1 && sc > 0 && sa > 0 && sc >= sa*1.5:
+		return true
+	}
+	return false
+}
+
+// best decides for a forward on the best path: away at once from a tunnel
+// that fails, to the best of those that work; otherwise to one that was
+// clearly better for BestAfter rounds, at most once in BestStay.
+func best(f config.Forward, p *Path, hs map[string]health.State, now time.Time) (string, string, bool) {
+	list := f.Paths()
+	cur := hs[p.Active]
+	if !slices.Contains(list, p.Active) {
+		return f.Tunnel, "", false
+	}
+	if failing(cur) {
+		pick := ""
+		for _, n := range list {
+			if n != p.Active && Working(hs[n]) && (pick == "" || beats(hs[n], hs[pick], speedOf(n), speedOf(pick))) {
+				pick = n
+			}
+		}
+		if pick == "" {
+			for _, n := range list {
+				if n != p.Active && better(hs[n], cur) {
+					pick = n
+					break
+				}
+			}
+		}
+		if pick != "" {
+			return pick, fmt.Sprintf("%s lost %.0f%% of its probes for %d rounds; %s loses %.0f%%", p.Active, cur.Loss, cur.Bad, pick, hs[pick].Loss), false
+		}
+		return p.Active, "", false
+	}
+	if p.Ahead == nil {
+		p.Ahead = map[string]int{}
+	}
+	pick := ""
+	for _, n := range list {
+		if n == p.Active || !beats(hs[n], cur, speedOf(n), speedOf(p.Active)) {
+			delete(p.Ahead, n)
+			continue
+		}
+		p.Ahead[n]++
+		if p.Ahead[n] >= BestAfter && (pick == "" || beats(hs[n], hs[pick], speedOf(n), speedOf(pick))) {
+			pick = n
+		}
+	}
+	if pick == "" || p.Since != 0 && now.Sub(time.Unix(p.Since, 0)) < BestStay {
+		return p.Active, "", false
+	}
+	c := hs[pick]
+	return pick, fmt.Sprintf("%s is better: %.0f%% loss and %.0f ms against %.0f%% and %.0f ms on %s, for 5 minutes", pick, c.Loss, c.AvgMs, cur.Loss, cur.AvgMs, p.Active), true
+}
+
+// Step runs Decide for every forward with a backup (best for those on the
+// best path), records the switches in ps and drops the paths of forwards
+// that are gone. It returns the switches made, keyed like ps.
 func Step(ps Paths, fs []config.Forward, hs map[string]health.State, now time.Time) map[string]Switch {
 	made := map[string]Switch{}
 	keep := map[string]bool{}
@@ -194,14 +297,22 @@ func Step(ps Paths, fs []config.Forward, hs map[string]health.State, now time.Ti
 			p = &Path{Active: f.Tunnel}
 			ps[k] = p
 		}
-		next, why := Decide(f, p.Active, hs)
+		var next, why string
+		var gentle bool
+		if f.Best {
+			next, why, gentle = best(f, p, hs, now)
+		} else {
+			p.Ahead = nil
+			next, why = Decide(f, p.Active, hs)
+		}
 		if next == p.Active || (p.Since != 0 && now.Sub(time.Unix(p.Since, 0)) < MinStay && why != "" && !failing(hs[p.Active])) {
 			continue
 		}
 		if why == "" {
 			why = "the forward's tunnels changed"
 		}
-		s := Switch{At: now.Unix(), From: p.Active, To: next, Reason: why}
+		s := Switch{At: now.Unix(), From: p.Active, To: next, Reason: why, Better: gentle}
+		p.Ahead = nil
 		p.Active, p.Since = next, s.At
 		p.Switches = append(p.Switches, s)
 		if len(p.Switches) > MaxHistory {

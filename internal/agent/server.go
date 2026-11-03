@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,10 +22,12 @@ import (
 	"neotunnel/internal/config"
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
+	"neotunnel/internal/mtr"
 	"neotunnel/internal/probe"
 	"neotunnel/internal/safe"
 	"neotunnel/internal/sysinfo"
 	"neotunnel/internal/traffic"
+	"neotunnel/internal/upgrade"
 	"neotunnel/internal/version"
 )
 
@@ -51,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/upgrade", s.fromMaster(s.upgrade))
 	mux.HandleFunc("POST /v1/traffic/exclude", s.fromMaster(s.excludeTraffic))
 	mux.HandleFunc("POST /v1/restart", s.fromMaster(s.restart))
+	mux.HandleFunc("POST /v1/mtr", s.fromMaster(s.mtr))
 	mux.HandleFunc("POST /v1/safe/confirm", s.fromMaster(s.safeConfirm))
 	return mux
 }
@@ -123,6 +127,8 @@ func (s *Server) fromMaster(h http.HandlerFunc) http.HandlerFunc {
 			fail(w, http.StatusForbidden, errors.New("not my master"))
 			return
 		}
+		// This version reaches its main server: an upgrade to it holds.
+		upgrade.Confirm()
 		h(w, r.WithContext(context.WithValue(r.Context(), masterKey{}, key)))
 	}
 }
@@ -238,7 +244,7 @@ func agentBusy(st *config.State) []string {
 // LocalStatus reports this node's tunnels and counters.
 func LocalStatus(st *config.State, started time.Time) Status {
 	aes := sysinfo.AESNI()
-	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6(), AESNI: &aes, AgentPort: st.ListenAgentPort()}
+	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6(), AESNI: &aes, ObfsAES: true, StreamTunnels: true, AgentPort: st.ListenAgentPort(), RolledBack: upgrade.LastFailed().Version}
 	if st.Managed != nil {
 		out.Revision = st.Managed.Revision
 	}
@@ -415,13 +421,22 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, fmt.Errorf("new binary does not run here (wrong architecture?): %v", err))
 		return
 	}
+	// The old binary stays, to go back to if the new one never answers
+	// (see package upgrade).
+	kept := upgrade.Keep(exe) == nil
 	if err := os.Rename(tmp.Name(), exe); err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"version": strings.TrimSpace(string(out))})
+	newVersion := strings.TrimSpace(string(out))
+	writeJSON(w, http.StatusOK, map[string]string{"version": newVersion})
 	go func() {
 		time.Sleep(500 * time.Millisecond)
+		if kept {
+			if err := upgrade.Watch(exe, newVersion); err != nil {
+				log.Printf("upgrade to %s: no way back if it fails: %v", newVersion, err)
+			}
+		}
 		os.Exit(0) // systemd (Restart=always) starts the new binary
 	}()
 }
@@ -437,6 +452,28 @@ func (s *Server) excludeTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// mtr traces the path from this node to the target the master asks for.
+func (s *Server) mtr(w http.ResponseWriter, r *http.Request) {
+	var req MTRRequest
+	if err := readJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	a, err := netip.ParseAddr(req.Target)
+	if err != nil {
+		fail(w, http.StatusBadRequest, fmt.Errorf("bad address %q", req.Target))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	res, err := mtr.Run(ctx, a, req.Rounds)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // restart takes the named tunnels down and up again on this node.

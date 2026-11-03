@@ -66,6 +66,10 @@ type Counter struct {
 	Days   map[string]Pair `json:"days"`
 	Series []Pair          `json:"series"` // Buckets entries, oldest first
 	Head   int64           `json:"head"`   // unix start of the newest bucket
+	// Period is the traffic since PeriodFrom (unix seconds), for a port
+	// sold with a quota (see config.PortPlan).
+	Period     Pair  `json:"period,omitempty"`
+	PeriodFrom int64 `json:"period_from,omitempty"`
 
 	// Last raw kernel counters, to compute deltas.
 	Last Pair `json:"last"`
@@ -125,6 +129,39 @@ func (s *Store) Sample(tunnel string, cur Pair, now time.Time) {
 	c.Days[day] = dd
 	c.advance(now)
 	c.Series[len(c.Series)-1].add(d)
+	if c.PeriodFrom != 0 {
+		c.Period.add(d)
+	}
+	s.dirty = true
+}
+
+// PeriodOf is a counter's traffic since its period's start.
+func (s *Store) PeriodOf(name string) (Pair, int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c := s.Tunnels[name]; c != nil {
+		return c.Period, c.PeriodFrom
+	}
+	return Pair{}, 0
+}
+
+// StartPeriod starts counting a port's period at from (unix seconds), unless
+// it already counts from there; 0 stops counting.
+func (s *Store) StartPeriod(name string, from int64, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.Tunnels[name]
+	if c == nil {
+		if from == 0 {
+			return
+		}
+		c = &Counter{Since: now, Days: map[string]Pair{}}
+		s.Tunnels[name] = c
+	}
+	if c.PeriodFrom == from {
+		return
+	}
+	c.Period, c.PeriodFrom = Pair{}, from
 	s.dirty = true
 }
 
@@ -197,13 +234,16 @@ func (s *Store) Keep(tunnels []string, now time.Time) {
 	}
 }
 
-// Reset zeroes one tunnel's counters, or all when tunnel is "".
+// Reset zeroes one counter, or every tunnel's when tunnel is "". A port's
+// traffic is only ever zeroed by its own name: sold ports are what their
+// buyers pay for.
 func (s *Store) Reset(tunnel string, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for name, c := range s.Tunnels {
-		if tunnel == "" || name == tunnel {
-			*c = Counter{Since: now, Days: map[string]Pair{}, Last: c.Last}
+		if tunnel == "" && !strings.HasPrefix(name, Port) || name == tunnel {
+			// A sold port's period is the buyer's, not the panel's numbers.
+			*c = Counter{Since: now, Days: map[string]Pair{}, Last: c.Last, Period: c.Period, PeriodFrom: c.PeriodFrom}
 		}
 	}
 	s.dirty = true
@@ -240,6 +280,11 @@ type Summary struct {
 	Month  Pair   `json:"month"`
 	Series []Pair `json:"series"` // last 24 hours, 5-minute buckets
 	Days   []Day  `json:"days"`   // last 30 days, oldest first
+	// LastMonth is the calendar month before this one.
+	LastMonth Pair `json:"last_month"`
+	// Period and PeriodFrom are a sold port's traffic in its plan's period.
+	Period     Pair  `json:"period"`
+	PeriodFrom int64 `json:"period_from,omitempty"`
 }
 
 type Day struct {
@@ -254,11 +299,16 @@ func (s *Store) Summaries(now time.Time) map[string]Summary {
 	out := map[string]Summary{}
 	today := now.In(s.location).Format(dayFmt)
 	month := today[:7]
+	t := now.In(s.location)
+	last := time.Date(t.Year(), t.Month()-1, 1, 12, 0, 0, 0, s.location).Format(dayFmt)[:7]
 	for name, c := range s.Tunnels {
-		sum := Summary{Since: c.Since.Unix(), Total: c.Total, Tests: c.Tests, Today: c.Days[today]}
+		sum := Summary{Since: c.Since.Unix(), Total: c.Total, Tests: c.Tests, Today: c.Days[today], Period: c.Period, PeriodFrom: c.PeriodFrom}
 		for d, p := range c.Days {
-			if d[:7] == month {
+			switch d[:7] {
+			case month:
 				sum.Month.add(p)
+			case last:
+				sum.LastMonth.add(p)
 			}
 		}
 		// Series aligned to now: buckets older than the last sample are zero.
@@ -276,6 +326,26 @@ func (s *Store) Summaries(now time.Time) map[string]Summary {
 		out[name] = sum
 	}
 	return out
+}
+
+// History is every day kept of one counter (up to two months), oldest
+// first, days without traffic included, and its summary.
+func (s *Store) History(name string, now time.Time) (Summary, []Day, bool) {
+	sum, ok := s.Summaries(now)[name]
+	if !ok {
+		return Summary{}, nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.Tunnels[name]
+	var out []Day
+	for i := keepDays - 1; i >= 0; i-- {
+		d := now.AddDate(0, 0, -i).In(s.location).Format(dayFmt)
+		if p, ok := c.Days[d]; ok || out != nil {
+			out = append(out, Day{Date: d, Pair: p})
+		}
+	}
+	return sum, out, true
 }
 
 // Names lists tracked tunnels, sorted.
@@ -321,6 +391,56 @@ func RequestExclude(tunnel string, d Pair) error {
 		_, err = fmt.Fprintf(f, "%s %d %d %d %d\n", tunnel, d.Rx, d.Tx, d.RxP, d.TxP)
 		return err
 	})
+}
+
+func renamePath() string { return filepath.Join(config.Dir, "traffic.rename") }
+
+// RequestRename asks the daemon to keep a counter's traffic under a new
+// name: a port whose number or protocol changed keeps its history and its
+// buyer's quota period.
+func RequestRename(from, to string) error {
+	if from == to || strings.ContainsAny(from+to, "\t\n") {
+		return nil
+	}
+	return config.WithLock(func() error {
+		f, err := os.OpenFile(renamePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = fmt.Fprintf(f, "%s\t%s\n", from, to)
+		return err
+	})
+}
+
+// TakeRenames returns and clears the pending renames, oldest first.
+func TakeRenames() [][2]string {
+	var out [][2]string
+	config.WithLock(func() error {
+		b, err := os.ReadFile(renamePath())
+		if err != nil {
+			return nil
+		}
+		os.Remove(renamePath())
+		for _, line := range strings.Split(string(b), "\n") {
+			if from, to, ok := strings.Cut(line, "\t"); ok && from != "" && to != "" {
+				out = append(out, [2]string{from, to})
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+// Rename moves a counter to a new name, over any there.
+func (s *Store) Rename(from, to string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.Tunnels[from]; ok && from != to {
+		s.Tunnels[to] = c
+		delete(s.Tunnels, from)
+		s.dirty = true
+	}
 }
 
 // Exclude is one pending RequestExclude.

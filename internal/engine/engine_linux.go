@@ -79,7 +79,7 @@ func Apply(st *config.State) Result {
 			if err := adopt(s); err != nil {
 				res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: %w", s.Tunnel, err))
 			}
-			if err := shape(s.Name, s.RateMbit); err != nil {
+			if err := shape(s.Name, s.RateMbit, s.QueueMbit); err != nil {
 				res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: speed limit: %w", s.Tunnel, err))
 			}
 			if err := tune(s); err != nil {
@@ -95,7 +95,7 @@ func Apply(st *config.State) Result {
 		if created {
 			res.Created = append(res.Created, s.Name)
 		}
-		if err := shape(s.Name, s.RateMbit); err != nil {
+		if err := shape(s.Name, s.RateMbit, s.QueueMbit); err != nil {
 			res.Errors = append(res.Errors, fmt.Errorf("tunnel %s: speed limit: %w", s.Tunnel, err))
 		}
 		if err := tune(s); err != nil {
@@ -133,6 +133,7 @@ func Apply(st *config.State) Result {
 	}
 	rules, ferrs := forward.Build(st, fs, links)
 	rules.Protect = protects(specs)
+	rules.Carriers = carriers(specs)
 	if us == nil {
 		// Only the daemon has the downloads listener; the redirect waits
 		// for it (the CLI's change reloads the daemon at once).
@@ -146,14 +147,18 @@ func Apply(st *config.State) Result {
 		res.Errors = append(res.Errors, err)
 	}
 	res.Errors = append(res.Errors, syncReturns(rules.Returns, specs)...)
+	streams, serrs := StreamSpecs(st)
+	res.Errors = append(res.Errors, serrs...)
 	if us != nil {
+		// Sessions first: the relays' listeners also take theirs.
+		res.Errors = append(res.Errors, us.SyncStreams(streams)...)
 		res.Errors = append(res.Errors, us.SyncRelays(rules.Relays, rules.Exits)...)
 		if rules.Fetch != nil && !relay.FetchStatus().Running {
 			// The redirect must never outlive its listener.
 			forward.StopFetch()
 		}
 	}
-	if err := firewall.Ensure(firewallNeeds(st, specs, rules)); err != nil {
+	if err := firewall.Ensure(firewallNeeds(st, specs, rules, StreamListenPorts(streams))); err != nil {
 		res.Errors = append(res.Errors, err)
 	}
 	return res
@@ -178,7 +183,7 @@ func adopt(s LinkSpec) error {
 var ServicePorts = []string{"7711"}
 
 // firewallNeeds lists what a host firewall (ufw) must let through.
-func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firewall.Needs {
+func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset, streamPorts []uint16) firewall.Needs {
 	n := firewall.Needs{Ports: append([]string(nil), ServicePorts...)}
 	for _, p := range st.AgentPorts() {
 		n.Ports = append(n.Ports, fmt.Sprintf("%d/tcp", p))
@@ -208,8 +213,28 @@ func firewallNeeds(st *config.State, specs []LinkSpec, rs forward.Ruleset) firew
 		}
 		n.Ports = append(n.Ports, fmt.Sprintf("%d/%s", r.Port, r.Proto))
 	}
-	if len(rs.Exits) > 0 {
-		n.Ports = append(n.Ports, fmt.Sprintf("%d/tcp", relay.RelayPort))
+	// Each tunnel's relay listens on its own ports (RelayPort for tunnels
+	// from before them); connection tunnels on theirs.
+	seen := map[uint16]bool{}
+	open := func(p uint16) {
+		if !seen[p] {
+			seen[p] = true
+			n.Ports = append(n.Ports, fmt.Sprintf("%d/tcp", p))
+		}
+	}
+	for _, e := range rs.Exits {
+		if e.Session {
+			continue
+		}
+		if len(e.Listen) == 0 {
+			open(relay.RelayPort)
+		}
+		for _, p := range e.Listen {
+			open(p)
+		}
+	}
+	for _, p := range streamPorts {
+		open(p)
 	}
 	// Our own servers are trusted for everything: the temporary tunnels of
 	// speed tests and wizard checks use ports and protocols no saved tunnel

@@ -17,6 +17,9 @@ func TestTunnel(ctx context.Context, id *identity.Identity, st *config.State, na
 	if !ok {
 		return Result{}, fmt.Errorf("unknown tunnel %q (tests run on the server that created it)", name)
 	}
+	if t.IsStream() {
+		return Result{}, fmt.Errorf("tunnel %s is a connection tunnel: it has no inner address to test through; its health shows ping and loss over its sessions", name)
+	}
 	far := 1
 	if st.IsSelf(t.Sides[1].Node) {
 		far = 0

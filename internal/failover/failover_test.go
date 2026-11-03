@@ -257,3 +257,58 @@ func TestSaveLoad(t *testing.T) {
 		t.Fatalf("loaded %+v", got[Key(fw)])
 	}
 }
+
+// On the best path a forward moves to a tunnel that has been clearly
+// better for five minutes, keeping open connections where they are, at
+// most once in BestStay; a tunnel that fails is left at once, for the best
+// of the others; a slight edge moves nothing.
+func TestBestPath(t *testing.T) {
+	f := config.Forward{Node: "ir", Tunnel: "a", Proto: "tcp", Ports: "443", Best: true}
+	f.SetBackups([]string{"b", "c"})
+	st := func(loss, ms float64) health.State {
+		return health.State{Probes: 40, Passes: true, Grade: health.GradeOK, Loss: loss, AvgMs: ms, Good: RecoverAfter}
+	}
+	ps := Paths{}
+	now := time.Unix(1_700_000_000, 0)
+	hs := map[string]health.State{"a": st(0, 120), "b": st(0, 70), "c": st(0, 115)}
+	step := func() map[string]Switch {
+		now = now.Add(8 * time.Second)
+		return Step(ps, []config.Forward{f}, hs, now)
+	}
+	for i := 1; i < BestAfter; i++ {
+		if m := step(); len(m) != 0 {
+			t.Fatalf("moved after %d rounds: %v", i, m)
+		}
+	}
+	m := step()
+	s, ok := m[Key(f)]
+	if !ok || s.To != "b" || !s.Better {
+		t.Fatalf("no move to the better path: %+v", m)
+	}
+	// c becomes better still, but not for long after the last move.
+	hs["c"] = st(0, 40)
+	for range BestAfter + 5 {
+		if m := step(); len(m) != 0 {
+			t.Fatalf("moved again within BestStay: %v", m)
+		}
+	}
+	// b fails: away at once, to the best that works (c), as a failover.
+	hs["b"] = health.State{Probes: 40, Passes: false, Grade: health.GradeDown, Loss: 100, Bad: FailAfter}
+	m = step()
+	if s := m[Key(f)]; s.To != "c" || s.Better {
+		t.Fatalf("failing best path: %+v", m)
+	}
+	// A slight edge is no reason to move.
+	if beats(st(0, 100), st(0, 105), 0, 0) || beats(st(1, 100), st(1.5, 100), 0, 0) {
+		t.Error("a slight edge counted")
+	}
+	if !beats(st(0, 100), st(5, 100), 0, 0) || !beats(st(0, 100), st(0, 100), 300, 100) {
+		t.Error("clearly better not counted")
+	}
+	// Without best, the order rules: back to a as soon as it recovers.
+	f.Best = false
+	ps2 := Paths{Key(f): {Active: "c"}}
+	if m := Step(ps2, []config.Forward{f}, hs, now.Add(time.Hour)); m[Key(f)].To != "a" {
+		t.Errorf("order: %+v", m)
+	}
+}

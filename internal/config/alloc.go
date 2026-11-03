@@ -69,6 +69,9 @@ func (s *State) Allocate(t *Tunnel) error {
 		}
 		return false
 	}
+	if ki.Stream {
+		t.Net4, t.Net6 = "", "" // connection tunnels have no inner addresses
+	}
 	if ki.Carry4 && t.Net4 == "" {
 		pool := Pool4
 		if t.Pool4 != "" {
@@ -131,6 +134,9 @@ func (s *State) Allocate(t *Tunnel) error {
 	}
 	if t.NeedsSecret() && t.Secret == "" {
 		t.Secret = NewSecret()
+	}
+	if ki.Stream {
+		s.EnsureRelayPorts(t)
 	}
 	return nil
 }

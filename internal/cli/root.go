@@ -36,6 +36,7 @@ func cobraRoot() *cobra.Command {
 		versionCmd(), daemonCmd(), setupCmd(), installCmd(), updateCmd(), uninstallCmd(), nodeCmd(), panelCmd(),
 		peerCmd(), tunnelCmd(), forwardCmd(), poolCmd(), quickCmd(),
 		applyCmd(), downCmd(), statusCmd(), trafficCmd(), testCmd(), benchCmd(), boostCmd(), mtuCmd(), doctorCmd(), guardCmd(),
+		historyCmd(), rollbackCmd(), mtrCmd(), upgradeWatchCmd(),
 	)
 	return root
 }
