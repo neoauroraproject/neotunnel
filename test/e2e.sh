@@ -619,13 +619,16 @@ hup 3
 ip netns exec $HUB nft list chain inet neotunnel_plans plan_in | grep -q "8095 : jump" || { ip netns exec $HUB nft list table inet neotunnel_plans; fail "no plan chain for 8095"; }
 # Connections to a port the kernel still counts as open, or open now.
 # Clients only: the hub's own connections to that port elsewhere don't count.
-open_conns() { ip netns exec $HUB grep -E "ESTABLISHED|FIN_WAIT|CLOSE_WAIT|LAST_ACK|SYN_SENT|SYN_RECV" /proc/net/nf_conntrack | grep -cE "src=198.18.0.[0-9]+ dst=198.18.0.1 sport=[0-9]+ dport=$1 " || true; }
+# The hub's connection table: /proc/net/nf_conntrack where the kernel has
+# it, else the conntrack tool (same lines, over netlink).
+ct_list() { if [ -r /proc/net/nf_conntrack ]; then ip netns exec $HUB cat /proc/net/nf_conntrack; else ip netns exec $HUB conntrack -L 2>/dev/null; fi; }
+open_conns() { ct_list | grep -E "ESTABLISHED|FIN_WAIT|CLOSE_WAIT|LAST_ACK|SYN_SENT|SYN_RECV" | grep -cE "src=198.18.0.[0-9]+ dst=198.18.0.1 sport=[0-9]+ dport=$1 " || true; }
 none_open() { [ "$(open_conns "$1")" = 0 ]; }
 one_open() { [ "$(open_conns "$1")" = 1 ]; }
 # A whole download, so its connection closes cleanly.
 spd=$(ip netns exec $CLIENT curl -s -o /dev/null -m 40 -w '%{speed_download}' http://198.18.0.1:8095/mid || true)
 awk "BEGIN{exit !($spd > 150000 && $spd < 1100000)}" || fail "4 Mbit/s cap: downloaded at $spd B/s"
-wait_for 60 none_open 8095 || { ip netns exec $HUB grep -E "ESTABLISHED|FIN_WAIT|CLOSE_WAIT|LAST_ACK|SYN_SENT|SYN_RECV" /proc/net/nf_conntrack | grep 198.18.0; ip netns exec $CLIENT ss -tnp; ps aux | grep -c curl; fail "the speed test's connection stays open"; }
+wait_for 60 none_open 8095 || { ct_list | grep -E "ESTABLISHED|FIN_WAIT|CLOSE_WAIT|LAST_ACK|SYN_SENT|SYN_RECV" | grep 198.18.0; ip netns exec $CLIENT ss -tnp; ps aux | grep -c curl; fail "the speed test's connection stays open"; }
 # A slow whole download (about 20 s), open through the checks below.
 ip netns exec $CLIENT curl -s -o /dev/null --limit-rate 100k -m 60 http://198.18.0.1:8095/mid & slow=$!
 wait_for 5 one_open 8095 || fail "the slow download did not connect"
@@ -645,7 +648,7 @@ hup 3
 [ "$(ip netns exec $CLIENT curl -s -o /dev/null -m 3 -w '%{http_code}' http://198.18.0.1:8095/ || true)" = 000 ] || fail "after a reload a second connection passed a 1-connection port"
 in_hub forward remove t1 8096 >/dev/null
 wait $slow 2>/dev/null || true
-wait_for 60 none_open 8095 || { ip netns exec $HUB grep 8095 /proc/net/nf_conntrack; fail "the slow download stays open"; }
+wait_for 60 none_open 8095 || { ct_list | grep 8095; fail "the slow download stays open"; }
 ip -n $CLIENT addr add 198.18.0.3/24 dev veth-c
 [ "$(ip netns exec $CLIENT curl -s -o /dev/null -m 3 --interface 198.18.0.3 -w '%{http_code}' http://198.18.0.1:8095/ || true)" = 000 ] || fail "a second address passed a 1-address port"
 [ "$(http_code http://198.18.0.1:8095/)" = 200 ] || fail "the port's own client refused"
