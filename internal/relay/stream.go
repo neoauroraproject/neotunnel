@@ -157,8 +157,8 @@ type pool struct {
 	idle []*pooled
 	last atomic.Int32 // the candidate that connected last, tried first
 	wake chan struct{}
-	stop   chan struct{}
-	once   sync.Once
+	stop chan struct{}
+	once sync.Once
 }
 
 func newPool(v Via) (*pool, error) {

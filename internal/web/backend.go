@@ -235,20 +235,20 @@ type TunnelView struct {
 	Obfs     bool            `json:"obfs,omitempty"`
 	Encrypt  string          `json:"encrypt,omitempty"` // IPsec or the kind's own encryption
 	// AutoEncrypt: the daemon picks Encrypt by what passes (see Settings.Encrypt).
-	AutoEncrypt bool         `json:"auto_encrypt,omitempty"`
-	PathMTU     int          `json:"path_mtu,omitempty"` // measured, when probing
-	WGKey       string       `json:"wg_key,omitempty"`   // our WireGuard public key
-	VNI         uint32       `json:"vni,omitempty"`
+	AutoEncrypt bool   `json:"auto_encrypt,omitempty"`
+	PathMTU     int    `json:"path_mtu,omitempty"` // measured, when probing
+	WGKey       string `json:"wg_key,omitempty"`   // our WireGuard public key
+	VNI         uint32 `json:"vni,omitempty"`
 	// RelayPorts are the ports the tunnel's relay forwards reach the far
 	// server on, tried in order (none: the fixed 7712 of older versions).
 	RelayPorts []uint16 `json:"relay_ports,omitempty"`
 	// Stream is a connection tunnel's live state (nil for other tunnels).
-	Stream *StreamView `json:"stream,omitempty"`
-	Total       traffic.Pair `json:"total"`
-	Today       traffic.Pair `json:"today"`
-	Month       traffic.Pair `json:"month"`
-	Tests       traffic.Pair `json:"tests"`      // speed tests, not in the totals
-	Wire        uint64       `json:"wire_today"` // today's bytes on the network, overhead included
+	Stream *StreamView  `json:"stream,omitempty"`
+	Total  traffic.Pair `json:"total"`
+	Today  traffic.Pair `json:"today"`
+	Month  traffic.Pair `json:"month"`
+	Tests  traffic.Pair `json:"tests"`      // speed tests, not in the totals
+	Wire   uint64       `json:"wire_today"` // today's bytes on the network, overhead included
 	// Limits are the on/off switch, speed limit and monthly quota; Blocked
 	// means the quota ran out and the tunnel is down until next month.
 	Limits   manage.Limits `json:"limits"`

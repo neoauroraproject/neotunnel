@@ -589,7 +589,6 @@ func EnsureRelayPorts() ([]string, Change, error) {
 	return names, ch, err
 }
 
-
 // portsFreeExcept checks forward i against the others on this node.
 func portsFreeExcept(s *config.State, i int) error {
 	f := s.Forwards[i]
