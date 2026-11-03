@@ -248,18 +248,24 @@ ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-q2)" >/dev/null || fail "pin
 o1enc() { api "$base/api/overview" | python3 -c "import json,sys; print([t for t in json.load(sys.stdin)['tunnels'] if t['name']=='o1'][0].get('encrypt'))"; }
 if grep -qw aes /proc/cpuinfo; then
   [ "$(o1enc)" = aes-gcm-128 ] || fail "NeoObfs not on AES-GCM between two servers with AES instructions"
-  python3 - "$WORK/hub/state.json" <<'PY'
+  o1aes() { [ "$(o1enc)" = aes-gcm-128 ]; }
+  moved() { grep -q "NeoObfs tunnels \[o1\] to edge now run on AES-GCM" "$WORK/hub.log"; }
+  # The daemon writes state.json too (each peer refresh); an edit it wrote
+  # over never happened, so it is made again.
+  for try in 1 2 3; do
+    python3 - "$WORK/hub/state.json" <<'PY'
 import json, sys
 p = sys.argv[1]; s = json.load(open(p))
 for t in s["tunnels"]:
     if t["name"] == "o1": t.pop("obfs_aes", None)
 json.dump(s, open(p, "w"), indent=2)
 PY
-  hup 2
-  o1aes() { [ "$(o1enc)" = aes-gcm-128 ]; }
-  for i in $(seq 1 30); do o1aes && break; sleep 1; done
+    hup 2
+    for i in $(seq 1 30); do moved && break; sleep 1; done
+    moved && break
+  done
   o1aes || { tail -20 "$WORK/hub.log"; fail "an old NeoObfs tunnel did not move to AES-GCM by itself"; }
-  grep -q "NeoObfs tunnels \[o1\] to edge now run on AES-GCM" "$WORK/hub.log" || fail "the move to AES-GCM was not logged"
+  moved || { tail -20 "$WORK/hub.log"; fail "the move to AES-GCM was not logged"; }
   for i in $(seq 1 15); do ip netns exec $HUB ping -c 1 -W 2 "$(inner $EDGE nt-o1)" >/dev/null && break; sleep 1; done
   ip netns exec $HUB ping -c 3 -W 2 "$(inner $EDGE nt-o1)" >/dev/null || fail "ping through NeoObfs after it moved to AES-GCM"
 fi
