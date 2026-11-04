@@ -317,8 +317,29 @@ sudo test/e2e.sh dist/neotunnel-linux-amd64   # تست کامل روی کرنل 
 <table>
 <tr><td align="center">
 <br>
-<img src="https://img.shields.io/badge/USDT-BEP20%20(BNB%20Smart%20Chain)-26A17B?style=for-the-badge&logo=tether&logoColor=white&labelColor=111111" alt="USDT on BEP20"><br><br>
-<code>0xacA935a5955a756BedaE4738304274EdeE0223D5</code><br><br>
+<p>
+  <a href="https://bscscan.com/address/0x94efb6642b8fcc591c28a8c04db2279908f66e18">
+    <img src="https://img.shields.io/badge/USDT-BEP20-26A17B?style=for-the-badge&logo=tether&logoColor=white" alt="USDT BEP20"/>
+  </a>
+  <br>
+  <code>0x94efb6642b8fcc591c28a8c04db2279908f66e18</code>
+</p>
+
+<p>
+  <a href="https://tonscan.org/address/UQD6NpICg2Q7nF_yFRrKW2_ZgB5LPI1X2KDK0JDjlivwhCJ5">
+    <img src="https://img.shields.io/badge/TON-Network-0098EA?style=for-the-badge&logo=ton&logoColor=white" alt="TON"/>
+  </a>
+  <br>
+  <code>UQD6NpICg2Q7nF_yFRrKW2_ZgB5LPI1X2KDK0JDjlivwhCJ5</code>
+</p>
+
+<p>
+  <a href="https://tronscan.org/#/address/TJsBskCPtbVk6gKxTkcocjJX2qNa62Mo1X">
+    <img src="https://img.shields.io/badge/TRON-Network-FF0000?style=for-the-badge&logo=tron&logoColor=white" alt="TRON"/>
+  </a>
+  <br>
+  <code>TJsBskCPtbVk6gKxTkcocjJX2qNa62Mo1X</code>
+</p>
 <sub dir="rtl">فقط USDT و فقط روی شبکه‌ی BEP20 بفرستید</sub><br>
 <sub dir="ltr">Send USDT on BEP20 only</sub>
 <br><br>
