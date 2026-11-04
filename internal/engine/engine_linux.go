@@ -147,6 +147,7 @@ func Apply(st *config.State) Result {
 		res.Errors = append(res.Errors, err)
 	}
 	res.Errors = append(res.Errors, syncReturns(rules.Returns, specs)...)
+	res.Errors = append(res.Errors, syncPublic(rules.Publics, specs)...)
 	streams, serrs := StreamSpecs(st)
 	res.Errors = append(res.Errors, serrs...)
 	if us != nil {
@@ -380,6 +381,7 @@ func Down() error {
 	removeIPsec()
 	syncLanes(nil)
 	syncReturns(nil, nil)
+	syncPublic(nil, nil)
 	guard.Remove()
 	return forward.Apply(forward.Ruleset{})
 }

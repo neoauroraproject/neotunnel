@@ -562,6 +562,7 @@ table.t tr.hit { cursor: pointer; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field > label, .field > .lbl { font-size: 13px; font-weight: 600; }
 .help { color: var(--ink-3); font-size: 12px; line-height: 1.7; }
+.help.warn { color: var(--warn); }
 .input {
   height: 42px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--card-2);
   padding: 0 14px; width: 100%; outline: none; transition: border-color var(--t-fast), box-shadow var(--t-fast);

@@ -332,6 +332,7 @@ type ForwardView struct {
 	Backup   string            `json:"backup,omitempty"`
 	Backups  []string          `json:"backups,omitempty"`
 	Best     bool              `json:"best,omitempty"`
+	ToPublic bool              `json:"to_public,omitempty"` // delivered at the far server's public address
 	Active   string            `json:"active"`
 	Since    int64             `json:"since,omitempty"`
 	Switches []failover.Switch `json:"switches,omitempty"`

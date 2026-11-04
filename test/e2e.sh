@@ -375,7 +375,74 @@ for ns in $HUB $EDGE; do
   ip netns exec $ns ss -Htln "( sport = :40421 or sport = :40422 or sport = :8449 )" | grep -q . && fail "a test's connection tunnel still listens on $ns"
 done
 [ "$(http_code http://198.18.0.1:8092/)" = 200 ] || fail "forward over m1 after the tests"
+out=$(in_hub forward add m1 8111 --to 8447 --mode relay 2>&1) && fail "a forward to m1's own session port 8447 on edge was accepted"
+grep -q "where tunnel m1 itself listens on edge" <<<"$out" || { echo "$out"; fail "no clear refusal of a forward to the tunnel's own port"; }
 pass "connection tunnels: direct and reverse carry forwards, take speed tests, the panel check and the comparison"
+
+# 12b'''. A far server with IPv6 off for new interfaces (disable_ipv6, as on
+#         many servers): the tunnel's interface turns it back on for itself,
+#         keeps its inner IPv6 address and comes up; the check passes too.
+ip netns exec $EDGE sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+api -d '{"peer":"edge","mode":"gre"}' "$base/api/check" | tee "$WORK/v6check.json" | grep -q '"status":"passed"' || { cat "$WORK/v6check.json"; fail "check of gre to a server with IPv6 off"; }
+out=$(in_hub tunnel add v6x --kind gre --peer edge 2>&1) || { echo "$out"; fail "add gre to a server with IPv6 off"; }
+hup 3
+[ "$(ip netns exec $EDGE cat /proc/sys/net/ipv6/conf/nt-v6x/disable_ipv6)" = 0 ] || fail "IPv6 still off on edge's nt-v6x"
+ip -n $EDGE -o -6 addr show dev nt-v6x scope global | grep -q inet6 || { ip -n $EDGE addr show dev nt-v6x; fail "edge's nt-v6x has no inner IPv6 address"; }
+ip netns exec $HUB ping -c 2 -W 2 "$(inner $EDGE nt-v6x)" >/dev/null || fail "ping through gre to a server with IPv6 off"
+[ "$(ip netns exec $EDGE cat /proc/sys/net/ipv6/conf/veth-edge/disable_ipv6)" = 0 ] || fail "the server's own interface changed"
+in_hub tunnel remove v6x >/dev/null
+ip netns exec $EDGE sysctl -qw net.ipv6.conf.default.disable_ipv6=0
+pass "IPv6 off on the far server: the tunnel turns it on for its own interface, comes up and passes the check"
+
+# 12b''''. Delivery at the far server's public address, still through the
+#          tunnel: a service on edge that listens on 192.0.2.2 only. A nat
+#          forward to the tunnel address can't reach it; with --public a
+#          nat and a relay forward can, and edge sees them come from inside
+#          the tunnel. Then the leak guard: with the tunnel down, packets for
+#          its addresses don't leave by the server's own interface.
+ip netns exec $EDGE python3 -m http.server 8085 --bind 192.0.2.2 --directory "$WORK/www" 2>"$WORK/pub.log" >/dev/null &
+pubsrv=$!
+in_hub tunnel add p5 --kind gre --peer edge >/dev/null || fail "add gre p5"
+in_hub forward add p5 8120 --to 8085 --proto tcp >/dev/null || fail "add a forward to edge's tunnel address"
+in_hub forward add p5 8121 --to 8085 --proto tcp --public >/dev/null || fail "add a forward to edge's public address"
+in_hub forward add p5 8122 --to 8085 --mode relay --public >/dev/null || fail "add a relay forward to edge's public address"
+hup 3
+[ "$(http_code http://198.18.0.1:8120/)" = 000 ] || fail "a service on the public address only answered at the tunnel address"
+[ "$(http_code http://198.18.0.1:8121/)" = 200 ] || { ip netns exec $HUB nft list table inet neotunnel | grep -n "public\|8121"; ip -n $HUB rule; fail "nat forward to edge's public address"; }
+[ "$(http_code http://198.18.0.1:8122/)" = 200 ] || fail "relay forward to edge's public address"
+hubin=$(inner $HUB nt-p5)
+grep -q "^$hubin " "$WORK/pub.log" || { cat "$WORK/pub.log"; fail "the public-address forward did not come through the tunnel (from $hubin)"; }
+in_hub forward list | grep -q "8121.*at its public address" || { in_hub forward list; fail "forward list doesn't show the public delivery"; }
+# Proxy mode dials the public address itself, its socket marked so the
+# connection takes the tunnel too.
+ip netns exec $EDGE python3 -c '
+import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("192.0.2.2", 8086)); s.listen(1)
+c, a = s.accept(); c.settimeout(5); d = c.recv(200)
+open(sys.argv[1], "w").write(a[0] + " " + d.decode(errors="replace"))' "$WORK/pubproxy.txt" &
+in_hub forward add p5 8123 --to 8086 --proto tcp --mode proxy --proxy-version 1 --public >/dev/null || fail "add a proxy-mode forward to edge's public address"
+hup 3
+ip netns exec $CLIENT bash -c 'exec 3<>/dev/tcp/198.18.0.1/8123; printf hello >&3; sleep 1; exec 3>&-' || fail "connect to the proxy-mode forward"
+sleep 1
+grep -q "^$hubin PROXY TCP4 198.18.0.2 " "$WORK/pubproxy.txt" || { cat "$WORK/pubproxy.txt"; fail "the proxy-mode forward did not reach edge's public address through the tunnel"; }
+# Leak guard: p5 down here; its far address is unreachable rather than sent
+# out of veth-hub, for the server's own packets and forwarded ones alike.
+# A default route like a datacenter's (via edge here, which would answer)
+# is what such packets would take.
+farin=$(inner $EDGE nt-p5)
+ip -n $HUB route add default via $EDGE_IP dev veth-hub
+ip -n $HUB link set nt-p5 down
+ip netns exec $HUB ping -c 1 -W 1 "$farin" >/dev/null 2>&1 && { ip -n $HUB route; fail "ping to $farin with p5 down got an answer by the default route"; }
+ip netns exec $HUB nft list chain inet neotunnel leak_output | grep -qE "packets [1-9]" || { ip netns exec $HUB nft list chain inet neotunnel leak_output; fail "the leak guard dropped nothing"; }
+http_code http://198.18.0.1:8120/ >/dev/null
+ip netns exec $HUB nft list chain inet neotunnel leak_forward | grep -qE "packets [1-9]" || { ip netns exec $HUB nft list chain inet neotunnel leak_forward; fail "a forwarded packet for p5 left by another interface"; }
+ip -n $HUB route del default via $EDGE_IP dev veth-hub
+in_hub tunnel remove p5 >/dev/null
+kill $pubsrv 2>/dev/null
+hup 2
+ip -n $HUB rule | grep -q "fwmark 0x4e56" && { ip -n $HUB rule; fail "p5's public-address rule stayed after its removal"; }
+pass "public address: nat, proxy and relay forwards reach a service on edge's public address through the tunnel; leak guard drops inner addresses off the tunnel"
 
 # 12c. Lanes: one GRE tunnel on 4 parallel GRE tunnels (distinct keys), the
 #      far end's address reached by a multipath route over all of them; a

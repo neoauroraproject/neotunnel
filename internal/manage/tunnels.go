@@ -176,6 +176,12 @@ type TunnelRequest struct {
 	Proto        string `json:"proto,omitempty"`
 	ForwardMode  string `json:"forward_mode,omitempty"`
 	ProxyVersion int    `json:"proxy_version,omitempty"`
+	// ForwardPublic delivers the forward at the far server's public address
+	// (see config.Forward.Public).
+	ForwardPublic bool `json:"forward_public,omitempty"`
+	// QueueMbit starts the tunnel with its smart queue at this rate (0 =
+	// off; see config.Tunnel.QueueMbit), as the wizard's gaming mode does.
+	QueueMbit int `json:"queue_mbit,omitempty"`
 }
 
 // CreateTunnel builds the mode's stack (carrier first) and its forward.
@@ -225,8 +231,19 @@ func CreateTunnel(req TunnelRequest) (config.Tunnel, Change, error) {
 			if err := portsFree(s, req.Forward, proto, ""); err != nil {
 				return err
 			}
+			if t, ok := s.Tunnel(name); ok && req.ForwardMode != config.ForwardSocks {
+				if err := checkOwnPorts(s, ForwardRequest{Ports: req.Forward, To: req.ForwardTo}, *t); err != nil {
+					return err
+				}
+				if req.ForwardPublic {
+					if err := checkPublic(s, req.ForwardMode, *t); err != nil {
+						return err
+					}
+				}
+			}
 			s.Forwards = append(s.Forwards, config.Forward{Node: s.Self, Tunnel: name, Proto: proto, Ports: req.Forward,
-				To: req.ForwardTo, Mode: req.ForwardMode, ProxyVersion: req.ProxyVersion})
+				To: req.ForwardTo, Mode: req.ForwardMode, ProxyVersion: req.ProxyVersion,
+				Public: req.ForwardPublic && req.ForwardMode != config.ForwardSocks})
 			if t, ok := s.Tunnel(name); ok {
 				relaySecret(s, t, req.ForwardMode)
 			}
@@ -403,6 +420,12 @@ func PlanTunnel(st *config.State, req TunnelRequest) (string, []config.Tunnel, e
 	}
 	top.Mode, top.MTU, top.Profile = mode.Name, req.MTU, profileOf(req.Profile)
 	top.AutoEncrypt = auto
+	if req.QueueMbit < 0 || req.QueueMbit > 100_000 {
+		return "", nil, fmt.Errorf("smart queue rate must be 0 (off) to 100000 Mbit/s")
+	}
+	if !mode.Stream {
+		top.QueueMbit = req.QueueMbit // a connection tunnel has no interface to queue on
+	}
 	top.Lanes = lanesOf(req.Lanes)
 	if err := checkLanes(*top); err != nil {
 		return "", nil, err

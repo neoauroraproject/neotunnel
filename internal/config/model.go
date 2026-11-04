@@ -544,6 +544,12 @@ type Forward struct {
 	// best loss and ping, not only on the first one that works (see package
 	// failover).
 	Best bool `json:"best,omitempty"`
+	// Public delivers the forward at the far server's public address
+	// instead of its address inside the tunnel (in relay mode, instead of
+	// its loopback): for a service there that listens on the public address
+	// only, or a firewall there that drops traffic from private ranges. The
+	// traffic still travels inside the tunnel.
+	Public bool `json:"public,omitempty"`
 	// Plan sells the port as a product: caps on speed, traffic, time and
 	// clients, which the node it listens on enforces (nil = none).
 	Plan *PortPlan `json:"plan,omitempty"`

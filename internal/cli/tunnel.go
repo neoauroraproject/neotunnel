@@ -251,7 +251,7 @@ func forwardCmd() *cobra.Command {
 				proto = "tcp" // relay mode and proxies carry TCP only
 			}
 			ch, err := manage.AddForward(manage.ForwardRequest{Tunnel: args[0], Ports: args[1], Proto: proto, To: to,
-				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion, Backup: mode.Backup, Best: mode.Best, Listen: mode.Listen, Auth: mode.Auth})
+				Mode: mode.Mode, ProxyVersion: mode.ProxyVersion, Backup: mode.Backup, Best: mode.Best, Listen: mode.Listen, Auth: mode.Auth, Public: mode.Public})
 			if err != nil {
 				return err
 			}
@@ -296,6 +296,8 @@ func forwardCmd() *cobra.Command {
 				}
 				if f.ModeOf() == config.ForwardSocks {
 					to = " (proxy on " + proxyAddr(f.Listen, f.Ports) + ")"
+				} else if f.Public {
+					to += " (at its public address)"
 				}
 				fmt.Printf("  %d. %-5s %-20s → %s%s%s\n", i+1, f.Proto, f.Ports, f.Tunnel, to, backup)
 				if f.Plan != nil {

@@ -131,6 +131,22 @@ type Exit struct {
 	// relays come over its sessions instead.
 	Listen  []uint16
 	Session bool
+	// Public are the ones of Ports to reach at Addr, this node's public
+	// address, instead of its loopback: a service that listens there only.
+	Public []uint16
+	Addr   netip.Addr
+}
+
+// dialFor connects to the service a relay request names on this node.
+func (e Exit) dialFor(port uint16) (*net.TCPConn, error) {
+	if e.Addr.IsValid() && allowed(e.Public, port) {
+		c, err := net.DialTimeout("tcp", netip.AddrPortFrom(e.Addr, port).String(), exitDialWait)
+		if err != nil {
+			return nil, err
+		}
+		return c.(*net.TCPConn), nil
+	}
+	return dialLocal(port)
 }
 
 func purpose(cipher string) string {
@@ -446,6 +462,10 @@ func (m *Manager) SyncExits(exits []Exit) error {
 			e.Egress = e.Egress || cur.Egress
 			e.From = append(append([]netip.Addr(nil), cur.From...), e.From...)
 			e.Listen = append(append([]uint16(nil), cur.Listen...), e.Listen...)
+			e.Public = append(append([]uint16(nil), cur.Public...), e.Public...)
+			if !e.Addr.IsValid() {
+				e.Addr = cur.Addr
+			}
 		}
 		byName[k] = e
 	}
@@ -609,12 +629,13 @@ func (m *Manager) serveRequest(x *exitServer, e Exit, q request, sc net.Conn) {
 		return
 	}
 	// The tunnel's forwards may have changed while the connection waited.
-	if e, ok := current(x, e); !ok || !allowed(e.Ports, q.port) {
+	e, ok := current(x, e)
+	if !ok || !allowed(e.Ports, q.port) {
 		return
 	}
 	m.Conns.Add(1)
 	defer m.Conns.Add(-1)
-	up, err := dialLocal(q.port)
+	up, err := e.dialFor(q.port)
 	if err != nil {
 		return
 	}

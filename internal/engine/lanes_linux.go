@@ -49,6 +49,9 @@ func addLaneLinkLocal(s LinkSpec) error {
 	if err != nil {
 		return err
 	}
+	if err := enableIPv6(s.Name); err != nil {
+		return fmt.Errorf("link-local address on %s: %w", s.Name, err)
+	}
 	a := &netlink.Addr{IPNet: &net.IPNet{IP: toIP(laneLinkLocal(s.Side)), Mask: net.CIDRMask(64, 128)}, Flags: unix.IFA_F_NODAD}
 	if err := netlink.AddrReplace(l, a); err != nil {
 		return fmt.Errorf("link-local address on %s: %w", s.Name, err)

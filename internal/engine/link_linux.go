@@ -157,15 +157,18 @@ func configure(cur netlink.Link, s LinkSpec) error {
 			return fmt.Errorf("set mtu on %s: %w", s.Name, err)
 		}
 	}
-	if err := syncAddrs(cur, s.Addrs); err != nil {
-		return err
+	// An address that can't be added doesn't keep the tunnel down: it is
+	// brought up with the others and the error reported.
+	addrs, err := usableAddrs(s.Name, s.Addrs)
+	if aerr := syncAddrs(cur, addrs); aerr != nil {
+		err = errors.Join(err, aerr)
 	}
 	if cur.Attrs().Flags&net.FlagUp == 0 {
-		if err := netlink.LinkSetUp(cur); err != nil {
-			return fmt.Errorf("bring up %s: %w", s.Name, err)
+		if uerr := netlink.LinkSetUp(cur); uerr != nil {
+			return errors.Join(err, fmt.Errorf("bring up %s: %w", s.Name, uerr))
 		}
 	}
-	return nil
+	return err
 }
 
 func syncAddrs(l netlink.Link, want []netip.Prefix) error {

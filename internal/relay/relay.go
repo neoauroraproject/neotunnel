@@ -22,6 +22,10 @@ type Spec struct {
 	Target  netip.AddrPort // the far end's tunnel address and port
 	Version int            // PROXY protocol version, 1 or 2
 	Public  netip.Addr     // this node's public address (destination in UDP headers)
+	// Mark is the routing mark of the connections to Target, when Target is
+	// the far server's public address reached through the tunnel (see
+	// forward.Public); 0 = none.
+	Mark uint32
 	// Via, when set, makes this a relay-mode forward (TCP only): the user's
 	// connection goes to the far node as its own TCP connection, which
 	// connects to Target's port on its loopback. Version 0 sends no header.
@@ -194,7 +198,7 @@ func (m *Manager) handleTCP(s Spec, c *net.TCPConn) {
 	m.Conns.Add(1)
 	defer m.Conns.Add(-1)
 	defer c.Close()
-	d := net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
+	d := net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second, Control: markControl(s.Mark)}
 	up, err := d.Dial("tcp", s.Target.String())
 	if err != nil {
 		return
@@ -283,11 +287,13 @@ func (m *Manager) serveUDP(s Spec) (*server, error) {
 			mu.Lock()
 			ss := sessions[from]
 			if ss == nil {
-				up, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(s.Target))
+				d := net.Dialer{Control: markControl(s.Mark)}
+				c, err := d.Dial("udp", s.Target.String())
 				if err != nil {
 					mu.Unlock()
 					continue
 				}
+				up := c.(*net.UDPConn)
 				ss = &udpSession{conn: up}
 				sessions[from] = ss
 				m.Conns.Add(1)

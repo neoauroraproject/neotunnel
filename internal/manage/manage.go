@@ -281,6 +281,9 @@ type ForwardRequest struct {
 	// Best runs the forward on whichever of its tunnels has the best loss
 	// and ping (see config.Forward).
 	Best bool `json:"best,omitempty"`
+	// Public delivers it at the far server's public address (see
+	// config.Forward).
+	Public bool `json:"public,omitempty"`
 	// Listen and Auth are a socks forward's address ("" = 127.0.0.1) and
 	// "user:password" ("" = none; required off loopback).
 	Listen string `json:"listen,omitempty"`
@@ -337,6 +340,19 @@ func (r *ForwardRequest) check(st *config.State) error {
 	if (r.Mode == config.ForwardProxy || r.Mode == config.ForwardRelay) && len(forward.Expand(r.Ports)) > forward.MaxRelayPorts {
 		return fmt.Errorf("proxy mode supports up to %d ports per forward", forward.MaxRelayPorts)
 	}
+	if r.Mode != config.ForwardSocks {
+		if err := checkOwnPorts(st, *r, *t); err != nil {
+			return err
+		}
+	}
+	if r.Mode == config.ForwardSocks {
+		r.Public = false // a proxy's connections go to the internet
+	}
+	if r.Public {
+		if err := checkPublic(st, r.Mode, *t); err != nil {
+			return err
+		}
+	}
 	if len(r.Backups) == 0 && r.Backup != "" {
 		r.Backups = strings.Split(r.Backup, ",")
 	}
@@ -351,6 +367,72 @@ func (r *ForwardRequest) check(st *config.State) error {
 		if b, _ := st.Tunnel(r.Backups[i]); b.IsStream() && r.Mode != config.ForwardRelay && r.Mode != config.ForwardSocks {
 			return fmt.Errorf("backup %s is a connection tunnel: it carries relay and proxy forwards only", r.Backups[i])
 		}
+	}
+	return nil
+}
+
+// checkOwnPorts keeps a forward off the ports NeoTunnel itself listens on
+// for its tunnel: the relay listener of either end, and a connection
+// tunnel's sessions on the side that listens. A forward to one of them on
+// the far end reaches that listener instead of the service there, and one
+// on this server's side can't listen.
+func checkOwnPorts(st *config.State, r ForwardRequest, t config.Tunnel) error {
+	if t.Sides[1].Node == "" {
+		return nil // nothing of NeoTunnel listens at a router's end
+	}
+	me := 0
+	if st.IsSelf(t.Sides[1].Node) {
+		me = 1
+	}
+	own := func(side int) []uint16 {
+		if t.IsStream() {
+			if t.Listener() == side {
+				return t.StreamPorts()
+			}
+			return nil
+		}
+		return t.RelayPorts // either end may be a relay's exit
+	}
+	local, far := own(me), own(1-me)
+	for _, n := range forward.Expand(r.Ports) {
+		p := uint16(n)
+		to := p
+		if r.To != 0 {
+			to = r.To
+		}
+		if slices.Contains(local, p) {
+			return fmt.Errorf("port %d is where tunnel %s itself listens on this server; choose another port for the forward", p, t.Name)
+		}
+		if slices.Contains(far, to) {
+			return fmt.Errorf("port %d is where tunnel %s itself listens on %s: the forward would reach the tunnel, not your service there; choose another target port", to, t.Name, t.Sides[1-me].Node)
+		}
+	}
+	return nil
+}
+
+// checkPublic checks a forward in mode over t that goes to the far server's
+// public address. Relays connect to it there; other modes route it through
+// the tunnel by a mark, which a few kinds would put on their own outer
+// packets too (see forward.Public).
+func checkPublic(st *config.State, mode string, t config.Tunnel) error {
+	switch mode {
+	case config.ForwardTransparent:
+		return fmt.Errorf("a transparent forward can't go to the far server's public address; use nat, proxy or relay")
+	case config.ForwardRelay:
+		return nil
+	}
+	if t.IsStream() {
+		return nil // only relays run on it
+	}
+	for cur, hops := t, 0; hops < 8; hops++ {
+		if k := cur.Kind; k == config.KindVXLAN || k == config.KindGENEVE || k == config.KindL2TPv3 {
+			return fmt.Errorf("a forward to the far server's public address can't run over %s; use relay mode, or another kind of tunnel", k)
+		}
+		next, ok := st.Tunnel(cur.Over)
+		if cur.Over == "" || !ok {
+			break
+		}
+		cur = *next
 	}
 	return nil
 }
@@ -439,7 +521,7 @@ func AddForward(r ForwardRequest) (Change, error) {
 			return err
 		}
 		f := config.Forward{Node: s.Self, Tunnel: r.Tunnel, Proto: r.Proto, Ports: r.Ports,
-			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Listen: r.Listen, Auth: r.Auth, Best: r.Best}
+			To: r.To, Mode: r.Mode, ProxyVersion: r.ProxyVersion, Listen: r.Listen, Auth: r.Auth, Best: r.Best, Public: r.Public}
 		f.SetBackups(r.Backups)
 		s.Forwards = append(s.Forwards, f)
 		return nil
@@ -492,7 +574,7 @@ func UpdateForward(r ForwardRequest) (Change, error) {
 				f.Tunnel, f.Ports = r.Tunnel, r.Ports
 				f.Proto, f.To, f.Mode, f.ProxyVersion = r.Proto, r.To, r.Mode, r.ProxyVersion
 				f.SetBackups(r.Backups)
-				f.Listen, f.Auth, f.Best = r.Listen, r.Auth, r.Best
+				f.Listen, f.Auth, f.Best, f.Public = r.Listen, r.Auth, r.Best, r.Public
 				s.Forwards[i] = f
 				nowKey = f.PortKey()
 				// The port keeps its place in the list under its new key.

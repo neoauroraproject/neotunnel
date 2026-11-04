@@ -76,6 +76,7 @@ func Doctor(st *config.State, fix bool) []Finding {
 		all, fs := st.Effective()
 		rules, _ := forward.Build(st, failover.Route(fs, all, failover.Load()), links)
 		syncReturns(rules.Returns, specs)
+		syncPublic(rules.Publics, specs)
 		add(true, true, "routing rules match the current forwards")
 	} else {
 		pols, _ := netlink.XfrmPolicyList(netlink.FAMILY_ALL)

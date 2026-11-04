@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net/netip"
@@ -98,18 +99,35 @@ func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []erro
 			errs = append(errs, err)
 			continue
 		}
-		if f.ModeOf() == config.ForwardProxy {
-			specs, err := relays(st, f, ps, target.Addr())
+		dest, mark := target.Addr(), uint32(0)
+		if f.Public {
+			pub, err := publicTarget(st, f, t, byName, dest)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("forward %s on %s: %w", f.Ports, f.Tunnel, err))
 				continue
 			}
+			dest, mark = pub, PublicMark(t.Name)
+			p := Public{Iface: iface, Lanes: lanes[f.Tunnel], Mark: mark, Dest: pub, Via: target.Addr()}
+			if !slices.ContainsFunc(rs.Publics, func(x Public) bool { return x.Iface == p.Iface && x.Dest == p.Dest }) {
+				rs.Publics = append(rs.Publics, p)
+			}
+		}
+		if f.ModeOf() == config.ForwardProxy {
+			specs, err := relays(st, f, ps, dest)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("forward %s on %s: %w", f.Ports, f.Tunnel, err))
+				continue
+			}
+			for i := range specs {
+				specs[i].Mark = mark
+			}
 			rs.Relays = append(rs.Relays, specs...)
 			continue
 		}
-		rs.Rules = append(rs.Rules, Rule{Iface: iface, Lanes: lanes[f.Tunnel], Proto: ps, Ports: ports, Target: target.Addr(), To: f.To,
-			Transparent: f.ModeOf() == config.ForwardTransparent, Key: f.Proto + "/" + f.Ports})
+		rs.Rules = append(rs.Rules, Rule{Iface: iface, Lanes: lanes[f.Tunnel], Proto: ps, Ports: ports, Target: dest, To: f.To,
+			Transparent: f.ModeOf() == config.ForwardTransparent, Mark: mark, Key: f.Proto + "/" + f.Ports})
 	}
+	rs.Inner = innerNets(ts)
 	for _, name := range st.ReturnPaths() {
 		if iface, up := ifByTunnel[name]; up {
 			rs.Returns = append(rs.Returns, Return{Iface: iface, Lanes: lanes[name], Mark: ReturnMark(name)})
@@ -126,6 +144,63 @@ func Build(st *config.State, fs []config.Forward, links []Link) (Ruleset, []erro
 		}
 	}
 	return rs, errs
+}
+
+// publicTarget is the far server's public address for f, a forward on t
+// whose address inside the tunnel is inner.
+func publicTarget(st *config.State, f config.Forward, t config.Tunnel, byName map[string]config.Tunnel, inner netip.Addr) (netip.Addr, error) {
+	if f.ModeOf() == config.ForwardTransparent {
+		return netip.Addr{}, errors.New("a transparent forward can't go to the far server's public address")
+	}
+	// These kinds route their outer packets with the inner packet's mark:
+	// the mark that takes the forward into the tunnel would take the
+	// tunnel's own packets there too.
+	for cur, hops := t, 0; hops < 8; hops++ {
+		if k := cur.Kind; k == config.KindVXLAN || k == config.KindGENEVE || k == config.KindL2TPv3 {
+			return netip.Addr{}, fmt.Errorf("%s can't carry a forward to the far server's public address; use its address inside the tunnel", k)
+		}
+		next, ok := byName[cur.Over]
+		if cur.Over == "" || !ok {
+			break
+		}
+		cur = next
+	}
+	pub, _, err := relayPeer(st, t, byName)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if pub.Is4() != inner.Is4() {
+		return netip.Addr{}, fmt.Errorf("the far server's public address %s is not of the same family as its address inside the tunnel", pub)
+	}
+	return pub, nil
+}
+
+// innerNets are the subnets inside the tunnels, one of each, none within
+// another (nft refuses overlapping elements).
+func innerNets(ts []config.Tunnel) []netip.Prefix {
+	var all []netip.Prefix
+	for _, t := range ts {
+		for _, n := range []string{t.Net4, t.Net6} {
+			if p, err := netip.ParsePrefix(n); err == nil {
+				all = append(all, p.Masked())
+			}
+		}
+	}
+	// Widest first, so anything inside one already kept is dropped.
+	slices.SortFunc(all, func(a, b netip.Prefix) int {
+		if a.Bits() != b.Bits() {
+			return a.Bits() - b.Bits()
+		}
+		return a.Addr().Compare(b.Addr())
+	})
+	var out []netip.Prefix
+	for _, p := range all {
+		if !slices.ContainsFunc(out, func(q netip.Prefix) bool { return q.Contains(p.Addr()) && q.Bits() <= p.Bits() }) {
+			out = append(out, p)
+		}
+	}
+	slices.SortFunc(out, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
+	return out
 }
 
 // account is what counts a forward's traffic; a downloads proxy has no
@@ -227,7 +302,7 @@ func Script(rs Ruleset) string {
 	var b strings.Builder
 	// Creating then deleting makes the delete safe when the table doesn't exist.
 	b.WriteString("table inet neotunnel\ndelete table inet neotunnel\n")
-	if len(rs.Rules) == 0 && len(rs.Ifaces) == 0 && len(rs.Returns) == 0 {
+	if len(rs.Rules) == 0 && len(rs.Ifaces) == 0 && len(rs.Returns) == 0 && len(rs.Inner) == 0 {
 		return b.String()
 	}
 	b.WriteString("table inet neotunnel {\n")
@@ -239,6 +314,8 @@ func Script(rs Ruleset) string {
 		if r.Transparent {
 			transparent[r.Iface] = true
 			mark = fmt.Sprintf("ct mark set 0x%08x ", transparentMark)
+		} else if r.Mark != 0 {
+			mark = fmt.Sprintf("ct mark set 0x%08x ", r.Mark)
 		}
 		for _, p := range r.Proto {
 			fmt.Fprintf(&b, "    meta nfproto %s iifname != \"nt-*\" fib daddr type local %s dport { %s } %sdnat %s to %s\n",
@@ -259,9 +336,13 @@ func Script(rs Ruleset) string {
 			if r.Target.Is6() {
 				lo = "ip6 daddr != ::1 "
 			}
+			mark := ""
+			if r.Mark != 0 {
+				mark = fmt.Sprintf("ct mark set 0x%08x ", r.Mark)
+			}
 			for _, p := range r.Proto {
-				fmt.Fprintf(&b, "    meta nfproto %s %sfib daddr type local %s dport { %s } dnat %s to %s\n",
-					fam, lo, p, r.Ports, nat, target)
+				fmt.Fprintf(&b, "    meta nfproto %s %sfib daddr type local %s dport { %s } %sdnat %s to %s\n",
+					fam, lo, p, r.Ports, mark, nat, target)
 			}
 		}
 		b.WriteString("  }\n")
@@ -345,6 +426,40 @@ func Script(rs Ruleset) string {
 			}
 		}
 		b.WriteString("  }\n")
+	}
+	if len(rs.Publics) > 0 {
+		// Forwards to the far server's public address: every packet of their
+		// connections takes the mark the DNAT rule gave the connection, after
+		// that rule (priority -99), so the routing rule of the mark sends it
+		// through the tunnel; the tunnel's own packets to that address are
+		// never marked. Proxy mode marks its sockets instead.
+		b.WriteString("  chain public_in {\n    type filter hook prerouting priority -99; policy accept;\n")
+		fmt.Fprintf(&b, "    ct direction original ct mark & 0xffff0000 == 0x%08x meta mark set ct mark\n", publicMarks)
+		b.WriteString("  }\n")
+		b.WriteString("  chain public_out {\n    type route hook output priority -99; policy accept;\n")
+		fmt.Fprintf(&b, "    ct direction original ct mark & 0xffff0000 == 0x%08x meta mark set ct mark\n", publicMarks)
+		b.WriteString("  }\n")
+	}
+	if len(rs.Inner) > 0 {
+		// Packets for an address inside a tunnel leave through a tunnel or
+		// not at all: with the tunnel down they would take the default route
+		// into the datacenter's network.
+		for _, ch := range [][2]string{{"leak_forward", "forward"}, {"leak_output", "output"}} {
+			fmt.Fprintf(&b, "  chain %s {\n    type filter hook %s priority filter; policy accept;\n", ch[0], ch[1])
+			b.WriteString("    oifname \"nt-*\" return\n    oifname \"ntx-*\" return\n    oifname \"lo\" return\n")
+			for _, fam := range []string{"ip", "ip6"} {
+				var ns []string
+				for _, p := range rs.Inner {
+					if p.Addr().Is4() == (fam == "ip") {
+						ns = append(ns, p.String())
+					}
+				}
+				if len(ns) > 0 {
+					fmt.Fprintf(&b, "    %s daddr { %s } counter drop\n", fam, strings.Join(ns, ", "))
+				}
+			}
+			b.WriteString("  }\n")
+		}
 	}
 	if len(rs.Returns) > 0 {
 		// Return paths: connections that arrive through the tunnel from

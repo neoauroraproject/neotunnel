@@ -216,6 +216,26 @@ func relayPeer(st *config.State, t config.Tunnel, byName map[string]config.Tunne
 	return netip.Addr{}, "", errors.New("the far end has no public address")
 }
 
+// ownAddr is this node's public address as tunnel t (or the tunnel it runs
+// over) knows it.
+func ownAddr(st *config.State, t config.Tunnel, byName map[string]config.Tunnel) (netip.Addr, error) {
+	for cur, hops := t, 0; hops < 8; hops++ {
+		if ep := cur.Sides[sideOf(st, cur)].Endpoint; ep != "" {
+			a, err := netip.ParseAddr(ep)
+			if err != nil {
+				return netip.Addr{}, fmt.Errorf("this end %q is not an IP address", ep)
+			}
+			return a.Unmap(), nil
+		}
+		next, ok := byName[cur.Over]
+		if cur.Over == "" || !ok {
+			break
+		}
+		cur = next
+	}
+	return netip.Addr{}, errors.New("this end has no public address")
+}
+
 // relayExits lists the tunnels whose relay forwards end on this node: their
 // far node's forwards, with the ports the relay may connect to here.
 func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit {
@@ -241,6 +261,12 @@ func relayExits(st *config.State, byName map[string]config.Tunnel) []relay.Exit 
 			} else {
 				for _, p := range Expand(f.Ports) {
 					e.Ports = append(e.Ports, uint16(p))
+				}
+			}
+			if f.Public && !e.Egress {
+				// Delivered at this node's public address, not its loopback.
+				if a, err := ownAddr(st, t, byName); err == nil {
+					e.Public, e.Addr = e.Ports, a
 				}
 			}
 			out = append(out, e)

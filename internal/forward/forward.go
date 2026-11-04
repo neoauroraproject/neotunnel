@@ -27,6 +27,9 @@ type Rule struct {
 	To     uint16 // target port; 0 = keep the original port
 	// Transparent forwards keep the client's address (no masquerade).
 	Transparent bool
+	// Mark routes the forward to Target, the far server's public address,
+	// through the tunnel (see Public); 0 = Target is inside the tunnel.
+	Mark uint32
 	// Key identifies the forward for its traffic counters ("tcp/443").
 	Key string
 }
@@ -85,6 +88,14 @@ type Ruleset struct {
 	// mode, Plans the sold ones' limits (see config.PortPlan).
 	Accounts []Account
 	Plans    []Plan
+	// Publics are the tunnels that carry forwards to their far server's
+	// public address.
+	Publics []Public
+	// Inner are the subnets inside this node's tunnels. Packets for them
+	// never leave by any other interface: with a tunnel down they would take
+	// the default route to the datacenter's network, which drops or reports
+	// traffic to private addresses.
+	Inner []netip.Prefix
 }
 
 // Account is a forward's ports, counted under Key ("tcp/443").
@@ -163,6 +174,32 @@ func ReturnMark(tunnel string) uint32 {
 	h.Write([]byte(tunnel))
 	return 0x4e540000 | h.Sum32()&0xffff
 }
+
+// Public is a tunnel whose forwards go to its far server's public address.
+// The tunnel's own outer packets go to that same address, so it can't be
+// routed through the tunnel as a whole: the forwards' connections are
+// marked, and only marked packets take the tunnel (see the engine).
+type Public struct {
+	Iface string
+	Lanes []string
+	Mark  uint32
+	Dest  netip.Addr // the far server's public address
+	Via   netip.Addr // its address inside the tunnel
+}
+
+// PublicMark is the connection and routing mark of the forwards a tunnel
+// delivers at its far server's public address.
+func PublicMark(tunnel string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(tunnel))
+	return publicMarks | h.Sum32()&0xffff
+}
+
+// publicMarks are the top 16 bits of every PublicMark.
+const publicMarks = 0x4e560000
+
+// IsPublicMark reports whether m is a PublicMark.
+func IsPublicMark(m uint32) bool { return m&0xffff0000 == publicMarks }
 
 // MaxRelayPorts caps how many ports one proxy-mode forward may listen on.
 const MaxRelayPorts = 2000

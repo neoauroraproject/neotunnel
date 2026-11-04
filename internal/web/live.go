@@ -332,7 +332,7 @@ func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardVi
 	out := []ForwardView{}
 	for _, f := range st.SortForwards(fs) {
 		v := ForwardView{Tunnel: f.Tunnel, Proto: f.Proto, Ports: f.Ports, To: f.To, Public: st.Address,
-			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Listen: f.Listen, Auth: f.Auth, Backup: f.Backup, Backups: f.Backups(), Best: f.Best, Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
+			Mode: f.ModeOf(), ProxyV: f.ProxyVersion, Listen: f.Listen, Auth: f.Auth, Backup: f.Backup, Backups: f.Backups(), Best: f.Best, ToPublic: f.Public, Active: failover.Route([]config.Forward{f}, ts, paths)[0].Tunnel}
 		if p := paths[failover.Key(f)]; p != nil && f.Backup != "" {
 			v.Since, v.Switches = p.Since, p.Switches
 		}
@@ -369,6 +369,9 @@ func forwardViews(st *config.State, sums map[string]traffic.Summary) []ForwardVi
 				v.Target = "127.0.0.1" // the far node connects to its own loopback
 			case config.ForwardSocks:
 				v.Target = "" // wherever the program asks
+			}
+			if f.Public && v.Mode != config.ForwardSocks {
+				v.Target = publicOf(ts, t, me)
 			}
 		}
 		out = append(out, v)
@@ -896,4 +899,20 @@ func (l *Live) RandomPort(proto string) (uint16, error) {
 		return 0, err
 	}
 	return manage.RandomPort(st, proto)
+}
+
+// publicOf is the public address of side side of t, from t or the tunnel
+// it runs over.
+func publicOf(ts []config.Tunnel, t config.Tunnel, side int) string {
+	for hops := 0; hops < 8; hops++ {
+		if ep := t.Sides[1-side].Endpoint; ep != "" {
+			return ep
+		}
+		next, ok := tunnelByName(ts, t.Over)
+		if t.Over == "" || !ok {
+			break
+		}
+		t = next
+	}
+	return ""
 }

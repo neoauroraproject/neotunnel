@@ -219,6 +219,9 @@ func forwardSetCmd() *cobra.Command {
 					if !f.Changed("best") {
 						r.Best = fw.Best
 					}
+					if !f.Changed("public") {
+						r.Public = fw.Public
+					}
 				}
 			}
 			ch, err := manage.UpdateForward(r)
@@ -241,6 +244,7 @@ func forwardModeFlags(f *pflag.FlagSet, r *manage.ForwardRequest) {
 	f.IntVar(&r.ProxyVersion, "proxy-version", 0, "PROXY protocol version for --mode proxy: 2 (default, TCP+UDP) or 1 (TCP); with --mode relay: 0 (no header, default), 1 or 2")
 	f.StringVar(&r.Listen, "listen", "", "with --mode socks: the address the proxy listens on (default 127.0.0.1, only this server; any other needs --auth)")
 	f.StringVar(&r.Auth, "auth", "", "with --mode socks: user:password the proxy asks for")
+	f.BoolVar(&r.Public, "public", false, "deliver at the far server's public address instead of its address inside the tunnel (relay: instead of its 127.0.0.1), for a service there that listens on the public address only or a firewall there that drops private ranges; the traffic still goes through the tunnel")
 	f.BoolVar(&r.Best, "best", false, "with backups: run on whichever of the tunnels has the best loss and ping, not only the first that works (open connections stay where they are when it moves)")
 	f.StringVar(&r.Backup, "backup", "", "other tunnels to the same far server, separated by commas, first choice first: the forward moves to the first that works while its tunnel stops passing traffic, and back once it has worked again for about a minute (set \"\" to remove)")
 }

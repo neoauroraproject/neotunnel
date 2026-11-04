@@ -189,8 +189,26 @@
   function pverField(path, o, mode) {
     const [key, vs] = mode === "proxy" ? ["pver", ["2", "1"]] : mode === "relay" ? ["rver", ["0", "2", "1"]] : [];
     if (!key) return "";
-    return html`<div class="field"><span class="lbl">هدر PROXY protocol</span><div class="seg">${vs.map((v) => html`<button type="button" class="${String(o[key] || 0) === v ? "on" : ""}" data-act="set" data-path="${path}.${key}" data-value="${v}">${v === "0" ? "بدون هدر" : "v" + v}</button>`)}</div></div>`;
+    const on = +(o[key] || 0) > 0;
+    return html`<div class="field"><span class="lbl">هدر PROXY protocol</span><div class="seg">${vs.map((v) => html`<button type="button" class="${String(o[key] || 0) === v ? "on" : ""}" data-act="set" data-path="${path}.${key}" data-value="${v}">${v === "0" ? "بدون هدر" : "v" + v}</button>`)}</div>
+      ${on ? html`<span class="help warn">سرویس مقصد باید هدر PROXY را بپذیرد (در Xray و 3x-ui گزینه‌ی acceptProxyProtocol / Proxy Protocol روی inbound)؛ وگرنه هیچ اتصالی برقرار نمی‌شود.</span>` : ""}</div>`;
   }
+  // A connection tunnel carries relay forwards only: their mode is relay,
+  // set for the user (a SOCKS/HTTP proxy is made in its own form).
+  const fwdModeFor = (t, mode) => (t && t.stream ? "relay" : mode);
+  // Where the far server hands a forward to its service: inside the tunnel
+  // (127.0.0.1 for a relay) or at its public address, still through the
+  // tunnel. A transparent forward and a proxy have no choice here.
+  const toPublicOf = (mode, o) => mode !== "transparent" && mode !== "socks" && !!o.toPublic;
+  function targetField(path, o, mode) {
+    if (mode === "transparent" || mode === "socks") return "";
+    const inside = mode === "relay" ? "127.0.0.1 روی سرور مقصد" : "آدرس داخل تانل";
+    return html`<div class="field full"><span class="lbl">تحویل روی سرور مقصد</span><div class="seg">
+        <button type="button" class="${o.toPublic ? "" : "on"}" data-act="set" data-path="${path}.toPublic" data-value="">${inside}</button>
+        <button type="button" class="${o.toPublic ? "on" : ""}" data-act="set" data-path="${path}.toPublic" data-value="1">IP پابلیک سرور مقصد</button></div>
+      <span class="help">${o.toPublic ? "ترافیک باز هم داخل تانل می‌رود، ولی سرور مقصد آن را روی IP پابلیک خودش تحویل می‌گیرد: برای سرویسی که فقط روی IP پابلیک گوش می‌دهد، یا فایروالی آنجا که ترافیک از رنج داخلی را می‌بندد." : mode === "relay" ? "سرور مقصد اتصال را به 127.0.0.1 و همین پورت روی خودش می‌رساند." : "سرور مقصد اتصال را روی آدرس خودش داخل تانل تحویل می‌گیرد."}</span></div>`;
+  }
+  const streamModeNote = html`<div class="field full"><span class="lbl">حالت فوروارد</span><div class="help">رله TCP، خودکار برای تانل اتصال: هر اتصال کاربر جدا روی جلسه‌های تانل می‌رود و سرور مقصد آن را به 127.0.0.1 و همین پورت روی خودش می‌رساند؛ سرویس آنجا باید روی 0.0.0.0 یا 127.0.0.1 گوش بدهد.</div></div>`;
   const fwdVersion = (mode, o) => mode === "proxy" ? +o.pver : mode === "relay" ? +(o.rver || 0) : 0;
   const fwdProtos = (mode) => mode === "relay" ? ["tcp"] : ["both", "tcp", "udp"];
   const fwdProto = (mode, p) => mode === "relay" ? "tcp" : p;
@@ -1908,7 +1926,7 @@
 
   // A forward's mode in words.
   const modeInfo = (m) => MODES_FWD[m] || (m === "socks" ? ["پروکسی SOCKS/HTTP", "پروکسی روی این سرور برای برنامه‌های همین‌جا؛ اتصال‌ها از سرور مقصد به اینترنت می‌روند."] : [m, ""]);
-  const fwdModeLabel = (f) => html`<span class="tag" title="${modeInfo(f.mode)[1]}">${modeInfo(f.mode)[0]}${f.mode === "proxy" ? ` v${f.proxy_version || 2}` : f.mode === "relay" && f.proxy_version ? ` + PROXY v${f.proxy_version}` : ""}</span>`;
+  const fwdModeLabel = (f) => html`<span class="tag" title="${modeInfo(f.mode)[1]}">${modeInfo(f.mode)[0]}${f.mode === "proxy" ? ` v${f.proxy_version || 2}` : f.mode === "relay" && f.proxy_version ? ` + PROXY v${f.proxy_version}` : ""}</span>${f.to_public ? html`<span class="tag" title="روی IP پابلیک سرور مقصد تحویل می‌شود، از داخل تانل">IP پابلیک</span>` : ""}`;
 
   // Tunnels that can back up a forward on tunnel name: our other tunnels to
   // the same far server.
@@ -1953,6 +1971,7 @@
     if (!f) return html`${modalHead("ویرایش پورت")}<div class="body"><div class="note">این فوروارد دیگر وجود ندارد.</div></div>`;
     const socks = f.mode === "socks", ts = visible().filter((x) => !x.managed && (!socks || x.peer)), t = tunnel(e.tunnel), remote = t && !t.peer;
     if (remote && (e.mode === "transparent" || e.mode === "relay")) e.mode = "nat";
+    if (!socks) e.mode = fwdModeFor(t, e.mode);
     e.backups = (e.backups || []).filter((n) => backupChoices(e.tunnel).some((x) => x.name === n));
     const open = e.access === "all";
     const tunnelSel = html`<div class="field full"><label for="fe-t">از طریق تانل</label><select id="fe-t" class="input" data-bind="fwdEditor.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${e.tunnel === x.name ? "selected" : ""}>${tname(x)} به ${pname(x.peer) || x.far_ip} (${kindTitle(x)})</option>`)}</select></div>`;
@@ -1967,8 +1986,9 @@
         <div class="field"><label for="fe-p">پورت(های) این سرور</label><input id="fe-p" class="input ltr" data-bind="fwdEditor.ports" value="${e.ports}" placeholder="443, 2053-2096"></div>
         <div class="field"><label for="fe-to">پورت مقصد</label><input id="fe-to" class="input ltr" type="number" min="1" max="65535" data-bind="fwdEditor.to" value="${e.to}" placeholder="همان پورت"></div>
         <div class="field"><span class="lbl">پروتکل</span><div class="seg">${fwdProtos(e.mode).map((v) => html`<button type="button" class="${fwdProto(e.mode, e.proto) === v ? "on" : ""}" data-act="set" data-path="fwdEditor.proto" data-value="${v}">${v === "both" ? "TCP + UDP" : v.toUpperCase()}</button>`)}</div></div>
-        ${modeField("fwdEditor", e.mode, remote)}${sitHint(t && !remote && t.mode, e.mode)}
+        ${t && t.stream ? streamModeNote : html`${modeField("fwdEditor", e.mode, remote)}${sitHint(t && !remote && t.mode, e.mode)}`}
         ${pverField("fwdEditor", e, e.mode)}
+        ${targetField("fwdEditor", e, e.mode)}
         ${backupField("fwdEditor", e, e.tunnel)}</div>`;
     return html`${modalHead(html`ویرایش ${socks ? "پروکسی" : "پورت"} <span class="ltr">${f.ports}</span>`)}
       <div class="body">${body}
@@ -2231,6 +2251,9 @@
     const all = j.results || [], running = j.status === "running";
     const done = all.filter((r) => rstatus(r) === "done");
     const best = j.kind === "bench" && !running ? done.find((r) => r.name !== "direct") : null;
+    // For games: the lowest ping and jitter without loss, of the kinds that
+    // carry UDP in the kernel (the results come sorted by speed).
+    const game = best ? done.filter((r) => r.mode && GAME_MODES.includes(r.mode) && !r.loss).sort((a, b) => (a.ping_ms + a.jitter_ms) - (b.ping_ms + b.jitter_ms))[0] : null;
     const max = Math.max(1, ...done.map((r) => Math.max(r.down_bps, r.up_bps)));
     const st = { running: "در حال اجرا", done: "تمام شد", failed: "ناموفق", cancelled: "متوقف شد" }[j.status];
     const n = (s) => all.filter((r) => rstatus(r) === s).length;
@@ -2256,6 +2279,8 @@
         <div class="pbar"><i style="transform:scaleX(${(finished / all.length).toFixed(3)})"></i></div></div>` : ""}
       ${best ? html`<div class="note ok">سریع‌ترین گزینه تا <b>${j.target}</b>: <b>${resultTitle(best)}</b>، دانلود ${fmtRate(best.down_bps)} و پینگ ${ms(best.ping_ms)}.
         ${best.mode ? html` <button class="btn sm primary" data-act="wizard" data-peer="${j.target}" data-mode="${best.mode}" data-port="${best.port || ""}">ساخت همین تانل</button>` : ""}</div>` : ""}
+      ${game ? html`<div class="note">برای بازی تا <b>${j.target}</b>: <b>${resultTitle(game)}</b>، پینگ ${ms(game.ping_ms)} و جیتر ${ms(game.jitter_ms)} بدون افت.
+        <button class="btn sm" data-act="wizard" data-peer="${j.target}" data-mode="${game.mode}" data-port="${game.port || ""}" data-gaming="1">ساخت برای گیمینگ</button></div>` : ""}
       ${all.length ? html`<div><div class="legend"><span><i class="rx"></i>دانلود</span><span><i class="tx"></i>آپلود</span></div><div class="rank">${all.map(row)}</div></div>` : ""}
       <details class="adv" ${S.logOpen ? "open" : ""} data-act="log-toggle"><summary>گزارش کامل ${I.chev(16)}</summary><div class="in"><div class="console" id="console">${(j.log || []).map((l) => html`<div>${l}</div>`)}</div></div></details>
     </div></div>`;
@@ -2806,6 +2831,37 @@
   // A connection tunnel's third step is mostly its direction.
   const wizSteps = (w) => (w.mode && isStreamMode(w.mode) ? ["مقصد", "پروتکل", "جهت و پورت", "فوروارد و ساخت"] : WIZ_STEPS);
   const SIT_MODES = ["6to4", "6to4-gre"];
+  // Gaming: the kinds that carry UDP in the kernel with the least delay and
+  // jitter, and the ones whose TCP (or user-space path) adds to them.
+  const GAME_MODES = ["gre", "ipip", "6to4", "wireguard"];
+  const notForGames = (m) => !!(m.tcp || m.stream || m.name === "obfs");
+  // The gaming mode the live checks found quickest, of those that passed.
+  function gameBest(w) {
+    let best = null, bestPing = Infinity;
+    for (const name of GAME_MODES) {
+      const c = w.checks[checkKey(w, name, false)];
+      if (c && c.state === "ok" && !c.existing && c.ping < bestPing && S.ov.modes.some((m) => m.name === name)) { best = name; bestPing = c.ping; }
+    }
+    return best;
+  }
+  // Settings of the gaming mode: least delay, UDP forwarded, the path MTU
+  // measured; the mode itself is the quickest that passed.
+  function applyGaming(w) {
+    Object.assign(w, { profile: "lean", mtuMode: "probe", fmode: "nat", proto: "both" });
+    if (w.protect === "obfs" || w.protect === "auto") w.protect = "none";
+    const m = S.ov.modes.find((x) => x.name === w.mode), c = w.checks[checkKey(w, w.mode, false)];
+    if (!m || !GAME_MODES.includes(w.mode) || (c && (c.state === "bad" || c.existing))) {
+      const bad = (n) => { const k = w.checks[checkKey(w, n, false)]; return k && (k.state === "bad" || k.existing); };
+      w.mode = gameBest(w) || GAME_MODES.find((n) => !bad(n) && S.ov.modes.some((x) => x.name === n)) || "gre";
+    }
+  }
+  // The smart queue a gaming tunnel starts with: 90% of the slower direction
+  // of its measured speed, so a download on the same tunnel keeps the ping
+  // low (0 = not measured, set it later in the tunnel's limits).
+  function gameQueue(w) {
+    const r = w.speeds[speedKey(w, w.profile || "balanced")];
+    return r && r.state === "ok" ? Math.max(0, Math.floor((0.9 * Math.min(r.up, r.down)) / 1e6)) : 0;
+  }
 
   function wizardView() {
     const w = S.wiz;
@@ -2853,13 +2909,17 @@
     const card = (m) => {
       const pi = PROTO[m.name] || {}, c = w.checks[checkKey(w, m.name, false)];
       return html`<button type="button" class="choice ${w.mode === m.name ? "on" : ""}" data-act="wiz-mode" data-mode="${m.name}">
-        <b>${pi.t || m.title}${pi.rec && !v6 ? html` <span class="tag lock">پیشنهادی</span>` : ""}</b>
+        <b>${pi.t || m.title}${w.gaming ? (m.name === gameBest(w) ? html` <span class="tag lock">کمترین پینگ</span>` : notForGames(m) ? html` <span class="tag warn">برای بازی نه</span>` : "") : pi.rec && !v6 ? html` <span class="tag lock">پیشنهادی</span>` : ""}</b>
         <span>${pi.best || ""}</span>
         <span class="facts"><span class="tag">سربار ${pi.over || "?"} بایت</span>${m.udp ? html`<span class="tag">UDP</span>` : ""}${m.stream ? html`<span class="tag">TCP · اتصال به اتصال</span>` : m.tcp ? html`<span class="tag warn">TCP · کند با افت بسته</span>` : ""}${m.crypt ? html`<span class="tag lock">${I.lock(11)} رمزدار</span>` : ""}</span>
         ${checkChip(c)}</button>`;
     };
     const sel = PROTO[w.mode];
-    return html`<div class="field"><span class="lbl">بستر اتصال</span>
+    return html`<div class="field"><span class="lbl">هدف تانل</span><div class="seg" role="radiogroup">
+        <button type="button" role="radio" aria-checked="${!w.gaming}" class="${w.gaming ? "" : "on"}" data-act="wiz-gaming" data-value="">معمولی</button>
+        <button type="button" role="radio" aria-checked="${!!w.gaming}" class="${w.gaming ? "on" : ""}" data-act="wiz-gaming" data-value="1">گیمینگ، کمترین پینگ</button></div>
+        <span class="help">${w.gaming ? "تانل کرنلی که UDP بازی را بدون تأخیر اضافه می‌برد، با کمترین پینگی که بررسی زنده پیدا کند؛ حالت سرعت کم‌تأخیر، MTU اندازه‌گیری‌شده، فوروارد NAT با TCP و UDP، و صف هوشمند روی ۹۰٪ سرعت اندازه‌گیری‌شده تا دانلود هم‌زمان پینگ را بالا نبرد." : "برای بازی و تماس، «گیمینگ» را بزنید."}</span></div>
+      <div class="field"><span class="lbl">بستر اتصال</span>
         <div class="seg" role="radiogroup">${[["ipv4", "IPv4"], ["ipv6", "IPv6"]].map(([v, l]) => html`<button type="button" role="radio" aria-checked="${w.underlay === v}" class="${w.underlay === v ? "on" : ""}" data-act="wiz-underlay" data-value="${v}">${l}</button>`)}</div>
         ${v6 ? html`<div class="grid2" style="margin-top:10px">
             <div class="field"><label for="w-l6">IPv6 این سرور</label><input id="w-l6" class="input ltr" data-bind="wiz.local6" value="${w.local6}" placeholder="2001:db8::1"><span class="help">${ov.node.address6 ? "خودکار پیدا شد." : "این سرور IPv6 عمومی ندارد یا پیدا نشد."}</span></div>
@@ -2988,6 +3048,7 @@
         <div><dt>پروتکل</dt><dd>${pi.t || w.mode}${w.underlay === "ipv6" ? " روی IPv6" : ""}</dd></div>
         <div><dt>محافظت</dt><dd>${mode.crypt ? "رمزنگاری خودِ پروتکل" : prot}</dd></div>
         <div><dt>حالت سرعت</dt><dd>${profileName(w.profile)}</dd></div>
+        ${w.gaming ? html`<div><dt>گیمینگ</dt><dd>${gameQueue(w) ? `صف هوشمند روی ${gameQueue(w)} Mbit/s (۹۰٪ سرعت اندازه‌گیری‌شده)` : "صف هوشمند: سرعت اندازه گرفته نشد؛ بعد از ساخت در محدودیت‌های تانل حدود ۹۰٪ سرعت تست را بدهید"}</dd></div>` : ""}
         <div><dt>پورت</dt><dd class="ltr">${w.port ? `${mode.tcp ? "TCP" : "UDP"} ${w.port}` : mode.stream ? "تصادفی" : mode.udp || mode.tcp ? "خودکار" : "پروتکل خام"}${mode.stream ? " + ۲ پورت پشتیبان" : ""}</dd></div>
         ${mode.stream ? html`<div><dt>جهت</dt><dd>${dirName(w.reverse)}: ${w.reverse ? "سرور مقابل به این سرور وصل می‌شود" : "این سرور به سرور مقابل وصل می‌شود"}</dd></div>` : ""}
       </dl>
@@ -2995,9 +3056,10 @@
         <div class="field"><label for="w-fwd">فوروارد پورت‌های این سرور (اختیاری)</label><input id="w-fwd" class="input ltr" data-bind="wiz.fwd" value="${w.fwd}" placeholder="443, 8443, 2053-2096"><span class="help">ترافیک این پورت‌ها از داخل تانل به مقصد می‌رود.</span></div>
         <div class="field"><label for="w-to">پورت مقصد (اختیاری)</label><input id="w-to" class="input ltr" type="number" data-bind="wiz.fwdTo" value="${w.fwdTo}" placeholder="همان پورت"><span class="help">مثلاً 2053 اینجا به 443 آن طرف.</span></div>
         <div class="field"><span class="lbl">پروتکل فوروارد</span><div class="seg">${fwdProtos(wizFmode(w)).map((p) => html`<button type="button" class="${fwdProto(wizFmode(w), w.proto) === p ? "on" : ""}" data-act="set" data-path="wiz.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
-        ${mode.stream ? html`<div class="field full"><span class="lbl">حالت فوروارد</span><div class="help">رله TCP: هر اتصال کاربر جدا روی جلسه‌های تانل می‌رود.</div></div>`
+        ${mode.stream ? streamModeNote
           : html`${modeField("wiz", w.fmode, w.dest === "remote", "fmode")}${sitHint(w.dest !== "remote" && w.mode, w.fmode)}`}
         ${pverField("wiz", w, wizFmode(w))}
+        ${w.dest === "remote" ? "" : targetField("wiz", w, wizFmode(w))}
         ${mode.stream ? "" : wizPoolField(w)}
       </div>
       ${mode.stream ? "" : html`<details class="adv" ${w.adv ? "open" : ""} data-act="adv-toggle" data-name="">
@@ -3053,7 +3115,8 @@
     const prot = wizProt(w, S.ov.modes.find((m) => m.name === w.mode) || {});
     const req = Object.assign(set, {
       mode: w.mode, name: w.name.trim(), port: +w.port || 0, forward: w.fwd.trim(), forward_to: +w.fwdTo || 0, proto: fwdProto(wizFmode(w), w.proto),
-      forward_mode: wizFmode(w), proxy_version: fwdVersion(wizFmode(w), w),
+      forward_mode: wizFmode(w), proxy_version: fwdVersion(wizFmode(w), w), forward_public: w.dest !== "remote" && toPublicOf(wizFmode(w), w),
+      queue_mbit: w.gaming ? gameQueue(w) : 0,
       obfs: prot === "obfs", encrypt: prot === "ipsec" ? w.encrypt : prot === "auto" ? "auto" : "",
     });
     if (w.pool === "manual") Object.assign(req, { pool4: (w.pool4 || "").trim(), pool6: (w.pool6 || "").trim() });
@@ -3084,6 +3147,12 @@
     } catch (e) {
       if (/در حال اجراست/.test(e.message) && tries < 8) { setTimeout(() => runCheck(opts, tries + 1), 1500); return; }
       w.checks[key] = { state: "bad", err: e.message, cfg: true };
+    }
+    // In gaming mode a mode that does not pass gives way to one that does.
+    if (!opts && w.gaming && w.checks[key].state === "bad" && key === checkKey(w, w.mode, false)) {
+      const was = w.mode;
+      applyGaming(w);
+      if (w.mode !== was) setTimeout(() => runCheck(false), 0);
     }
     if (S.wiz === w) drawModal();
     if (opts) runSpeed();
@@ -3121,7 +3190,7 @@
   let checkTimer = 0;
   const checkSoon = (opts) => { clearTimeout(checkTimer); checkTimer = setTimeout(() => runCheck(opts), 500); };
 
-  async function checkAll() {
+  async function checkAll(tries = 0) {
     const w = S.wiz;
     if (!w || !canCheck(w) || w.checkingAll) return;
     w.checkingAll = true;
@@ -3132,11 +3201,22 @@
       for (const r of rs) {
         if (/-udp$/.test(r.name)) continue; // the UDP variants answer a different question
         const k = checkKey(w, r.mode || r.name, false);
-        w.checks[k] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu } : oldPeer(r.error) ? { state: "old", err: r.error } : { state: "bad", err: r.error, cfg: r.status === "skipped" };
+        // A kind measured on a tunnel that exists already ("6to4 [t1]") can
+        // not be made a second time between the same servers.
+        w.checks[k] = r.status === "passed" ? { state: "ok", ping: r.ping_ms, loss: r.loss, mtu: r.mtu, existing: / [[^]]+]$/.test(r.title || "") } : oldPeer(r.error) ? { state: "old", err: r.error } : { state: "bad", err: r.error, cfg: r.status === "skipped" };
       }
-    } catch (e) { toast(e.message, "bad"); }
+    } catch (e) {
+      if (/در حال اجراست/.test(e.message) && tries < 8) {
+        // A single check is still running: wait for it.
+        w.checkingAll = false;
+        setTimeout(() => checkAll(tries + 1), 1500);
+        return;
+      }
+      toast(e.message, "bad");
+    }
     for (const k of Object.keys(w.checks)) if (w.checks[k].state === "run") delete w.checks[k];
     w.checkingAll = false;
+    if (w.gaming && gameBest(w) && w.mode !== gameBest(w)) { w.mode = gameBest(w); runCheck(true); }
     if (S.wiz === w) drawModal();
   }
 
@@ -3197,14 +3277,16 @@
     const f = S.form, ts = visible().filter((t) => !t.managed);
     if (!f.tunnel && ts.length) f.tunnel = ts[0].name;
     const t = tunnel(f.tunnel), remote = t && !t.peer;
+    f.mode = fwdModeFor(t, f.mode);
     return html`${modalHead("فوروارد پورت جدید")}
       <div class="body">${ts.length ? html`<div class="grid2">
-          <div class="field full"><label for="f-t">از طریق تانل</label><select id="f-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${tname(x)} به ${pname(x.peer) || x.far_ip} (${x.there4 || x.there6})</option>`)}</select></div>
+          <div class="field full"><label for="f-t">از طریق تانل</label><select id="f-t" class="input" data-bind="form.tunnel" data-redraw="1">${ts.map((x) => html`<option value="${x.name}" ${f.tunnel === x.name ? "selected" : ""}>${tname(x)} به ${pname(x.peer) || x.far_ip} (${x.there4 || x.there6 || kindTitle(x)})</option>`)}</select></div>
           <div class="field"><label for="f-p">پورت(های) این سرور</label><input id="f-p" class="input ltr" data-bind="form.ports" value="${f.ports || ""}" placeholder="443, 2053-2096"></div>
           <div class="field"><label for="f-to">پورت مقصد (اختیاری)</label><input id="f-to" class="input ltr" type="number" data-bind="form.to" value="${f.to || ""}" placeholder="همان پورت"></div>
           <div class="field"><span class="lbl">پروتکل</span><div class="seg">${fwdProtos(f.mode).map((p) => html`<button type="button" class="${fwdProto(f.mode, f.proto || "both") === p ? "on" : ""}" data-act="set" data-path="form.proto" data-value="${p}">${p === "both" ? "TCP + UDP" : p.toUpperCase()}</button>`)}</div></div>
-          ${modeField("form", f.mode, remote)}${sitHint(t && !remote && t.mode, f.mode)}
+          ${t && t.stream ? streamModeNote : html`${modeField("form", f.mode, remote)}${sitHint(t && !remote && t.mode, f.mode)}`}
           ${pverField("form", f, f.mode)}
+          ${targetField("form", f, f.mode)}
           ${backupField("form", f, f.tunnel)}
         </div>` : html`<div class="muted">اول یک تانل بسازید.</div>`}</div>
       <footer><span class="grow"></span><button class="btn ghost" data-act="close">انصراف</button><button class="btn primary" data-act="add-forward-go" ${ts.length ? "" : "disabled"}>${I.plus(16)} افزودن فوروارد</button></footer>`;
@@ -3469,13 +3551,24 @@
       try { S.mtu[n] = await api("POST", `tunnels/${encodeURIComponent(n)}/mtu`); S.open = n; S.drawer = null; location.hash = "#/tunnels"; await refresh(); draw(); }
       catch (e) { toast(e.message, "bad"); }
     },
-    wizard(el) { if (S.menu) closeMenu(true); openWizard(el.dataset.peer ? { peer: el.dataset.peer, mode: el.dataset.mode || "", port: el.dataset.port || "" } : {}); if (el.dataset.peer && !el.dataset.mode) S.wiz.mode = "6to4"; S.drawer = null; drawModal(); },
+    wizard(el) { if (S.menu) closeMenu(true); openWizard(el.dataset.peer ? { peer: el.dataset.peer, mode: el.dataset.mode || "", port: el.dataset.port || "" } : {}); if (el.dataset.gaming) applyGaming(Object.assign(S.wiz, { gaming: true, mode: el.dataset.mode || S.wiz.mode })); if (el.dataset.peer && !el.dataset.mode) S.wiz.mode = "6to4"; S.drawer = null; drawModal(); },
     "wiz-dest"(el) {
       Object.assign(S.wiz, { dest: el.dataset.dest, peer: el.dataset.name || S.wiz.peer });
       const p = wizPeer(S.wiz); if (p && p.address6) S.wiz.remote6 = p.address6;
       drawModal();
     },
     "wiz-mode"(el) { S.wiz.mode = el.dataset.mode; drawModal(); runCheck(false); },
+    "wiz-gaming"(el) {
+      const w = S.wiz;
+      w.gaming = !!el.dataset.value;
+      if (w.gaming) {
+        applyGaming(w);
+        // The quickest mode comes from checking them all, once.
+        if (canCheck(w) && w.underlay !== "ipv6" && GAME_MODES.some((n) => !w.checks[checkKey(w, n, false)])) checkAll();
+        else runCheck(false);
+      }
+      drawModal();
+    },
     "wiz-underlay"(el) {
       const w = S.wiz; w.underlay = el.dataset.value;
       if (w.underlay === "ipv6" && SIT_MODES.includes(w.mode)) w.mode = "gre";
@@ -3483,7 +3576,7 @@
     },
     "wiz-protect"(el) { S.wiz.protect = el.dataset.value; drawModal(); runCheck(true); },
     "wiz-check-all"() { checkAll(); },
-    "wiz-next"() { const w = S.wiz; w.step++; stepAnim(w, "next"); drawModal(); if (w.step === 2) runCheck(false); if (w.step === 3) runCheck(true); },
+    "wiz-next"() { const w = S.wiz; w.step++; stepAnim(w, "next"); drawModal(); if (w.step === 2) runCheck(false); if (w.step === 3) { runCheck(true); runSpeed(); } },
     "wiz-back"() { S.wiz.step--; stepAnim(S.wiz, "back"); drawModal(); },
     "wiz-create"() { createTunnel(); },
     setup(el) { showSetup(el.dataset.name); },
@@ -3512,7 +3605,7 @@
     async "add-forward-go"() {
       const f = S.form;
       try {
-        const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: (f.ports || "").trim(), proto: fwdProto(f.mode, f.proto || "both"), to: +f.to || 0, mode: f.mode, proxy_version: fwdVersion(f.mode, f), backups: f.backups || [], best: !!(f.best && (f.backups || []).length) });
+        const ch = await api("POST", "forwards", { tunnel: f.tunnel, ports: (f.ports || "").trim(), proto: fwdProto(f.mode, f.proto || "both"), to: +f.to || 0, mode: f.mode, proxy_version: fwdVersion(f.mode, f), public: toPublicOf(f.mode, f), backups: f.backups || [], best: !!(f.best && (f.backups || []).length) });
         closeModal(); await refresh(); reportChange(ch, "فوروارد اضافه شد");
       } catch (e) { toast(e.message, "bad"); }
     },
@@ -3522,7 +3615,7 @@
       const pv = f.proxy_version || 0, cut = f.auth ? f.auth.indexOf(":") : -1;
       S.tip = null;
       S.fwdEditor = { key: el.dataset.key, tunnel: f.tunnel, ports: f.ports, to: f.to || "", proto: f.proto, mode: f.mode,
-        pver: f.mode === "proxy" ? pv || 2 : 2, rver: f.mode === "relay" ? pv : 0, backups: (f.backups || []).slice(), best: !!f.best,
+        pver: f.mode === "proxy" ? pv || 2 : 2, rver: f.mode === "relay" ? pv : 0, toPublic: !!f.to_public, backups: (f.backups || []).slice(), best: !!f.best,
         access: f.listen && f.listen !== "127.0.0.1" ? "all" : "local", user: cut < 0 ? "" : f.auth.slice(0, cut), pass: cut < 0 ? "" : f.auth.slice(cut + 1), busy: false };
       openModal(fwdEditView);
     },
@@ -3533,7 +3626,7 @@
       const socks = f.mode === "socks", open = e.access === "all";
       const req = socks
         ? { proto: "tcp", mode: "socks", listen: open ? (f.listen && f.listen !== "127.0.0.1" ? f.listen : "0.0.0.0") : "", auth: open || e.user ? `${(e.user || "").trim()}:${e.pass || ""}` : "" }
-        : { proto: fwdProto(e.mode, e.proto), to: +e.to || 0, mode: e.mode, proxy_version: fwdVersion(e.mode, e) };
+        : { proto: fwdProto(e.mode, e.proto), to: +e.to || 0, mode: e.mode, proxy_version: fwdVersion(e.mode, e), public: toPublicOf(e.mode, e) };
       e.busy = true; drawModal();
       try {
         const ch = await api("POST", "forwards/update" + safeQ(), Object.assign(req, { was_tunnel: f.tunnel, was_ports: f.ports, tunnel: e.tunnel, ports: String(e.ports || "").trim(), backups: e.backups || [], best: !!(e.best && (e.backups || []).length) }));
