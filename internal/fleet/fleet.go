@@ -205,7 +205,7 @@ func Refresh(ctx context.Context, id *identity.Identity, st *config.State, peer 
 	if err != nil {
 		return s, err
 	}
-	neoexit.SetPeer(peer, s.NeoExit)
+	neoexit.SetPeer(peer, s.NeoExit, s.NeoExitState)
 	behind := false
 	cur, _ := config.Update(func(st *config.State) error {
 		if p, ok := st.Peer(peer); ok {

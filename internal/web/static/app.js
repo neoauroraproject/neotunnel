@@ -245,6 +245,7 @@
   const S = {
     authed: true, ov: null, rates: {}, live: true, traffic: {}, system: null,
     route: location.hash.slice(2) || "dashboard",
+    nx: { list: null, sel: null, tab: "overview", st: {}, err: {}, busy: {}, login: {}, form: null, svc: "", mx: { text: "", smart: false, cats: {}, out: null, err: "" } },
     theme: store("nt-theme") || "dark",
     modal: null, wiz: null, form: {}, drawer: null,
     open: null, tset: {}, edit: false, fwdEdit: {},
@@ -496,7 +497,7 @@
   // ---------- views ----------
   const NAV = [
     ["dashboard", "داشبورد", I.home], ["tunnels", "تانل‌ها", I.tunnel], ["servers", "سرورها", I.server],
-    ["ports", "پورت‌ها", I.ports], ["stats", "آمار", I.chart], ["speed", "تست سرعت", I.gauge], ["commands", "دستورها", I.term], ["settings", "تنظیمات", I.gear],
+    ["ports", "پورت‌ها", I.ports], ["stats", "آمار", I.chart], ["speed", "تست سرعت", I.gauge], ["neoexit", "NeoExit", I.globe], ["settings", "تنظیمات", I.gear],
   ];
 
   function draw() {
@@ -565,7 +566,7 @@
   function viewShell() {
     const ov = S.ov;
     const counts = { tunnels: visible().length, servers: ov.peers.length, ports: ov.forwards.length };
-    const page = { dashboard: viewDashboard, tunnels: viewTunnels, servers: viewServers, ports: viewPorts, stats: viewStats, speed: viewSpeed, commands: viewCommands, settings: viewSettings }[S.route] || viewDashboard;
+    const page = { dashboard: viewDashboard, tunnels: viewTunnels, servers: viewServers, ports: viewPorts, stats: viewStats, speed: viewSpeed, neoexit: viewNeoExit, commands: viewCommands, settings: viewSettings }[S.route] || viewDashboard;
     const [title, sub, tools] = pageHead();
     const liveCls = !S.live ? "off" : S.paused ? "paused" : "";
     return html`<div class="frame">
@@ -746,6 +747,7 @@
       case "ports": return ["پورت‌ها", "پورت‌های این سرور و اینکه کاربر از کدام تانل به کجا می‌رسد", html`<button class="btn primary" data-act="add-forward">${I.plus(16)} فوروارد جدید</button>`];
       case "stats": return ["آمار", "ترافیک، پینگ، پردازنده و حافظه در بازه‌های مختلف. هر نقطه میانگین همان بازه است و خط نازک بالای آن، اوج آن.", ""];
       case "speed": return ["تست سرعت", "پینگ، جیتر، افت بسته و پهنای باند واقعی بین دو سرور", ""];
+      case "neoexit": return ["NeoExit", "خروجی رایگان برای سرویس‌های هوش مصنوعی، روی این سرور و سرورهای مقصد", html`<button class="btn" data-act="nx-reload">${I.sync(16)} تازه کردن</button>`];
       case "commands": return ["دستورها", "معادل خط فرمان کارهای پنل، با نام‌ها و آدرس‌های همین سرور", ""];
       case "settings": return ["تنظیمات", "سرور، دسترسی پنل، پیش‌فرض تانل‌ها، شبکه و نگهداری", ""];
     }
@@ -1891,16 +1893,433 @@
     return out;
   }
 
+  // ---------- NeoExit ----------
+  // NeoExit (free exits for AI services, a program of its own) on this
+  // server and on each destination server, from here: install it, and do
+  // everything its own panel does. Its panel's API comes through this
+  // server (api/neoexit/<server>/api/…), so nothing here is a copy that
+  // could drift from it.
+  const NX_WORD = { ok: "باز", geo: "کشور بسته", challenge: "کپچا", error: "وصل نشد", down: "بسته" };
+  const NX_DOT = { ok: "ok", geo: "bad", challenge: "warn", error: "bad", down: "bad" };
+  const NX_KINDS = [["warp", "WARP", "حساب رایگان کلادفلر"], ["psiphon", "سایفون", "رایگان، با انتخاب کشور"], ["opera", "Opera", "رایگان؛ اروپا، آسیا، آمریکا"],
+    ["ssh", "SSH", "سرور دیگر خودتان"], ["socks5", "SOCKS5", "هر پروکسی دیگر"], ["http", "HTTP", "پروکسی با CONNECT"],
+    ["direct4", "IPv4 سرور", "آدرس خود سرور"], ["direct6", "IPv6 سرور", "جدا از IPv4"]];
+  const NX_OPERA = { EU: "اروپا", AS: "آسیا", AM: "آمریکا" };
+  const NX_TABS = [["overview", "نمای کلی"], ["tests", "جدول تست"], ["connect", "اتصال به 3x-ui"], ["history", "تاریخچه"], ["settings", "تنظیمات"]];
+  const nxKindName = (k) => (NX_KINDS.find((x) => x[0] === k) || [k, k])[1];
+  const nxCountry = (cc) => (typeof COUNTRIES !== "undefined" && COUNTRIES[cc] ? COUNTRIES[cc][2] : cc || "نامشخص");
+  const nxEnc = (k) => encodeURIComponent(k);
+  const nxApi = (method, path, body) => api(method, `neoexit/${nxEnc(S.nx.sel)}/api/${path}`, body);
+  const nxServer = () => (S.nx.list || []).find((x) => x.key === S.nx.sel);
+  const nxState = () => S.nx.st[S.nx.sel];
+  const nxLiveExit = (id) => ((nxState().live || {}).exits || []).find((x) => x.id === id) || { results: {}, trace: {} };
+  const nxLiveSvc = (id) => ((nxState().live || {}).services || []).find((x) => x.id === id) || {};
+  const nxExit = (id) => (nxState().exits || []).find((x) => x.id === id);
+  // An exit's error as a few words: Go's errors nest ("Post …: dial tcp: …:
+  // network is unreachable"), and the last part says what went wrong.
+  const nxErr = (s) => { const p = String(s || "").split(": ").pop(); return p.length > 60 ? p.slice(0, 57) + "…" : p; };
+  const nxAgo = (iso) => { const t = Date.parse(iso); return t > 0 ? ago(t / 1000) : "هنوز"; };
+
+  async function nxLoad() {
+    const N = S.nx;
+    try { N.list = await api("GET", "neoexit"); N.listErr = ""; } catch (e) { N.listErr = e.message; }
+    if (N.list && N.list.length && !N.list.some((x) => x.key === N.sel)) N.sel = (N.list.find((x) => x.state === "running") || N.list[0]).key;
+    const x = nxServer();
+    if (x && x.state === "running" && x.status && x.status.api) {
+      try { N.st[x.key] = await api("GET", `neoexit/${nxEnc(x.key)}/api/state`); N.err[x.key] = ""; nxScripts(x.key); }
+      catch (e) { N.err[x.key] = e.message; }
+    }
+    nxDraw();
+  }
+  const nxDraw = () => { if (S.route !== "neoexit" || (S.modal && !S.modal.passive)) return; if (S.edit) patchLive(); else draw(); };
+  const nxAct = async (fn, ok) => {
+    S.edit = false;
+    try { const r = await fn(); if (ok) toast(ok); await nxLoad(); return r; } catch (e) { toast(e.message, "bad"); }
+  };
+
+  // The country names and the Xray config merger come from NeoExit itself.
+  function nxScripts(key) {
+    if (S.nx.scripts) return;
+    S.nx.scripts = true;
+    for (const n of ["countries.js", "xray.js"]) {
+      const s = document.createElement("script");
+      s.src = `api/neoexit/${nxEnc(key)}/assets/${n}`;
+      s.onload = () => nxDraw();
+      s.onerror = () => { S.nx.scripts = false; };
+      document.head.append(s);
+    }
+  }
+
+  function viewNeoExit() {
+    const N = S.nx;
+    if (!N.list) {
+      if (!N.loading) { N.loading = true; nxLoad().finally(() => { N.loading = false; }); }
+      return html`<div class="panel"><div class="empty"><i class="spin"></i><b>در حال خواندن…</b></div></div>`;
+    }
+    const x = nxServer();
+    return html`<div class="nx-servers" role="tablist" aria-label="سرورها">${N.list.map((s) => {
+        const [cls, word] = !s.reachable ? ["off", "در دسترس نیست"] : s.old ? ["warn", "NeoTunnel قدیمی"] : s.state === "running" ? [nxProblems(s) ? "warn" : "ok", nxProblems(s) ? `${nxProblems(s)} سرویس مشکل دارد` : "روشن"]
+          : s.state === "installed" ? ["bad", "خاموش"] : ["off", "نصب نشده"];
+        return html`<button type="button" role="tab" aria-selected="${s.key === N.sel}" class="${s.key === N.sel ? "on" : ""}" data-act="nx-sel" data-key="${s.key}">
+          ${s.key === "_" ? I.home(16) : I.server(16)}<span><b>${s.name}</b><small><i class="dot ${cls}"></i>${word}</small></span></button>`;
+      })}</div>
+      ${N.listErr ? html`<div class="note bad" style="margin-bottom:14px">${N.listErr}</div>` : ""}
+      ${x ? nxBody(x) : ""}`;
+  }
+
+  const nxProblems = (s) => ((s.status && s.status.services) || []).filter((v) => v.state !== "ok").length;
+
+  function nxBody(x) {
+    const busy = S.nx.busy[x.key];
+    if (busy) return html`<div class="panel"><div class="empty"><i class="spin"></i><b>${busy}</b>دانلود NeoExit و سایفون (حدود ۳۰ مگابایت) و راه‌اندازی، تا چند دقیقه طول می‌کشد. اگر این سرور به گیت‌هاب نرسد، فایل‌ها از سرور دیگر می‌آیند.</div></div>`;
+    if (!x.reachable) return html`<div class="note bad">${x.name} الان به این سرور جواب نمی‌دهد؛ وقتی وصل شد، NeoExit آن همین‌جا دیده می‌شود.</div>`;
+    if (x.old) return html`<div class="note warn">NeoTunnel روی <b>${x.name}</b> قدیمی است و نمی‌تواند NeoExit را نصب یا مدیریت کند. اول آن را به <span class="ltr">${S.ov.node.version}</span> ارتقا دهید.
+      <div style="margin-top:10px"><button class="btn sm primary" data-act="upgrade" data-name="${x.key}">${I.upgrade(14)} ارتقای ${x.name}</button></div></div>`;
+    if (x.state === "none") return nxInstallCard(x);
+    if (x.state === "installed") return html`<div class="note bad">NeoExit روی <b>${x.name}</b> نصب است ولی جواب نمی‌دهد (سرویسش خاموش است یا بالا نمی‌آید). نصب دوباره، تنظیماتش را نگه می‌دارد.
+      <div class="row" style="margin-top:10px"><button class="btn sm primary" data-act="nx-install" data-key="${x.key}">${I.download(14)} نصب دوباره</button><button class="btn sm danger" data-act="nx-uninstall" data-key="${x.key}">${I.trash(14)} حذف</button></div></div>`;
+    if (!x.status || !x.status.api) return html`<div class="note warn">NeoExit <span class="ltr">${x.status ? x.status.version : ""}</span> روی <b>${x.name}</b> قدیمی است؛ برای مدیریت از اینجا، نسخه‌ی تازه را نصب کنید. تنظیماتش می‌ماند.
+      <div style="margin-top:10px"><button class="btn sm primary" data-act="nx-install" data-key="${x.key}">${I.upgrade(14)} به‌روزرسانی NeoExit</button></div></div>`;
+    const st = S.nx.st[x.key];
+    if (!st) return S.nx.err[x.key] ? html`<div class="note bad">NeoExit جواب نداد: ${S.nx.err[x.key]}</div>` : html`<div class="panel"><div class="empty"><i class="spin"></i><b>در حال خواندن…</b></div></div>`;
+    const tab = S.nx.tab || "overview";
+    return html`<div class="nx-bar">
+        <div class="seg" role="tablist" aria-label="بخش‌ها">${NX_TABS.map(([id, l]) => html`<button type="button" role="tab" aria-selected="${tab === id}" class="${tab === id ? "on" : ""}" data-act="nx-tab" data-tab="${id}">${l}</button>`)}</div>
+        <span class="grow"></span>
+        ${st.update && st.update.newer ? html`<button class="btn sm" data-act="nx-tab" data-tab="settings">${I.upgrade(14)} نسخه‌ی <span class="ltr">${st.update.latest}</span></button>` : ""}
+        <button class="btn sm" data-act="nx-check" ${st.live.running ? "disabled" : ""}>${st.live.running ? html`<i class="spin"></i> در حال تست…` : html`${I.play(14)} تست الان`}</button>
+        <button class="btn sm primary" data-act="nx-exit" data-id="">${I.plus(14)} خروجی تازه</button>
+      </div>
+      ${{ overview: nxOverview, tests: nxTests, connect: nxConnect, history: nxHistory, settings: nxSettings }[tab](x, st)}`;
+  }
+
+  function nxInstallCard(x) {
+    return html`<div class="panel nx-install"><div class="in">
+      <div class="nx-hero">${I.globe(34)}<div><h2>NeoExit روی ${x.name} نصب نیست</h2>
+        <p>خروجی رایگان برای ChatGPT، Claude، Gemini و سرویس‌های دیگری که از بعضی کشورها بسته‌اند. هر سرویس مدام از همه‌ی خروجی‌ها تست می‌شود و خودش به خروجی‌ای می‌رود که باز است، همه روی یک پورت SOCKS5/HTTP برای 3x-ui.</p></div></div>
+      <ul class="nx-points">
+        <li>${I.check(15)} خروجی‌ها: WARP، سایفون با انتخاب کشور، Opera، SSH به سرور دیگرتان، هر پروکسی SOCKS5/HTTP، و IPv4/IPv6 خود سرور</li>
+        <li>${I.check(15)} همه‌ی تنظیماتش از همین صفحه، روی هر سروری که اضافه کرده‌اید</li>
+        <li>${I.check(15)} اگر سرور به گیت‌هاب نرسد، فایل‌ها از سرور دیگرتان می‌آیند</li>
+      </ul>
+      <button class="btn primary" data-act="nx-install" data-key="${x.key}">${I.download(16)} نصب NeoExit روی ${x.name}</button>
+    </div></div>`;
+  }
+
+  // ---- overview: services and exits ----
+  function nxOverview(x, st) {
+    const on = st.services.filter((v) => v.enabled), bad = on.filter((v) => nxLiveSvc(v.id).state !== "ok");
+    const line = st.live.running ? "در حال تست همه‌ی خروجی‌ها…" : !on.length ? "هیچ سرویسی روشن نیست."
+      : (bad.length ? `${bad.map((v) => v.name).join("، ")} مشکل دارد. ` : "همه‌ی سرویس‌ها باز هستند. ") + `آخرین تست ${nxAgo(st.live.last_run)}.`;
+    return html`<p class="nx-line"><i class="dot ${bad.length ? "warn" : "ok"}"></i>${line}</p>
+      <div class="nx-grid">
+        <section class="panel"><header><h2>سرویس‌ها</h2><span class="aside ltr">${on.length - bad.length}/${on.length}</span></header><div class="in nx-list">
+          ${[...st.services].sort((a, b) => b.enabled - a.enabled).map((v) => {
+            const l = nxLiveSvc(v.id), ex = nxExit(l.exit), lx = l.exit ? nxLiveExit(l.exit) : null;
+            const state = v.enabled ? l.state || "error" : "";
+            return html`<button type="button" class="nx-row ${v.enabled ? "" : "off"}" data-act="nx-svc" data-id="${v.id}">
+              <i class="dot ${v.enabled ? NX_DOT[state] || "warn" : "off"}"></i>
+              <span class="grow"><b class="ltr">${v.name}</b><small>${!v.enabled ? "خاموش" : !ex ? "هیچ خروجی‌ای باز نیست" : (v.pin ? "ثابت روی " : "از ") + ex.name}${lx && lx.trace && lx.trace.country ? " · " + nxCountry(lx.trace.country) : ""}</small></span>
+              ${v.enabled ? html`<span class="tag ${NX_DOT[state] || ""}">${NX_WORD[state] || state}</span>` : ""}${v.pin ? html`<span class="tag">ثابت</span>` : ""}</button>`;
+          })}
+          <button type="button" class="nx-row add" data-act="nx-svc" data-id="">${I.plus(15)}<span class="grow">سرویس تازه، با دامنه‌هایش</span></button>
+        </div></section>
+        <section class="panel"><header><h2>خروجی‌ها</h2><span class="aside">به ترتیب اولویت</span></header><div class="in nx-list">
+          ${st.exits.map((e, i) => nxExitRow(st, e, i))}
+          <button type="button" class="nx-row add" data-act="nx-exit" data-id="">${I.plus(15)}<span class="grow">خروجی تازه</span></button>
+        </div></section>
+      </div>`;
+  }
+
+  function nxExitRow(st, e, i) {
+    const l = nxLiveExit(e.id), users = st.services.filter((v) => v.enabled && nxLiveSvc(v.id).exit === e.id);
+    const meta = !e.enabled ? "خاموش" : l.checking ? "در حال تست…" : l.err ? html`<span title="${l.err}">${nxErr(l.err)}</span>` : l.trace && l.trace.ip
+      ? html`${nxCountry(l.trace.country)} · <span class="ltr">${l.trace.ip}</span> · <span class="ltr">${l.trace.ms} ms</span>` : "هنوز تست نشده";
+    const cls = !e.enabled ? "off" : l.checking ? "busy" : l.err ? "bad" : l.up ? "ok" : "warn";
+    return html`<div class="nx-row exit ${e.enabled ? "" : "off"}">
+      <i class="dot ${cls}"></i>
+      <span class="grow"><b>${e.name}${e.plus ? html` <span class="tag">+</span>` : ""}</b><small>${nxKindName(e.kind)}${e.kind === "opera" ? "، " + (NX_OPERA[e.region] || e.region) : e.kind === "psiphon" ? "، " + (e.region ? nxCountry(e.region) : "بهترین کشور") : ""} · ${meta}${users.length ? ` · ${users.length} سرویس` : ""}</small></span>
+      <span class="nx-tools">
+        ${e.kind === "warp" && e.enabled ? html`<button class="btn sm ghost icon" data-act="nx-rotate" data-id="${e.id}" title="IP تازه" aria-label="IP تازه برای ${e.name}">${I.dice(15)}</button>` : ""}
+        <button class="btn sm ghost icon" data-act="nx-move" data-id="${e.id}" data-dir="-1" ${i === 0 ? "disabled" : ""} title="اولویت بالاتر" aria-label="اولویت بالاتر">${I.up(15)}</button>
+        <button class="btn sm ghost icon" data-act="nx-move" data-id="${e.id}" data-dir="1" ${i === st.exits.length - 1 ? "disabled" : ""} title="اولویت پایین‌تر" aria-label="اولویت پایین‌تر">${I.down(15)}</button>
+        <button class="btn sm ghost icon" data-act="nx-exit-on" data-id="${e.id}" data-on="${e.enabled ? "" : "1"}" title="${e.enabled ? "خاموش کردن" : "روشن کردن"}" aria-label="${e.enabled ? "خاموش کردن" : "روشن کردن"} ${e.name}">${I.power(15)}</button>
+        <button class="btn sm ghost icon" data-act="nx-exit" data-id="${e.id}" title="ویرایش" aria-label="ویرایش ${e.name}">${I.edit(15)}</button>
+        <button class="btn sm ghost icon danger" data-act="nx-exit-del" data-id="${e.id}" title="حذف" aria-label="حذف ${e.name}">${I.trash(15)}</button>
+      </span></div>`;
+  }
+
+  // ---- tests: every service from every exit ----
+  function nxTests(x, st) {
+    const svcs = st.services.filter((v) => v.enabled);
+    if (!svcs.length) return html`<div class="panel"><div class="empty"><b>هیچ سرویسی روشن نیست</b>از نمای کلی روی یک سرویس بزنید و روشنش کنید.</div></div>`;
+    return html`<div class="panel"><header><h2>جدول تست</h2><span class="aside">با زدن هر خانه، آن سرویس روی همان خروجی ثابت می‌شود؛ دوباره بزنید تا خودکار شود.</span></header>
+      <div class="in" style="overflow-x:auto"><table class="t nx-matrix"><thead><tr><th>خروجی</th>${svcs.map((v) => {
+        const l = nxLiveSvc(v.id), ex = nxExit(l.exit);
+        return html`<th><b class="ltr">${v.name}</b><small class="${!ex ? "bad" : ""}">${!ex ? "هیچ خروجی‌ای باز نیست" : (v.pin ? "ثابت روی " : "از ") + ex.name}</small></th>`;
+      })}</tr></thead><tbody>${st.exits.map((e) => {
+        const l = nxLiveExit(e.id);
+        return html`<tr><th><b>${e.name}</b><small title="${l.err || ""}">${!e.enabled ? "خاموش" : l.err ? nxErr(l.err) : l.trace && l.trace.ip ? html`<span class="ltr">${l.trace.ip}</span> ${nxCountry(l.trace.country)}` : "تست نشده"}</small></th>${svcs.map((v) => {
+          const r = (l.results || {})[v.id], used = nxLiveSvc(v.id).exit === e.id, pinned = v.pin === e.id;
+          const word = !e.enabled ? "—" : l.checking ? "در حال تست" : l.err ? NX_WORD.error : r ? NX_WORD[r.state] || r.state : "تست نشده";
+          const dot = !e.enabled || l.checking ? "off" : l.err ? "bad" : r ? NX_DOT[r.state] || "warn" : "off";
+          return html`<td><button type="button" class="nx-cell ${used ? "used" : ""} ${pinned ? "pinned" : ""}" data-act="nx-pin" data-svc="${v.id}" data-exit="${pinned ? "" : e.id}" ${e.enabled ? "" : "disabled"} title="${r && r.detail ? r.detail : pinned ? "دوباره بزنید تا خودکار شود" : "ثابت کردن " + v.name + " روی " + e.name}">
+            <i class="dot ${dot}"></i>${word}${used ? html`<small>${pinned ? "ثابت" : r && r.state === "ok" ? "در حال استفاده" : "بهتری نبود"}</small>` : ""}</button></td>`;
+        })}</tr>`;
+      })}</tbody></table>
+      <div class="row nx-legend"><span><i class="dot ok"></i> باز است</span><span><i class="dot bad"></i> کشور را قبول نکرد یا وصل نشد</span><span><i class="dot warn"></i> IP بسته شده (کپچا)</span></div></div></div>`;
+  }
+
+  // ---- connect: the proxy, 3x-ui, Smart Routing ----
+  function nxConnect(x, st) {
+    const p = st.proxy, addr = `${p.listen}:${p.port}`, R = st.routing, rs = R.status;
+    const size = (n) => (n / 1048576).toFixed(n > 1048576 ? 1 : 2) + " MB";
+    const mx = S.nx.mx;
+    const xr = typeof XRAY !== "undefined" ? XRAY : null;
+    let tags = [];
+    if (xr && mx.text) { try { tags = xr.tags(xr.parse(mx.text)); } catch { /* not JSON yet */ } }
+    return html`<div class="nx-grid">
+      <section class="panel"><header><h2>پروکسی</h2><span class="aside">SOCKS5 و HTTP روی همین یک پورت</span></header><div class="in stack">
+        <div class="code ltr">${addr}<button class="btn sm ghost icon" data-act="copy" data-text="${addr}" aria-label="کپی">${I.copy(15)}</button></div>
+        ${st.host.xui ? html`<div class="note ok">${I.check(15)} 3x-ui روی ${x.name} پیدا شد.</div>` : ""}
+        ${p.listen !== "127.0.0.1" ? html`<div class="note warn">پروکسی از بیرون سرور هم باز است؛ رمزش را محکم نگه دارید.</div>` : ""}
+        <form class="stack" data-form="nx-proxy">
+          <div class="seg"><label class="nx-radio"><input type="radio" name="listen" value="127.0.0.1" ${p.listen === "127.0.0.1" ? "checked" : ""}>فقط همین سرور</label><label class="nx-radio"><input type="radio" name="listen" value="0.0.0.0" ${p.listen !== "127.0.0.1" ? "checked" : ""}>از هر جا، با رمز</label></div>
+          <div class="field"><label>پورت</label><input class="input ltr" name="port" type="number" min="1" max="65535" value="${p.port}" required></div>
+          <div class="grid2"><div class="field"><label>نام کاربری</label><input class="input ltr" name="user" autocomplete="off" value="${p.user || ""}"></div>
+            <div class="field"><label>رمز</label><input class="input ltr" name="pass" autocomplete="off" value="${p.pass || ""}"></div></div>
+          <div><button class="btn primary" type="submit">ذخیره‌ی پروکسی</button></div>
+        </form></div></section>
+      <div class="stack">
+        <section class="panel"><header><h2>روش دستی در 3x-ui</h2></header><div class="in stack">
+          <p class="help" style="margin:0">فقط ترافیک سرویس‌های هوش مصنوعی از NeoExit می‌رود؛ بقیه مثل قبل.</p>
+          <ol class="nx-steps">
+            <li><span>در تنظیمات Xray یک خروجی تازه بسازید و این را در حالت JSON بچسبانید. اولین خروجی نگذارید؛ اولی پیش‌فرض همه‌ی ترافیک است.</span><button class="btn sm" data-act="copy" data-text="${JSON.stringify(st.snippet.outbound, null, 2)}">${I.copy(14)} خروجی</button></li>
+            <li><span>در قوانین مسیریابی، این قانون را بالای قوانین دیگر (زیر api و مسدودسازی) بگذارید.</span><button class="btn sm" data-act="copy" data-text="${JSON.stringify(st.snippet.rule, null, 2)}">${I.copy(14)} قانون</button></li>
+            <li><span>Xray را ری‌استارت کنید.</span></li>
+          </ol></div></section>
+        <section class="panel"><header><h2>روتینگ هوشمند HMray</h2></header><div class="in stack">
+          <p class="help" style="margin:0">فهرست دامنه‌ها و IPهایی که قوانین <span class="ltr">ext:hmray.dat:…</span> از آن خوانده می‌شود.</p>
+          ${!st.host.xui ? html`<div class="note">3x-ui روی ${x.name} پیدا نشد. دو فایل را دانلود کنید و کنار برنامه‌ی Xray بگذارید (در 3x-ui معمولاً <span class="ltr">/usr/local/x-ui/bin</span>).</div>`
+            : rs.current ? html`<div class="note ok">${I.check(15)} نصب است و به‌روز: <span class="ltr">${rs.dir}</span>${R.auto ? " · با هر به‌روزرسانی NeoExit خودش تازه می‌شود" : ""}</div>`
+            : html`<div class="note warn">${rs.installed ? html`نسخه‌ی قدیمی‌تری در <span class="ltr">${rs.dir}</span> هست.` : html`هنوز در <span class="ltr">${rs.dir || "3x-ui"}</span> نصب نشده.`}</div>`}
+          <div class="row">${R.files.map((f) => html`<a class="btn sm ghost" href="api/neoexit/${nxEnc(x.key)}/api/routing/files/${f.name}" download="${f.name}">${I.download(14)} <span class="ltr">${f.name}</span> <span class="faint small">${size(f.size)}</span></a>`)}
+            ${st.host.xui && !rs.current ? html`<button class="btn sm primary" data-act="nx-routing">${rs.installed ? "به‌روز کردن" : "نصب در 3x-ui"}</button>` : ""}</div>
+        </div></section>
+      </div></div>
+      <section class="panel" style="margin-top:16px"><header><h2>راه ساده: کل تنظیمات Xray را بچسبانید</h2></header><div class="in stack">
+        <p class="help" style="margin:0">در 3x-ui بروید به Xray Configs ← Advanced، کل متن را کپی کنید و اینجا بچسبانید. خروجی NeoExit و قوانین، هر کدام سر جای درستش اضافه می‌شود و بقیه‌ی تنظیمات شما دست نمی‌خورد. متن از مرورگر شما بیرون نمی‌رود.</p>
+        ${!xr ? html`<div class="note"><i class="spin"></i> در حال بارگذاری…</div>` : html`
+        <textarea class="input ltr nx-code" id="nx-mx-text" rows="9" spellcheck="false" aria-label="تنظیمات کامل Xray" placeholder='{ "inbounds": [ ... ], "outbounds": [ ... ], "routing": { ... } }'>${mx.text}</textarea>
+        <label class="switch"><input type="checkbox" data-act="nx-mx-smart" ${mx.smart ? "checked" : ""}>روتینگ هوشمند HMray: ترافیک هر دسته به خروجی دلخواه (ایران مستقیم، بازی به ترکیه، تبلیغات مسدود و…)</label>
+        ${mx.smart ? html`<div class="nx-cats"><div class="nx-cat"><span>هوش مصنوعی (همه‌ی سرویس‌های AI)</span><b class="ltr">neoexit</b></div>
+          ${xr.CATS.map((c) => {
+            const opts = [["", "دست نزن"], ["@block", "مسدود"], ["@direct", "مستقیم از همین سرور"], ["neoexit", "NeoExit"], ...tags.filter((t) => t.protocol !== "blackhole" && t.protocol !== "freedom").map((t) => [t.tag, t.tag])];
+            const cur = mx.cats[c.id] !== undefined ? mx.cats[c.id] : c.def;
+            const val = opts.some((o) => o[0] === cur) ? cur : c.def.startsWith("@") ? c.def : "";
+            return html`<label class="nx-cat"><span>${c.name}</span><select class="input" data-act="nx-cat" data-cat="${c.id}">${opts.map(([v, l]) => html`<option value="${v}" ${v === val ? "selected" : ""}>${l}</option>`)}</select></label>`;
+          })}</div>` : ""}
+        <div><button class="btn primary" data-act="nx-merge">ساختن تنظیمات</button></div>
+        ${mx.err ? html`<div class="note bad">${mx.err}</div>` : ""}
+        ${mx.out ? html`<ul class="nx-notes">${mx.out.notes.map((n) => html`<li>${n}</li>`)}</ul>
+          ${mx.out.smartUsed && !rs.current ? html`<div class="note warn">قوانین هوشمند فایل‌های hmray.dat و hmray-geoip.dat را لازم دارند؛ اول از کادر «روتینگ هوشمند» نصبشان کنید، وگرنه Xray بالا نمی‌آید.</div>` : ""}
+          <div class="row"><b>تنظیمات آماده</b><span class="grow"></span><button class="btn sm primary" data-act="copy" data-text="${mx.out.text}">${I.copy(14)} کپی همه</button></div>
+          <textarea class="input ltr nx-code" rows="12" readonly spellcheck="false" aria-label="تنظیمات آماده">${mx.out.text}</textarea>
+          <p class="help" style="margin:0">در 3x-ui همان‌جا همه را پاک کنید، این را بچسبانید، ذخیره کنید و Xray را ری‌استارت کنید.</p>` : ""}`}
+      </div></section>`;
+  }
+
+  function nxHistory(x, st) {
+    const evs = st.live.events || [];
+    if (!evs.length) return html`<div class="panel"><div class="empty"><b>هنوز اتفاقی نیفتاده</b>هر جابه‌جایی سرویس، IP تازه و خطا اینجا ثبت می‌شود.</div></div>`;
+    return html`<div class="panel"><header><h2>تاریخچه</h2><span class="aside">جابه‌جایی سرویس‌ها، IPهای تازه و خطاها، با دلیل هر کدام</span></header><div class="in"><ol class="nx-tl">
+      ${evs.map((e) => html`<li class="${e.kind}"><time class="ltr">${F.hm.format(new Date(e.at))}</time><i class="dot ${e.kind === "error" || e.kind === "down" ? "bad" : e.kind === "switch" ? "warn" : "ok"}"></i><span>${e.text}<small>${nxAgo(e.at)}</small></span></li>`)}
+    </ol></div></div>`;
+  }
+
+  function nxSettings(x, st) {
+    const s = st.settings, u = st.update;
+    const ustate = u.state === "downloading" ? "در حال دانلود و بررسی نسخه‌ی تازه…" : u.state === "restarting" ? "نصب شد؛ NeoExit دوباره راه می‌افتد…"
+      : u.state === "failed" ? html`به‌روزرسانی نشد: <span class="ltr">${u.problem || ""}</span>` : u.newer ? html`نسخه‌ی تازه آماده است: <b class="ltr">${u.latest}</b>`
+      : u.err ? html`بررسی نشد: <span class="ltr">${u.err}</span>` : u.latest ? `به‌روز است. آخرین بررسی ${nxAgo(u.checked)}.` : "هنوز بررسی نشده.";
+    const host = x.address && x.address.includes(":") ? `[${x.address}]` : x.address;
+    const login = S.nx.login[x.key];
+    return html`<div class="nx-grid">
+      <section class="panel"><header><h2>تست و جابه‌جایی</h2></header><div class="in"><form class="stack" data-form="nx-settings">
+        <div class="field"><label>هر چند دقیقه یک بار تست شود</label><input class="input ltr" name="check_minutes" type="number" min="2" max="720" value="${s.check_minutes}" required></div>
+        <label class="switch"><input type="checkbox" name="same_country" ${s.same_country ? "checked" : ""}>کشور ثابت: وقتی سرویسی باید جابه‌جا شود، اول خروجی‌های همان کشور قبلی امتحان شوند</label>
+        <label class="switch"><input type="checkbox" name="auto_rotate" ${s.auto_rotate ? "checked" : ""}>IP تازه‌ی خودکار برای WARP، وقتی هیچ خروجی‌ای برای یک سرویس جواب ندهد</label>
+        <div class="field"><label>حداکثر IP تازه در ساعت</label><input class="input ltr" name="rotate_hourly" type="number" min="1" max="30" value="${s.rotate_hourly}"></div>
+        <div class="field"><label>بقیه‌ی ترافیک (غیر از هوش مصنوعی) از کجا برود</label><select class="input" name="other"><option value="">مسیر عادی خود سرور</option>${st.exits.map((e) => html`<option value="${e.id}" ${s.other === e.id ? "selected" : ""}>${e.name}</option>`)}</select></div>
+        <div><button class="btn primary" type="submit">ذخیره‌ی تنظیمات</button></div>
+      </form></div></section>
+      <div class="stack">
+        <section class="panel"><header><h2>سرویس‌ها</h2></header><div class="in stack">
+          ${st.services.map((v) => html`<div class="row nx-svcline"><label class="switch"><input type="checkbox" data-act="nx-svc-on" data-id="${v.id}" ${v.enabled ? "checked" : ""}><span class="ltr">${v.name}</span></label>
+            <span class="faint small">${v.domains.length} دامنه${v.custom ? "، اضافه‌شده" : ""}</span><span class="grow"></span><button class="btn sm ghost" data-act="nx-svc" data-id="${v.id}">${I.edit(14)} ویرایش</button></div>`)}
+          <div><button class="btn sm" data-act="nx-svc" data-id="">${I.plus(14)} سرویس تازه</button></div></div></section>
+        <section class="panel"><header><h2>نسخه</h2><span class="aside ltr">NeoExit ${u.current}</span></header><div class="in stack">
+          <div class="note ${u.newer ? "ok" : u.state === "failed" || u.err ? "warn" : ""}">${ustate}</div>
+          ${u.newer && u.notes ? html`<pre class="nx-pre" dir="auto">${u.notes}</pre>` : ""}
+          <div class="row"><button class="btn sm ghost" data-act="nx-upd-check">بررسی</button>
+            ${u.newer ? html`<button class="btn sm primary" data-act="nx-install" data-key="${x.key}" data-version="${u.latest}">${I.upgrade(14)} نصب <span class="ltr">${u.latest}</span></button>` : ""}</div>
+          <p class="help" style="margin:0">نصب از اینجا همان کار نصب اول را می‌کند و تنظیمات می‌ماند؛ سروری که به گیت‌هاب نمی‌رسد هم از این راه به‌روز می‌شود.</p></div></section>
+        <section class="panel"><header><h2>پنل خود NeoExit</h2></header><div class="in stack">
+          <p class="help" style="margin:0">همه‌ی کارهای پنل NeoExit همین‌جا هم هست؛ پنل خودش برای وقتی است که بخواهید مستقیم بازش کنید.</p>
+          ${login ? html`<dl class="kv"><dt>آدرس</dt><dd><a class="ltr sens" href="https://${host}:${login.port}/${login.path}/" target="_blank" rel="noopener noreferrer">https://${host}:${login.port}/${login.path}/</a></dd><dt>نام کاربری</dt><dd class="ltr">${login.user}</dd></dl>` : ""}
+          <div class="row">${login ? "" : html`<button class="btn sm ghost" data-act="nx-login">نمایش آدرس</button>`}<button class="btn sm ghost" data-act="nx-pass">رمز تازه</button></div></div></section>
+        <section class="panel"><header><h2>حذف</h2></header><div class="in"><div class="row"><span class="grow help">NeoExit، تنظیمات و خروجی‌هایش از ${x.name} پاک می‌شود.</span><button class="btn sm danger" data-act="nx-uninstall" data-key="${x.key}">${I.trash(14)} حذف NeoExit</button></div></div></section>
+      </div></div>`;
+  }
+
+  // ---- the exit and service forms ----
+  function nxExitView() {
+    const f = S.nx.form, e = f.id ? nxExit(f.id) : null, k = f.kind, st = nxState();
+    const show = (kinds) => kinds.includes(k);
+    return html`${modalHead(e ? "ویرایش " + e.name : "خروجی تازه")}
+      <form data-form="nx-exit"><div class="body stack">
+        ${e ? "" : html`<div class="nx-kinds">${NX_KINDS.map(([id, name, sub]) => html`<label class="${k === id ? "on" : ""}"><input type="radio" name="kind" value="${id}" data-act="nx-kind" ${k === id ? "checked" : ""}><b>${name}</b><small>${sub}</small></label>`)}</div>`}
+        <div class="field"><label>اسم</label><input class="input" name="name" dir="auto" maxlength="40" value="${f.name}"></div>
+        ${show(["opera"]) ? html`<div class="field"><label>منطقه</label><select class="input" name="region">${Object.entries(NX_OPERA).map(([c, l]) => html`<option value="${c}" ${f.region === c ? "selected" : ""}>${l}</option>`)}</select></div>
+          <p class="help" style="margin:0">پروکسی‌های رایگان مرورگر Opera. رسمی نیستند و ممکن است روزی از کار بیفتند؛ آن وقت بقیه‌ی خروجی‌ها کار را ادامه می‌دهند.</p>` : ""}
+        ${show(["psiphon"]) ? html`<div class="field"><label>کشور خروجی</label><select class="input" name="region">${(st.choices.psiphon || []).map((c) => html`<option value="${c}" ${f.region === c ? "selected" : ""}>${c ? nxCountry(c) + "  " + c : "بهترین کشور (خودش انتخاب می‌کند)"}</option>`)}</select></div>
+          <p class="help" style="margin:0">سایفون جدا اجرا می‌شود و وصل شدنش ممکن است یکی دو دقیقه طول بکشد.</p>` : ""}
+        ${show(["socks5", "http", "ssh"]) ? html`<div class="field"><label>${k === "ssh" ? "سرور (IP یا IP:پورت)" : "آدرس (host:port یا لینک کامل)"}</label><input class="input ltr" name="address" autocomplete="off" value="${f.address}" placeholder="${k === "ssh" ? "203.0.113.5" : "203.0.113.5:1080"}"></div>
+          <div class="grid2"><div class="field"><label>نام کاربری</label><input class="input ltr" name="user" autocomplete="off" value="${f.user}"></div>
+            <div class="field"><label>رمز</label><input class="input ltr" name="pass" type="password" autocomplete="new-password" placeholder="${e && e.has_pass ? "بدون تغییر" : ""}"></div></div>` : ""}
+        ${show(["ssh"]) ? html`<div class="field"><label>کلید خصوصی (اختیاری، به‌جای رمز)</label><textarea class="input ltr nx-code" name="key" rows="3" spellcheck="false" placeholder="${e && e.has_key ? "کلید فعلی می‌ماند؛ برای عوض کردن، کلید تازه را بچسبانید" : "-----BEGIN OPENSSH PRIVATE KEY-----"}"></textarea></div>
+          <p class="help" style="margin:0">چیزی روی آن سرور نصب نمی‌شود؛ مثل <span class="ltr">ssh -D</span> از آن بیرون می‌رود.</p>` : ""}
+        ${show(["warp"]) ? html`<div class="field"><label>کلید WARP+ (اختیاری)</label><input class="input ltr" name="license" autocomplete="off" placeholder="${e && e.license ? "بدون تغییر" : ""}"></div>` : ""}
+      </div><footer><span class="grow"></span><button class="btn ghost" type="button" data-act="close">انصراف</button><button class="btn primary" type="submit">${e ? "ذخیره" : "افزودن"}</button></footer></form>`;
+  }
+
+  function nxSvcView() {
+    const id = S.nx.svc, st = nxState(), v = id ? st.services.find((s) => s.id === id) : null;
+    if (id && !v) return html`${modalHead("سرویس")}<div class="body">این سرویس دیگر وجود ندارد.</div>`;
+    const l = v ? nxLiveSvc(v.id) : {};
+    return html`${modalHead(v ? html`<span class="ltr">${v.name}</span>` : "سرویس تازه")}
+      <div class="body stack">
+        ${v ? html`<label class="switch"><input type="checkbox" data-act="nx-svc-on" data-id="${v.id}" ${v.enabled ? "checked" : ""}>تست و مسیر این سرویس روشن باشد</label>
+          ${v.id === "youtube" ? html`<p class="help" style="margin:0">تست YouTube این است که آیا Premium از کشور آن خروجی فروخته می‌شود؛ «بدون Premium» یعنی خود یوتیوب کار می‌کند ولی Premium آنجا نیست.</p>` : ""}
+          ${v.enabled ? html`<div class="field"><span class="lbl">از کدام خروجی برود</span><div class="nx-choices">
+            <button type="button" class="${v.pin ? "" : "on"}" data-act="nx-pin" data-svc="${v.id}" data-exit="">${I.bolt(15)}<span class="grow"><b>خودکار</b><small>اولین خروجی باز، با اولویت همان کشور${!v.pin && l.exit && nxExit(l.exit) ? " · الان " + nxExit(l.exit).name : ""}</small></span></button>
+            ${st.exits.filter((e) => e.enabled).map((e) => { const r = (nxLiveExit(e.id).results || {})[v.id];
+              return html`<button type="button" class="${v.pin === e.id ? "on" : ""}" data-act="nx-pin" data-svc="${v.id}" data-exit="${e.id}"><i class="dot ${r ? NX_DOT[r.state] || "warn" : "off"}"></i><span class="grow"><b>${e.name}</b><small>${r ? (NX_WORD[r.state] || r.state) + (r.detail ? "، " + r.detail : "") : "تست نشده"}</small></span></button>`; })}
+          </div></div>` : ""}` : ""}
+        <form class="stack" data-form="nx-svc">
+          <div class="field"><label>اسم</label><input class="input" name="name" dir="auto" maxlength="40" required value="${v ? v.name : ""}"></div>
+          <div class="field"><label>دامنه‌ها (هر خط یکی؛ زیردامنه‌ها خودشان حساب می‌شوند)</label><textarea class="input ltr nx-code" name="domains" rows="${v ? 5 : 4}" spellcheck="false" required placeholder="example.com">${v ? v.domains.join("\n") : ""}</textarea></div>
+          ${v ? "" : html`<p class="help" style="margin:0">تستش این است که صفحه‌ی اول دامنه‌ی اول از هر خروجی باز شود و نگوید «در کشور شما نیست».</p>`}
+          <div class="row"><button class="btn primary" type="submit">${v ? "ذخیره" : "افزودن سرویس"}</button><span class="grow"></span>${v && v.custom ? html`<button class="btn danger" type="button" data-act="nx-svc-del" data-id="${v.id}">${I.trash(14)} حذف سرویس</button>` : ""}</div>
+        </form></div>`;
+  }
+
+  function nxOpenExit(id) {
+    const e = id ? nxExit(id) : null;
+    S.nx.form = { id: id || "", kind: e ? e.kind : "warp", name: e ? e.name : "WARP", region: e ? e.region || "" : "", address: e ? e.address || "" : "", user: e ? e.user || "" : "" };
+    openModal(nxExitView);
+  }
+
+  async function nxSubmit(form, d, el) {
+    const N = S.nx;
+    if (form === "nx-exit") {
+      const f = N.form, kind = f.id ? f.kind : d.kind || f.kind, body = { kind, name: (d.name || "").trim() };
+      if (["socks5", "http", "ssh"].includes(kind)) { body.address = (d.address || "").trim(); body.user = (d.user || "").trim(); if (d.pass || !f.id) body.pass = d.pass || ""; }
+      if (kind === "ssh" && (d.key || "").trim()) body.key = d.key;
+      if (kind === "opera" || kind === "psiphon") body.region = d.region || "";
+      if (kind === "warp" && (d.license || !f.id)) body.license = (d.license || "").trim();
+      if (f.id) await nxApi("PUT", "exits/" + f.id, body); else await nxApi("POST", "exits", body);
+      closeModal(); toast(f.id ? "ذخیره شد" : "اضافه شد؛ تستش شروع شد"); await nxLoad(); return;
+    }
+    if (form === "nx-svc") {
+      const body = { name: d.name.trim(), domains: d.domains.split("\n") };
+      const r = N.svc ? await nxApi("PUT", "services/" + N.svc, body) : await nxApi("POST", "services", body);
+      if (!N.svc && r && r.id) N.svc = r.id;
+      toast(N.svc ? "ذخیره شد" : "اضافه شد"); await nxLoad(); drawModal(); return;
+    }
+    if (form === "nx-proxy") {
+      await nxApi("PUT", "proxy", { listen: d.listen, port: +d.port, user: (d.user || "").trim(), pass: d.pass || "" });
+      S.edit = false; toast("پروکسی ذخیره شد"); await nxLoad(); return;
+    }
+    if (form === "nx-settings") {
+      await nxApi("PUT", "settings", { check_minutes: +d.check_minutes, same_country: !!d.same_country, auto_rotate: !!d.auto_rotate, rotate_hourly: +d.rotate_hourly || 0, other: d.other || "" });
+      S.edit = false; toast("تنظیمات ذخیره شد"); await nxLoad();
+    }
+  }
+
+  const nxActions = {
+    "nx-sel"(el) { S.nx.sel = el.dataset.key; S.nx.tab = "overview"; S.edit = false; draw(); nxLoad(); },
+    "nx-tab"(el) { S.nx.tab = el.dataset.tab; S.edit = false; draw(); },
+    "nx-install"(el) {
+      const k = el.dataset.key, x = (S.nx.list || []).find((s) => s.key === k), v = el.dataset.version || "";
+      openModal(() => confirmView(v ? "به‌روزرسانی NeoExit" : "نصب NeoExit", html`NeoExit ${v ? html`<span class="ltr">${v}</span>` : "(آخرین نسخه)"} روی <b>${x ? x.name : k}</b> ${x && x.state !== "none" ? "دوباره نصب شود؟ تنظیمات و خروجی‌ها می‌مانند." : "نصب شود؟"}`, "nx-install-go", { key: k, version: v }, v || (x && x.state !== "none") ? "نصب" : "نصب NeoExit", I.download));
+    },
+    async "nx-install-go"(el) {
+      const k = el.dataset.key, x = (S.nx.list || []).find((s) => s.key === k);
+      closeModal(); S.nx.busy[k] = `در حال نصب NeoExit روی ${x ? x.name : k}…`; draw();
+      try {
+        const r = await api("POST", `neoexit/${nxEnc(k)}/install`, { version: el.dataset.version || "" });
+        delete S.nx.busy[k]; S.nx.scripts = false;
+        await nxLoad();
+        if (r.password) openModal(() => nxLoginView(x ? x.name : k, r.user, r.password, r.panel_port, r.panel_path, x));
+        else toast(`NeoExit ${r.version} نصب شد`);
+      } catch (e) { delete S.nx.busy[k]; draw(); toast(e.message, "bad"); }
+    },
+    "nx-uninstall"(el) { const k = el.dataset.key, x = (S.nx.list || []).find((s) => s.key === k); openModal(() => confirmView("حذف NeoExit", html`NeoExit با همه‌ی تنظیمات و خروجی‌هایش از <b>${x ? x.name : k}</b> پاک شود؟ اگر 3x-ui به پروکسی آن وصل است، آن خروجی از کار می‌افتد.`, "nx-uninstall-go", { key: k }, "حذف NeoExit")); },
+    async "nx-uninstall-go"(el) { closeModal(); await nxAct(() => api("POST", `neoexit/${nxEnc(el.dataset.key)}/uninstall`), "NeoExit حذف شد"); delete S.nx.st[el.dataset.key]; },
+    "nx-check"() { nxAct(() => nxApi("POST", "check"), "تست همه‌ی خروجی‌ها شروع شد"); },
+    "nx-exit"(el) { nxOpenExit(el.dataset.id); },
+    "nx-exit-on"(el) { nxAct(() => nxApi("PUT", "exits/" + el.dataset.id, { enabled: !!el.dataset.on })); },
+    "nx-move"(el) { nxAct(() => nxApi("POST", `exits/${el.dataset.id}/move`, { dir: +el.dataset.dir })); },
+    "nx-rotate"(el) { nxAct(() => nxApi("POST", `exits/${el.dataset.id}/rotate`), "IP تازه گرفته شد"); },
+    "nx-exit-del"(el) { const e = nxExit(el.dataset.id); openModal(() => confirmView("حذف خروجی", html`خروجی <b>${e ? e.name : ""}</b> حذف شود؟`, "nx-exit-del-go", { id: el.dataset.id }, "حذف")); },
+    async "nx-exit-del-go"(el) { closeModal(); await nxAct(() => nxApi("DELETE", "exits/" + el.dataset.id), "حذف شد"); },
+    "nx-svc"(el) { S.nx.svc = el.dataset.id; openModal(nxSvcView); },
+    async "nx-pin"(el) {
+      const v = nxState().services.find((s) => s.id === el.dataset.svc), e = nxExit(el.dataset.exit);
+      await nxAct(() => nxApi("PUT", "services/" + el.dataset.svc, { pin: el.dataset.exit }), e ? `${v.name} روی ${e.name} ثابت شد` : `${v.name}: انتخاب خودکار`);
+      if (S.modal) drawModal();
+    },
+    async "nx-svc-del"(el) { await nxAct(() => nxApi("DELETE", "services/" + el.dataset.id), "حذف شد"); closeModal(); },
+    "nx-routing"() { nxAct(() => nxApi("POST", "routing/install"), "نصب شد؛ Xray را در 3x-ui ری‌استارت کنید"); },
+    async "nx-upd-check"() { try { const u = await nxApi("POST", "update/check"); toast(u.newer ? "نسخه‌ی تازه پیدا شد: " + u.latest : "به‌روز است"); await nxLoad(); } catch (e) { toast(e.message, "bad"); } },
+    async "nx-login"() { try { S.nx.login[S.nx.sel] = await api("GET", `neoexit/${nxEnc(S.nx.sel)}/login`); draw(); } catch (e) { toast(e.message, "bad"); } },
+    "nx-pass"() { openModal(() => confirmView("رمز تازه برای پنل NeoExit", "رمز پنل خود NeoExit عوض شود؟ رمز تازه یک بار نشان داده می‌شود.", "nx-pass-go", {}, "رمز تازه", I.lock)); },
+    async "nx-pass-go"() {
+      const x = nxServer();
+      try { const r = await api("POST", `neoexit/${nxEnc(x.key)}/password`, {}); const l = await api("GET", `neoexit/${nxEnc(x.key)}/login`); S.nx.login[x.key] = l; openModal(() => nxLoginView(x.name, r.user, r.password, l.port, l.path, x)); }
+      catch (e) { toast(e.message, "bad"); }
+    },
+    "nx-merge"() {
+      const mx = S.nx.mx;
+      mx.err = ""; mx.out = null;
+      try { mx.out = XRAY.merge(mx.text, { outbound: nxState().snippet.outbound, rule: nxState().snippet.rule, smart: mx.smart, cats: Object.fromEntries(XRAY.CATS.map((c) => [c.id, mx.cats[c.id] !== undefined ? mx.cats[c.id] : c.def])) }); }
+      catch (e) { mx.err = e.message; }
+      draw();
+    },
+  };
+
+  function nxLoginView(name, user, pass, port, path, x) {
+    const host = x && x.address ? (x.address.includes(":") ? `[${x.address}]` : x.address) : "";
+    const url = `https://${host}:${port}/${path}/`;
+    return html`${modalHead("پنل NeoExit روی " + name)}<div class="body stack">
+      <div class="note ok">${I.check(15)} رمز فقط همین یک بار نشان داده می‌شود. همه‌ی کارهای NeoExit از همین صفحه هم انجام می‌شود.</div>
+      <dl class="kv"><dt>آدرس</dt><dd><a class="ltr" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></dd><dt>نام کاربری</dt><dd class="ltr">${user}</dd></dl>
+      ${codeBlock("رمز", pass, "")}</div>
+      <footer><span class="grow"></span><button class="btn primary" data-act="close">بستن</button></footer>`;
+  }
+
+  document.addEventListener("input", (e) => { if (e.target.id === "nx-mx-text") { S.nx.mx.text = e.target.value; S.nx.mx.out = null; } });
+
   // ---------- servers ----------
   function viewServers() {
     const ov = S.ov;
     const master = masters().map(masterNote);
     const gone = (ov.gone || []).map((g) => html`<div class="note warn" style="margin-bottom:16px"><b>در انتظار پاک‌سازی روی ${g.name}</b> (<span class="ltr">${g.address}</span>): این سرور حذف شد ولی در دسترس نبود. هر بار که جواب بدهد، تانل‌های این سرور روی آن حذف می‌شوند (تا ۳۰ روز). برای پاک‌سازی همین الان، روی خودش اجرا کنید:
       <div class="code ltr" style="margin-top:8px">${g.command}<button class="btn sm ghost icon" data-act="copy" data-text="${g.command}" aria-label="کپی">${I.copy(15)}</button></div></div>`);
-    const self = ov.node.neoexit ? html`<div class="panel" style="margin-bottom:16px"><h3 style="margin:0 0 8px">همین سرور</h3>${neoexitBlock(ov.node.neoexit, ov.node.address)}</div>` : "";
-    if (!ov.peers.length) return html`${master}${gone}${self}<div class="panel"><div class="empty">${I.server(32)}<b>هنوز سروری اضافه نشده</b>سرور خارج را با نام و IP اضافه کنید؛ پنل دستور یک‌خطی نصب و اتصال را برای همان سرور می‌سازد.<br><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button></div></div>`;
+    if (!ov.peers.length) return html`${master}${gone}<div class="panel"><div class="empty">${I.server(32)}<b>هنوز سروری اضافه نشده</b>سرور خارج را با نام و IP اضافه کنید؛ پنل دستور یک‌خطی نصب و اتصال را برای همان سرور می‌سازد.<br><button class="btn primary" data-act="add-server">${I.plus(16)} افزودن سرور</button></div></div>`;
     const old = ov.peers.filter((p) => p.paired && p.version && p.version !== ov.node.version);
-    return html`${master}${gone}${self}
+    return html`${master}${gone}
       ${old.length ? html`<div class="note warn" style="margin-bottom:16px">${old.length} سرور نسخه‌ی قدیمی‌تری از این سرور (<span class="ltr">${ov.node.version}</span>) دارد. برای اینکه همه‌ی قابلیت‌ها کار کنند ارتقا دهید.</div>` : ""}
       <div class="peers">${ov.peers.map(peerCard)}</div>`;
   }
@@ -1924,22 +2343,6 @@
       </div></div>`;
   }
 
-  // NeoExit (free exits for AI services, a separate program) on a server:
-  // each service and the exit it leaves through, and a link to its panel.
-  function neoexitBlock(ne, address) {
-    if (!ne) return "";
-    const word = { ok: "باز", geo: "کشور بسته", challenge: "کپچا", error: "خطا", down: "بسته" };
-    const cls = { ok: "ok", geo: "bad", challenge: "warn", error: "bad", down: "bad" };
-    const host = address && address.includes(":") ? `[${address}]` : address;
-    const svcs = ne.services || [];
-    const bad = svcs.filter((s) => s.state !== "ok").length;
-    return html`<div class="neoexit">
-      <div class="ne-head"><b>NeoExit</b><span class="faint small">${svcs.length ? (bad ? `${bad} سرویس مشکل دارد` : "همه‌ی سرویس‌ها باز") : "سرویسی روشن نیست"}</span>
-        ${host && ne.panel ? html`<a class="btn sm" href="https://${host}${ne.panel}" target="_blank" rel="noopener noreferrer">پنل NeoExit</a>` : ""}</div>
-      <ul>${svcs.map((s) => html`<li><i class="dot ${cls[s.state] || "warn"}"></i><span class="ltr">${s.name}</span><span class="faint">${word[s.state] || "تست نشده"}${s.exit ? html` · از ${s.exit}` : ""}</span></li>`)}</ul>
-    </div>`;
-  }
-
   // A peer: reachability, version and what to do next, at a glance.
   function peerCard(p) {
     const ov = S.ov, up = S.upgrading[p.name];
@@ -1953,12 +2356,11 @@
       <header><div><span class="pname"><b>${plabel(p)}</b>${renameBtn("server", p.name)}</span><span class="ltr faint small">${p.address}${p.label ? ` · ${p.name}` : ""}</span></div><span class="state"><i class="dot ${cls}"></i>${label}</span></header>
       <dl>
         <div><dt>نسخه</dt><dd class="ltr">${p.version || "-"} ${outdated && !up ? html`<span class="tag warn">قدیمی</span>` : p.paired && p.version ? html`<span class="tag">به‌روز</span>` : ""}</dd></div>
-        <div><dt>تانل‌ها</dt><dd>${p.tunnels}</dd></div>
+        <div><dt>تانل‌ها</dt><dd>${p.tunnels}${p.neoexit ? html` <a class="tag ok" href="#/neoexit" title="NeoExit روی این سرور روشن است">NeoExit</a>` : ""}</dd></div>
         <div><dt>آخرین ارتباط</dt><dd>${ago(p.last_seen)}</dd></div>
       </dl>
       ${(p.dropped || []).length ? html`<div class="note warn small" style="margin:10px 0 0">${p.dropped.length} تانل این سرور روی ${plabel(p)} دستی حذف شده (<span class="ltr">${p.dropped.join(", ")}</span>) و آنجا ساخته نمی‌شود.
         <div style="margin-top:6px"><button class="btn sm" data-act="restore-tunnel" data-peer="${p.name}">${I.sync(14)} ساخت دوباره</button></div></div>` : ""}
-      ${neoexitBlock(p.neoexit, p.address)}
       <footer>
         ${!p.paired ? html`<button class="btn sm primary" data-act="setup" data-name="${p.name}">${I.term(15)} دستور اتصال</button>`
           : html`${outdated || up ? html`<button class="btn sm primary" data-act="upgrade" data-name="${p.name}" ${up ? "disabled" : ""}>${I.upgrade(15)} ${up ? "در حال ارتقا…" : `ارتقا به ${ov.node.version}`}</button>` : ""}
@@ -3438,6 +3840,14 @@
       S.speed.only = t.checked ? only.concat(t.value) : only;
     }
     if (t.dataset.act === "st-subject") { S.st.subject = t.value; draw(); }
+    if (t.dataset.act === "nx-kind") {
+      const f = S.nx.form, auto = (k) => (NX_KINDS.find((x) => x[0] === k) || [k, k])[1];
+      const name = t.form && t.form.name ? t.form.name.value : f.name;
+      f.name = !name || name === auto(f.kind) ? auto(t.value) : name; f.kind = t.value; f.region = t.value === "opera" ? "EU" : ""; drawModal();
+    }
+    if (t.dataset.act === "nx-svc-on") nxAct(() => nxApi("PUT", "services/" + t.dataset.id, { enabled: t.checked }), t.checked ? "روشن شد" : "خاموش شد").then(() => { if (S.modal) drawModal(); });
+    if (t.dataset.act === "nx-mx-smart") { S.nx.mx.smart = t.checked; S.nx.mx.out = null; draw(); }
+    if (t.dataset.act === "nx-cat") { S.nx.mx.cats[t.dataset.cat] = t.value; S.nx.mx.out = null; }
     if (t.dataset.act === "forget-days") api("POST", "settings/forget-masters", { days: +t.value }).then(() => refresh()).then(() => toast("ذخیره شد"), (e) => toast(e.message, "bad"));
     if (t.dataset.act === "safe-pref") { S.safe = t.checked; store("nt-safe", S.safe ? "1" : "0"); if (t.closest(".modal")) drawModal(); else draw(); }
     if (t.dataset.act === "def-check") { S.defs[t.dataset.key] = t.checked; S.edit = true; }
@@ -3498,6 +3908,7 @@
     e.preventDefault();
     const d = Object.fromEntries(new FormData(e.target));
     try {
+      if (form.startsWith("nx-")) { await nxSubmit(form, d, e.target); S.edit = false; return; }
       if (form === "login") { await api("POST", "login", { user: d.user, password: d.password }); S.authed = true; await refresh(); refreshTraffic().then(draw); return; }
       if (form === "node") {
         if ((d.label || "").trim() !== (S.ov.node.label || "")) await api("POST", "labels", { kind: "self", label: d.label });
@@ -4008,6 +4419,8 @@
     },
   };
 
+  Object.assign(actions, nxActions, { "nx-reload"() { nxLoad(); } });
+
   document.addEventListener("click", (e) => {
     const sp = e.target.closest("a[data-hl]");
     if (sp) api("POST", "spot/open", { id: sp.dataset.hl, placement: sp.dataset.place }).catch(() => {});
@@ -4034,6 +4447,7 @@
     S.route = location.hash.slice(2) || "dashboard";
     S.edit = false; S.drawer = null; S.defs = null;
     if (S.route === "settings") S.system = null;
+    if (S.route === "neoexit") nxLoad();
     draw(); window.scrollTo(0, 0);
     if (S.menu) closeMenu();
   });
@@ -4050,6 +4464,7 @@
     let resized = 0;
     window.addEventListener("resize", () => { clearTimeout(resized); resized = setTimeout(() => { if (S.menu && window.innerWidth > 980) S.menu = S.menuLeaving = false; if (!S.modal && !S.edit) draw(); }, 150); });
     setInterval(() => { if (S.authed && !document.hidden) refreshTraffic(); }, 30000);
+    setInterval(() => { if (S.authed && !document.hidden && S.route === "neoexit" && !S.paused) nxLoad(); }, 5000);
   }
   boot();
 })();

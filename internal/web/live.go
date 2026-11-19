@@ -297,7 +297,7 @@ func peerViews(st *config.State) []PeerView {
 		v := PeerView{
 			Name: p.Name, Label: p.Label, Address: p.Address, Address6: p.Address6, AESNI: p.AESNI, Paired: p.Paired(),
 			InSync: p.Paired() && p.AppliedRevision == st.Revision, Applied: p.AppliedRevision,
-			Version: p.Version, Arch: p.Arch, NeoExit: neoexit.Peer(p.Name), Dropped: p.Dropped,
+			Version: p.Version, Arch: p.Arch, NeoExit: neoexit.Peer(p.Name).Status, Dropped: p.Dropped,
 		}
 		if !p.LastSeen.IsZero() {
 			v.LastSeen = p.LastSeen.Unix()

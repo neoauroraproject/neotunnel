@@ -22,6 +22,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/identity"
 	"neotunnel/internal/mtr"
+	"neotunnel/internal/neoexit"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/version"
 )
@@ -151,6 +152,11 @@ func innerBases(remote string, port int) []string {
 
 // ToPeer connects to a paired peer as its master.
 func ToPeer(id *identity.Identity, p config.Peer) (*Client, error) {
+	return ToPeerFor(id, p, 30*time.Second)
+}
+
+// ToPeerFor is ToPeer for calls that may take up to timeout (downloads).
+func ToPeerFor(id *identity.Identity, p config.Peer, timeout time.Duration) (*Client, error) {
 	if !p.Paired() {
 		return nil, fmt.Errorf("peer %s is not paired yet: run its connect command on it", p.Name)
 	}
@@ -164,7 +170,7 @@ func ToPeer(id *identity.Identity, p config.Peer) (*Client, error) {
 		// listening there; the last resort until its new port answers.
 		bases = append(bases, "https://"+net.JoinHostPort(p.Address, strconv.Itoa(DefaultPort)))
 	}
-	return newClient(id, bases, p.PublicKey, 30*time.Second)
+	return newClient(id, bases, p.PublicKey, timeout)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any, hdr map[string]string) error {
@@ -231,9 +237,20 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, hdr m
 	return lastErr
 }
 
+// RawFile receives a file a call answers with, and the SHA-256 the far
+// end says it has.
+type RawFile struct {
+	Data []byte
+	Sum  string
+}
+
 func (c *Client) handle(method, path string, resp *http.Response, out any) error {
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	limit := int64(8 << 20)
+	if _, ok := out.(*RawFile); ok {
+		limit = 256 << 20
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if resp.StatusCode != http.StatusOK {
 		var e struct{ Error string }
 		if json.Unmarshal(b, &e) == nil && e.Error != "" {
@@ -243,6 +260,10 @@ func (c *Client) handle(method, path string, resp *http.Response, out any) error
 			return fmt.Errorf("%s %s: %w", method, path, ErrUnsupported)
 		}
 		return fmt.Errorf("%s %s: %s", method, path, resp.Status)
+	}
+	if f, ok := out.(*RawFile); ok {
+		f.Data, f.Sum = b, resp.Header.Get("X-Sha256")
+		return nil
 	}
 	if out != nil {
 		return json.Unmarshal(b, out)
@@ -366,3 +387,44 @@ func (c *Client) Restore(ctx context.Context, names []string) error {
 func NotMaster(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "not my master")
 }
+
+// NeoExit on the peer: requests to its API, its release cache, install.
+
+func (c *Client) NeoExitCall(ctx context.Context, req NeoExitCall) (NeoExitReply, error) {
+	var r NeoExitReply
+	return r, c.do(ctx, "POST", "/v1/neoexit/call", req, &r, nil)
+}
+
+func (c *Client) NeoExitFetch(ctx context.Context, version, arch string) (string, error) {
+	var r NeoExitFetched
+	return r.Version, c.do(ctx, "POST", "/v1/neoexit/fetch", NeoExitFetch{Version: version, Arch: arch}, &r, nil)
+}
+
+func (c *Client) NeoExitGet(ctx context.Context, version, name string) (RawFile, error) {
+	var f RawFile
+	return f, c.do(ctx, "GET", "/v1/neoexit/cache/"+version+"/"+name, nil, &f, nil)
+}
+
+func (c *Client) NeoExitPut(ctx context.Context, version, name string, data []byte, sum string) error {
+	return c.do(ctx, "PUT", "/v1/neoexit/cache/"+version+"/"+name, bytes.NewReader(data), nil, map[string]string{"X-Sha256": sum})
+}
+
+// NeoExitInstall installs version on the peer; ErrNeedFiles when the peer
+// couldn't download it and the files must be sent (NeoExitPut) first.
+func (c *Client) NeoExitInstall(ctx context.Context, version string) (neoexit.Installed, error) {
+	var r neoexit.Installed
+	err := c.do(ctx, "POST", "/v1/neoexit/install", NeoExitFetch{Version: version}, &r, nil)
+	if err != nil && strings.Contains(err.Error(), NeedFiles) {
+		return r, fmt.Errorf("%w: %v", ErrNeedFiles, err)
+	}
+	return r, err
+}
+
+func (c *Client) NeoExitUninstall(ctx context.Context) error {
+	return c.do(ctx, "POST", "/v1/neoexit/uninstall", struct{}{}, nil, nil)
+}
+
+// NeedFiles starts the error of a node that couldn't download NeoExit.
+const NeedFiles = "no NeoExit release here"
+
+var ErrNeedFiles = errors.New("the server could not download NeoExit")

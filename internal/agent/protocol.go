@@ -106,6 +106,34 @@ type Status struct {
 	// Leave: this version forgets a master that asks it to (/v1/leave)
 	// and takes back tunnels removed by hand (/v1/restore).
 	Leave bool `json:"leave,omitempty"`
+	// NeoExitState is NeoExit here: none, installed or running ("" from
+	// versions that can't install and manage it for their master).
+	NeoExitState string `json:"neoexit_state,omitempty"`
+}
+
+// NeoExitCall is a request the master passes to NeoExit on the node.
+type NeoExitCall struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Body   []byte `json:"body,omitempty"`
+}
+
+// NeoExitReply is NeoExit's answer to a NeoExitCall.
+type NeoExitReply struct {
+	Status int    `json:"status"`
+	Body   []byte `json:"body,omitempty"`
+}
+
+// NeoExitFetch has the node download a NeoExit release into its cache,
+// for itself or (Arch) for another server that can't reach GitHub.
+type NeoExitFetch struct {
+	Version string `json:"version"` // "latest" or vX.Y.Z
+	Arch    string `json:"arch,omitempty"`
+}
+
+// NeoExitFetched is the release the node now has in its cache.
+type NeoExitFetched struct {
+	Version string `json:"version"`
 }
 
 // LeaveResponse is what a node dropped when its master let it go.

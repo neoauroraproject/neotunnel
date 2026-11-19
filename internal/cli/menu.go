@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"neotunnel/internal/engine"
 	"neotunnel/internal/forward"
 	"neotunnel/internal/manage"
+	"neotunnel/internal/neoexit"
 	"neotunnel/internal/service"
 	"neotunnel/internal/setuplink"
 	"neotunnel/internal/sysctl"
@@ -167,6 +169,7 @@ func (s *session) main() {
 			{"Speed test", "one tunnel, or compare every tunnel kind", false},
 			{"Live traffic", "rates and today's, month's and total traffic per tunnel", false},
 			{"Main servers", mastersLine(st), false},
+			{"NeoExit", "free exits for AI services, here and on the destination servers", false},
 			{"Web panel", "address, password, port", false},
 			{"System", "name & IP, network boost, re-apply, restart the service", false},
 			{"Update NeoTunnel", "install the latest release; tunnels and settings stay", false},
@@ -192,12 +195,14 @@ func (s *session) main() {
 		case 6:
 			s.masters()
 		case 7:
-			s.panel()
+			s.neoexit()
 		case 8:
-			s.system()
+			s.panel()
 		case 9:
-			s.update()
+			s.system()
 		case 10:
+			s.update()
+		case 11:
 			if s.uninstall() {
 				return
 			}
@@ -1024,6 +1029,75 @@ func (s *session) join() {
 		return
 	}
 	s.page("Joining the main server", func() error { return applyKey(key, false) })
+}
+
+// neoexit installs and removes NeoExit on this server and the peers; the
+// rest of it is on the panel's NeoExit page.
+func (s *session) neoexit() {
+	sel := 0
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		xs, err := manage.ExitServersNow(ctx)
+		cancel()
+		if err != nil {
+			return
+		}
+		var items []item
+		for _, x := range xs {
+			state := "not installed"
+			switch {
+			case !x.Reachable:
+				state = "not reachable"
+			case x.Old:
+				state = "upgrade NeoTunnel there first"
+			case x.State == neoexit.StateRunning && x.Status != nil:
+				state = "running " + x.Status.Version
+			case x.State == neoexit.StateInstalled:
+				state = "installed, not running"
+			}
+			name := x.Name
+			if x.Key == manage.ExitSelf {
+				name += " (this server)"
+			}
+			items = append(items, item{name, state, !x.Reachable || x.Old})
+		}
+		sel = s.choose("NeoExit", items, sel)
+		if s.quit || sel < 0 || sel >= len(xs) {
+			return
+		}
+		x := xs[sel]
+		acts := []item{{"Install or upgrade", "latest release; settings are kept", false}, {"Remove", "NeoExit and its settings", x.State == neoexit.StateNone}}
+		switch s.choose("NeoExit on "+x.Name, acts, 0) {
+		case 0:
+			s.page("Installing NeoExit on "+x.Name, func() error {
+				info("downloading and setting up NeoExit; this can take a few minutes")
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				res, err := manage.ExitInstall(ctx, x.Key, "latest")
+				if err != nil {
+					return err
+				}
+				success("NeoExit %s installed", res.Version)
+				if res.Password != "" {
+					fmt.Printf("  panel user %s, password %s %s\n", res.User, res.Password, dim("(shown only now)"))
+				}
+				info("everything else is on the panel's NeoExit page")
+				return nil
+			})
+		case 1:
+			if s.t.confirm("Remove NeoExit and its settings from "+bold(x.Name)+"?", false) {
+				s.page("Removing NeoExit", func() error {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+					defer cancel()
+					if err := manage.ExitUninstall(ctx, x.Key); err != nil {
+						return err
+					}
+					success("NeoExit removed from %s", x.Name)
+					return nil
+				})
+			}
+		}
+	}
 }
 
 // mastersLine sums up the main servers for the main menu.

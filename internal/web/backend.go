@@ -32,6 +32,12 @@ type Backend interface {
 	// RestoreTunnels lets those a peer removed so run there again.
 	DropTunnel(name string) (manage.Change, error)
 	RestoreTunnels(peer string, names []string) error
+	// NeoExit on this server (manage.ExitSelf) and the peers: which has
+	// it, installing and removing it, and requests to its local API.
+	NeoExitServers() []manage.ExitServer
+	NeoExitInstall(ctx context.Context, server, version string) (neoexit.Installed, error)
+	NeoExitUninstall(ctx context.Context, server string) error
+	NeoExitCall(ctx context.Context, server, method, path string, body []byte) (int, []byte, error)
 	PeerSetup(name string) (fleet.Setup, error)
 	SyncPeers(names []string) []manage.PeerSync
 	UpgradePeer(ctx context.Context, name string) (string, error)

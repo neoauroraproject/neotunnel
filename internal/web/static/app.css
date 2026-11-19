@@ -750,12 +750,6 @@ details.adv > .in { padding: 4px 16px 16px; display: flex; flex-direction: colum
 .peer dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 0; padding: 12px 0; border-block: 1px solid var(--line); }
 .peer dt { color: var(--ink-3); font-size: 11.5px; margin-bottom: 4px; }
 .peer dd { margin: 0; font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.neoexit { padding: 10px 0 12px; border-bottom: 1px solid var(--line); display: grid; gap: 6px; }
-.neoexit .ne-head { display: flex; align-items: center; gap: 8px; }
-.neoexit .ne-head .btn { margin-inline-start: auto; }
-.neoexit ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: 13px; }
-.neoexit li { display: flex; align-items: center; gap: 7px; }
-.panel .neoexit { border-bottom: 0; padding-bottom: 0; }
 .peer footer { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 @media (hover: hover) and (pointer: fine) { .peer:hover { border-color: var(--line-2); } }
 
@@ -1173,3 +1167,75 @@ table.t tr.click:hover td { background: color-mix(in srgb, var(--card-2) 60%, tr
   .hrow { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .hrow .btn { justify-self: start; }
 }
+
+/* ---------- NeoExit ---------- */
+.nx-servers { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.nx-servers button { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: var(--r); border: 1px solid var(--line); background: var(--card); color: var(--ink-2); cursor: pointer; text-align: start; font: inherit; transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease; }
+.nx-servers button > span { display: flex; flex-direction: column; gap: 2px; }
+.nx-servers button b { color: var(--ink); font-size: 13.5px; }
+.nx-servers button small { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-3); }
+.nx-servers button.on { border-color: var(--accent); background: var(--card-2); box-shadow: 0 0 0 1px var(--accent) inset; }
+@media (hover: hover) and (pointer: fine) { .nx-servers button:hover { border-color: var(--line-2); } }
+.nx-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.nx-line { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; color: var(--ink-2); font-size: 13.5px; }
+.nx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 980px) { .nx-grid { grid-template-columns: 1fr; } }
+.nx-list { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; }
+.nx-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r); border: 1px solid transparent; background: transparent; color: var(--ink); font: inherit; text-align: start; width: 100%; min-width: 0; }
+button.nx-row { cursor: pointer; }
+.nx-row > .grow { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nx-row small { color: var(--ink-3); font-size: 12px; overflow-wrap: anywhere; }
+.nx-row.off b { color: var(--ink-3); }
+.nx-row.add { color: var(--ink-3); border-style: dashed; border-color: var(--line); }
+.nx-row.exit { border-color: var(--line); background: var(--card-2); }
+.nx-tools { display: flex; gap: 2px; flex: none; }
+.nx-tools .danger { color: var(--bad); }
+@media (hover: hover) and (pointer: fine) { button.nx-row:hover { background: var(--card-2); border-color: var(--line); } }
+@media (max-width: 560px) { .nx-row.exit { flex-wrap: wrap; } .nx-tools { width: 100%; justify-content: flex-end; } }
+.nx-install .nx-hero { display: flex; gap: 16px; align-items: flex-start; color: var(--accent); }
+.nx-install h2 { margin: 0 0 6px; font-size: 17px; color: var(--ink); }
+.nx-install p { margin: 0; color: var(--ink-2); line-height: 1.8; font-size: 13.5px; }
+.nx-points { list-style: none; padding: 0; margin: 16px 0 18px; display: grid; gap: 8px; font-size: 13.5px; color: var(--ink-2); }
+.nx-points li { display: flex; gap: 8px; align-items: flex-start; }
+.nx-points svg { color: var(--ok); flex: none; margin-top: 3px; }
+.nx-matrix th small, .nx-matrix th b { display: block; }
+.nx-matrix th small { font-weight: 400; color: var(--ink-3); font-size: 11.5px; margin-top: 2px; }
+.nx-matrix th small.bad { color: var(--bad); }
+.nx-matrix tbody th { min-width: 150px; max-width: 220px; }
+.nx-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; width: 100%; padding: 8px 10px; border-radius: var(--r); border: 1px solid var(--line); background: transparent; color: var(--ink-2); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.nx-cell small { flex-basis: 100%; color: var(--ink-3); font-size: 11px; }
+.nx-cell.used { background: var(--card-3); color: var(--ink); border-color: var(--line-2); }
+.nx-cell.pinned { box-shadow: 0 0 0 1.5px var(--accent) inset; }
+.nx-cell:disabled { cursor: default; opacity: .5; }
+.nx-legend { margin-top: 12px; color: var(--ink-3); font-size: 12px; gap: 16px; }
+.nx-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.nx-radio { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 600; color: var(--ink-3); cursor: pointer; }
+.nx-radio:has(input:checked) { background: var(--card-3); color: var(--ink); }
+.nx-radio input { margin: 0; }
+.nx-steps { margin: 0; padding-inline-start: 20px; display: grid; gap: 10px; font-size: 13px; color: var(--ink-2); }
+.nx-steps li > * { vertical-align: middle; }
+.nx-steps .btn { margin-inline-start: 8px; }
+.nx-code { font-family: var(--mono); font-size: 12px; line-height: 1.6; resize: vertical; min-height: 80px; }
+.nx-cats { display: grid; gap: 8px; }
+.nx-cat { display: grid; grid-template-columns: 1fr minmax(160px, 220px); gap: 10px; align-items: center; font-size: 13px; }
+@media (max-width: 560px) { .nx-cat { grid-template-columns: 1fr; } }
+.nx-notes { margin: 0; padding-inline-start: 18px; color: var(--ink-2); font-size: 13px; display: grid; gap: 4px; }
+.nx-tl { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.nx-tl li { display: grid; grid-template-columns: 48px 12px 1fr; gap: 10px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.nx-tl li:last-child { border-bottom: 0; }
+.nx-tl time { color: var(--ink-3); font-size: 12px; }
+.nx-tl small { display: block; color: var(--ink-3); font-size: 11.5px; margin-top: 2px; }
+.nx-svcline { gap: 8px; }
+.nx-pre { white-space: pre-wrap; margin: 0; font-size: 12.5px; color: var(--ink-2); max-height: 180px; overflow: auto; }
+.nx-kinds { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+@media (max-width: 640px) { .nx-kinds { grid-template-columns: repeat(2, 1fr); } }
+.nx-kinds label { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: var(--r); border: 1px solid var(--line); cursor: pointer; }
+.nx-kinds label.on { border-color: var(--accent); background: var(--card-2); }
+.nx-kinds input { position: absolute; opacity: 0; pointer-events: none; }
+.nx-kinds b { font-size: 13px; }
+.nx-kinds small { color: var(--ink-3); font-size: 11.5px; }
+.nx-choices { display: grid; gap: 6px; }
+.nx-choices button { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r); border: 1px solid var(--line); background: transparent; color: var(--ink); font: inherit; text-align: start; cursor: pointer; }
+.nx-choices button .grow { display: flex; flex-direction: column; gap: 2px; }
+.nx-choices button small { color: var(--ink-3); font-size: 12px; }
+.nx-choices button.on { border-color: var(--accent); background: var(--card-2); }

@@ -14,6 +14,7 @@ import (
 	"neotunnel/internal/fleet"
 	"neotunnel/internal/manage"
 	"neotunnel/internal/metrics"
+	"neotunnel/internal/neoexit"
 	"neotunnel/internal/safe"
 	"neotunnel/internal/traffic"
 	"neotunnel/internal/web"
@@ -215,4 +216,13 @@ func TestAPIToken(t *testing.T) {
 	if rec := do(h, "GET", "/secret/api/overview", "", nil, map[string]string{"Authorization": "Bearer nt_wrong"}); rec.Code != 401 {
 		t.Errorf("wrong token: %d", rec.Code)
 	}
+}
+
+func (stub) NeoExitServers() []manage.ExitServer { return nil }
+func (stub) NeoExitInstall(context.Context, string, string) (neoexit.Installed, error) {
+	return neoexit.Installed{}, nil
+}
+func (stub) NeoExitUninstall(context.Context, string) error { return nil }
+func (stub) NeoExitCall(context.Context, string, string, string, []byte) (int, []byte, error) {
+	return 0, nil, nil
 }

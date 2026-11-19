@@ -258,6 +258,7 @@ sudo neotunnel bench germany                                                 # �
 | `forward add\|set <tunnel> <ports> [--to] [--proto] [--mode nat\|transparent\|proxy]` | فوروارد پورت |
 | `peer add\|list\|link\|sync\|upgrade\|remove` | سرورهای مقصد (با حذف، تانل‌ها روی خود آن سرور هم حذف می‌شوند) |
 | `master list\|forget\|keep\|auto-forget` | روی سرور مقصد: سرورهای اصلی؛ جدا شدن از سروری که دیگر نیست |
+| `exit status\|install\|remove [server]` | NeoExit (خروجی رایگان برای سرویس‌های هوش مصنوعی) روی همین سرور یا سرورهای مقصد؛ بقیه‌ی کارهایش در صفحه‌ی NeoExit پنل |
 | `tunnel remove <name> --local` | حذف تانل سرور اصلی فقط روی همین سرور، وقتی سرور اصلی در دسترس نیست |
 | `test <tunnel>` / `bench <server>` / `mtu <tunnel>` | تست سرعت، مقایسه، بهترین MTU |
 | `traffic` / `status` / `doctor` | ترافیک زنده، وضعیت و عیب‌یابی |

@@ -59,6 +59,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/safe/confirm", s.fromMaster(s.safeConfirm))
 	mux.HandleFunc("POST /v1/leave", s.fromMaster(s.leave))
 	mux.HandleFunc("POST /v1/restore", s.fromMaster(s.restore))
+	mux.HandleFunc("POST /v1/neoexit/call", s.fromMaster(s.neoexitCall))
+	mux.HandleFunc("POST /v1/neoexit/fetch", s.fromMaster(s.neoexitFetch))
+	mux.HandleFunc("GET /v1/neoexit/cache/{version}/{name}", s.fromMaster(s.neoexitGet))
+	mux.HandleFunc("PUT /v1/neoexit/cache/{version}/{name}", s.fromMaster(s.neoexitPut))
+	mux.HandleFunc("POST /v1/neoexit/install", s.fromMaster(s.neoexitInstall))
+	mux.HandleFunc("POST /v1/neoexit/uninstall", s.fromMaster(s.neoexitUninstall))
 	return mux
 }
 
@@ -250,7 +256,7 @@ func agentBusy(st *config.State) []string {
 // LocalStatus reports this node's tunnels and counters.
 func LocalStatus(st *config.State, started time.Time) Status {
 	aes := sysinfo.AESNI()
-	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6(), AESNI: &aes, ObfsAES: true, StreamTunnels: true, StreamTests: true, StreamFallback: true, Leave: true, AgentPort: st.ListenAgentPort(), RolledBack: upgrade.LastFailed().Version, NeoExit: neoexit.Local()}
+	out := Status{Name: st.Self, Version: version.Version, Arch: version.Arch(), Address6: engine.PublicIPv6(), AESNI: &aes, ObfsAES: true, StreamTunnels: true, StreamTests: true, StreamFallback: true, Leave: true, AgentPort: st.ListenAgentPort(), RolledBack: upgrade.LastFailed().Version, NeoExit: neoexit.Local(), NeoExitState: neoexit.LocalState()}
 	if st.Managed != nil {
 		out.Revision = st.Managed.Revision
 	}
